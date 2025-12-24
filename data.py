@@ -354,9 +354,13 @@ def get_daytrade_stats_finmind(stock_id, target_date_str):
     d = finmind_get("TaiwanStockDayTrading", data_id=stock_id, start_date=start_date, end_date=end_date)
     if p.empty or d.empty: return 0.0, 0.0
     try:
+        # [Fix] 轉換格式確保合併成功
+        p['date'] = pd.to_datetime(p['date'])
+        d['date'] = pd.to_datetime(d['date'])
+        
         m = pd.merge(p[['date','Trading_Volume']], d[['date','Volume']], on='date', how='inner')
         if m.empty: return 0.0, 0.0
-        m['date'] = pd.to_datetime(m['date']); m = m.sort_values('date')
+        m = m.sort_values('date')
         r6 = m.tail(6)
         if len(r6) < 6: return 0.0, 0.0
         last = r6.iloc[-1]
@@ -369,7 +373,9 @@ def fetch_history_data(ticker_code):
     try:
         df = yf.Ticker(ticker_code).history(period="1y", auto_adjust=False)
         if df.empty: return pd.DataFrame()
-        df.index = df.index.tz_localize(None)
+        # [Fix] 只有在已經有時區時才移除，防止報錯
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
         return df
     except: return pd.DataFrame()
 
