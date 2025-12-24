@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 import re
-from datetime import date
 import pandas as pd
-from config import CN_NUM, KEYWORD_MAP
+import gspread
+from datetime import date
+from config import KEYWORD_MAP, CN_NUM
 
+# ==========================================
+# 字串與條款處理
+# ==========================================
 def normalize_clause_text(s: str) -> str:
     if not s: return ""
     s = str(s)
@@ -47,6 +51,9 @@ def get_ticker_suffix(market_type):
         return '.TWO'
     return '.TW'
 
+# ==========================================
+# 日期處理
+# ==========================================
 def parse_roc_date(roc_date_str):
     try:
         roc_date_str = str(roc_date_str).strip()
@@ -74,6 +81,9 @@ def parse_jail_period(period_str):
             return start_date, end_date
     return None, None
 
+# ==========================================
+# Google Sheet 輔助
+# ==========================================
 def get_or_create_ws(sh, title, headers=None, rows=5000, cols=20):
     need_cols = max(cols, len(headers) if headers else 0)
     try:
