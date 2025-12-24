@@ -1,0 +1,5 @@
+[service]
+name = "stock-v116"
+type = "job"
+command = "python main.py"
+schedule = "30 13 * * *"
