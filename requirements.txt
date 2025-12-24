@@ -1,0 +1,7 @@
+gspread
+google-auth
+requests
+pandas
+yfinance
+twstock
+lxml
