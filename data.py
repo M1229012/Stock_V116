@@ -11,12 +11,12 @@ from datetime import datetime, timedelta, date
 from google.oauth2.service_account import Credentials
 
 # ==========================================
-# 忽略 SSL 警告 (解決 Zeabur 連線失敗問題)
+# 忽略 SSL 警告 (這是解決 Zeabur 報錯的關鍵！)
 # ==========================================
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
-# 嘗試匯入 config，如果失敗則使用預設值
+# 嘗試匯入 config
 # ==========================================
 try:
     from config import FINMIND_API_URL, PARAM_SHEET_NAME, SAFE_MARKET_OPEN_CHECK, SHEET_NAME
@@ -24,9 +24,7 @@ try:
 except ImportError:
     pass
 
-# ==========================================
-# 設定 yfinance 靜音模式
-# ==========================================
+# 設定 yfinance 靜音
 logger = logging.getLogger('yfinance')
 logger.setLevel(logging.CRITICAL)
 logger.disabled = True
@@ -93,8 +91,7 @@ def finmind_get(dataset, data_id=None, start_date=None, end_date=None):
             headers["Authorization"] = f"Bearer {token}"
             
         try:
-            # FinMind 通常 SSL 正常，但為了保險起見也可加 verify=False
-            r = requests.get(FINMIND_API_URL, params=params, headers=headers, timeout=10)
+            r = requests.get(FINMIND_API_URL, params=params, headers=headers, timeout=10, verify=False)
             if r.status_code == 200:
                 j = r.json()
                 df = pd.DataFrame(j["data"]) if "data" in j else pd.DataFrame()
@@ -224,7 +221,7 @@ def get_daily_data(date_obj):
     print(f"📡 嘗試爬取官方公告 (日期: {date_str})...")
     # TWSE
     try:
-        # [Fix] 加入 verify=False 忽略 SSL 驗證
+        # [Fix] 增加 verify=False
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/notice",
                          params={"startDate": date_str_nodash, "endDate": date_str_nodash, "response": "json"}, 
                          timeout=10, verify=False)
@@ -246,7 +243,7 @@ def get_daily_data(date_obj):
     try:
         roc_date = f"{date_obj.year-1911}/{date_obj.month:02d}/{date_obj.day:02d}"
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.tpex.org.tw/'}
-        # [Fix] 加入 verify=False 忽略 SSL 驗證
+        # [Fix] 增加 verify=False
         r = requests.post("https://www.tpex.org.tw/www/zh-tw/bulletin/attention", 
                           data={'date': roc_date, 'response': 'json'}, 
                           headers=headers, timeout=10, verify=False)
@@ -291,7 +288,7 @@ def get_jail_map(start_date_obj, end_date_obj):
     # TWSE
     try:
         url = "https://www.twse.com.tw/rwd/zh/announcement/punish"
-        # [Fix] 加入 verify=False
+        # [Fix] 增加 verify=False
         r = requests.get(url, params={"startDate": s_str, "endDate": e_str, "response": "json"}, 
                          timeout=10, verify=False)
         j = r.json()
@@ -325,7 +322,7 @@ def get_jail_map(start_date_obj, end_date_obj):
     # TPEx
     try:
         url = "https://www.tpex.org.tw/openapi/v1/tpex_disposal_information"
-        # [Fix] 加入 verify=False
+        # [Fix] 增加 verify=False
         r = requests.get(url, timeout=10, verify=False)
         if r.status_code == 200:
             data = r.json()
