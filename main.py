@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 最終修正)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 19:00 穩健回補)
+修正重點：
+1. backfill_daily_logs: 針對「今日」的回補檢查，改用 SAFE_CRAWL_TIME (19:00) 作為門檻，避免太早抓到空資料。
+2. 保留所有前次修正 (狀態表重建、防 NameError、移除 2.1 回填)。
 """
 
 import os
@@ -43,11 +46,14 @@ PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
 
-# ✅ [修正] 補回變數
+# 變數定義
 IS_NIGHT_RUN = TARGET_DATE.hour >= 20
-
 SAFE_CRAWL_TIME = dt_time(19, 0)
 SAFE_MARKET_OPEN_CHECK = dt_time(16, 30)
+
+# 回補參數
+MAX_BACKFILL_TRADING_DAYS = 40   # 最多回補幾個交易日(往前)
+VERIFY_RECENT_DAYS = 2           # 強制驗證最近幾個交易日
 
 # ==========================================
 # 🔑 FinMind 金鑰設定 (GitHub Secret 適配)
@@ -61,7 +67,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Trigger=0 Days)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Safe Crawl Time Backfill)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -120,7 +126,6 @@ def get_ticker_suffix(market_type):
     if any(k in m for k in keywords): return '.TWO'
     return '.TW'
 
-# ✅ [修正] 適配 GitHub Actions 連線方式
 def connect_google_sheets():
     try:
         if not os.path.exists("service_key.json"): return None, None
@@ -130,7 +135,6 @@ def connect_google_sheets():
         return sh, None
     except: return None, None
 
-# ✅ [修正] 增加 resize 以避免寫入錯誤
 def get_or_create_ws(sh, title, headers=None, rows=5000, cols=20):
     need_cols = max(cols, len(headers) if headers else 0)
     try:
@@ -146,6 +150,77 @@ def get_or_create_ws(sh, title, headers=None, rows=5000, cols=20):
         if headers:
             ws.append_row(headers, value_input_option="USER_ENTERED")
         return ws
+
+def load_log_index(ws_log):
+    """
+    讀取「每日紀錄」並建立：
+    - existing_keys:  { 'YYYY-MM-DD_2330', ... }
+    - date_counts:    { 'YYYY-MM-DD': 筆數, ... }
+    """
+    existing_keys = set()
+    date_counts = {}
+    try:
+        vals = ws_log.get_all_values()
+        if not vals or len(vals) <= 1:
+            return existing_keys, date_counts
+
+        for r in vals[1:]:
+            if len(r) >= 3 and str(r[0]).strip():
+                d = str(r[0]).strip()
+                # f-string + replace fix
+                code = str(r[2]).strip().replace("'", "")
+                if code:
+                    k = d + "_" + code
+                    existing_keys.add(k)
+                    date_counts[d] = date_counts.get(d, 0) + 1
+    except:
+        pass
+    return existing_keys, date_counts
+
+def load_status_index(ws_status):
+    """
+    讀取「爬取狀態」並建立：
+    - key_to_row:  { 'YYYY-MM-DD': row_number }
+    - cnt_map:     { 'YYYY-MM-DD': 官方檔數(int) }
+    """
+    key_to_row = {}
+    cnt_map = {}
+    try:
+        vals = ws_status.get_all_values()
+        if not vals or len(vals) <= 1:
+            return key_to_row, cnt_map
+
+        for r_idx, row in enumerate(vals[1:], start=2):
+            if len(row) >= 1 and str(row[0]).strip():
+                d = str(row[0]).strip()
+                key_to_row[d] = r_idx
+                c = 0
+                if len(row) >= 2:
+                    try:
+                        c = int(str(row[1]).strip())
+                    except:
+                        c = 0
+                cnt_map[d] = c
+    except:
+        pass
+    return key_to_row, cnt_map
+
+def upsert_status(ws_status, key_to_row, date_str, count, now_str):
+    """
+    寫入/更新「爬取狀態」：日期、抓到檔數、最後更新時間
+    """
+    row_data = [date_str, int(count), now_str]
+    if date_str in key_to_row:
+        r = key_to_row[date_str]
+        try:
+            ws_status.update(values=[row_data], range_name=f"A{r}:C{r}", value_input_option="USER_ENTERED")
+        except:
+            pass
+    else:
+        try:
+            ws_status.append_row(row_data, value_input_option="USER_ENTERED")
+        except:
+            pass
 
 def finmind_get(dataset, data_id=None, start_date=None, end_date=None):
     global CURRENT_TOKEN_INDEX
@@ -394,6 +469,101 @@ def get_daily_data(date_obj):
     else: print(f"⚠️ 無資料")
     return rows
 
+# ✅ [修正] 狀態表重建邏輯
+def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
+    """
+    自動回補「每日紀錄」：
+    - 最近 VERIFY_RECENT_DAYS 交易日：每次必抓
+    - 最近 MAX_BACKFILL_TRADING_DAYS 交易日：若偵測到缺漏就回補
+    """
+    now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1) 先建立 log 索引
+    existing_keys, date_counts = load_log_index(ws_log)
+
+    # 2) 準備/讀取 狀態表
+    ws_status = get_or_create_ws(sh, "爬取狀態", headers=["日期", "抓到檔數", "最後更新時間"], cols=5)
+    key_to_row, status_cnt = load_status_index(ws_status)
+
+    status_is_new = (len(status_cnt) == 0)
+
+    # 2.1) [Modified] 註解掉此段，避免用殘缺的每日紀錄回填狀態表
+    #      直接交給 (D) 去抓官方資料建立 baseline
+    # if not status_is_new:
+    #     for d, c in date_counts.items():
+    #         if d not in status_cnt:
+    #             upsert_status(ws_status, key_to_row, d, c, now_str)
+    
+    # 重新載入一次
+    key_to_row, status_cnt = load_status_index(ws_status)
+
+    # 3) 取要檢查的日期集合
+    window_dates = cal_dates[-MAX_BACKFILL_TRADING_DAYS:] if len(cal_dates) > MAX_BACKFILL_TRADING_DAYS else cal_dates[:]
+    recent_dates = cal_dates[-VERIFY_RECENT_DAYS:] if len(cal_dates) >= VERIFY_RECENT_DAYS else cal_dates[:]
+    dates_to_check = sorted(set(window_dates + recent_dates))
+
+    rows_to_append = []
+    status_updates = []
+
+    print(f"🧩 回補檢查：共 {len(dates_to_check)} 個交易日（含最近 {VERIFY_RECENT_DAYS} 日強制驗證）")
+
+    for d in dates_to_check:
+        d_str = d.strftime("%Y-%m-%d")
+
+        # ✅ [Modified] 改用 SAFE_CRAWL_TIME (19:00) 判斷，避免今日太早抓到空值
+        if d == TARGET_DATE.date() and TARGET_DATE.time() < SAFE_CRAWL_TIME:
+            continue
+
+        log_cnt = int(date_counts.get(d_str, 0))
+        st_cnt = status_cnt.get(d_str, None)
+
+        need_fetch = False
+
+        # (A) 最近交易日每次都抓
+        if d in recent_dates: need_fetch = True
+
+        # (B) 狀態表有紀錄但變少 (刪除過)
+        if (st_cnt is not None) and (log_cnt < int(st_cnt)): need_fetch = True
+
+        # (C) 沒紀錄且沒資料 (沒抓過)
+        if (st_cnt is None) and (log_cnt == 0): need_fetch = True
+
+        # ✅ (D) 狀態表沒有該日紀錄時：先抓一次建立基準 (Fix for missing status sheet)
+        if (st_cnt is None) and (d in window_dates): need_fetch = True
+
+        if not need_fetch: continue
+
+        data = get_daily_data(d)
+        official_cnt = len(data)
+
+        for s in data:
+            k = f"{s['日期']}_{s['代號']}"
+            if k not in existing_keys:
+                rows_to_append.append([s['日期'], s['市場'], f"'{s['代號']}", s['名稱'], s['觸犯條款']])
+                existing_keys.add(k)
+                date_counts[s['日期']] = date_counts.get(s['日期'], 0) + 1
+
+        status_updates.append((d_str, official_cnt, st_cnt))
+
+    if rows_to_append:
+        print(f"💾 回補寫入「每日紀錄」：{len(rows_to_append)} 筆")
+        ws_log.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+    else:
+        print("✅ 每日紀錄無需回補寫入")
+
+    # 更新狀態表 (含防呆)
+    key_to_row, status_cnt = load_status_index(ws_status)
+    for d_str, official_cnt, old_st_cnt in status_updates:
+        write_cnt = official_cnt
+        # ✅ 若抓到0但原本有資料，保留舊資料，避免寫壞基準
+        if official_cnt == 0:
+            if old_st_cnt is not None and int(old_st_cnt) > 0:
+                write_cnt = int(old_st_cnt)
+            elif int(date_counts.get(d_str, 0)) > 0:
+                write_cnt = int(date_counts[d_str])
+        
+        upsert_status(ws_status, key_to_row, d_str, write_cnt, now_str)
+
 def get_official_trading_calendar(days=60):
     end = TARGET_DATE.strftime("%Y-%m-%d")
     start = (TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
@@ -439,6 +609,28 @@ def fetch_history_data(ticker_code):
         df.index = df.index.tz_localize(None)
         return df
     except: return pd.DataFrame()
+
+# ✅ [修正] 確保函式存在，防止 NameError
+def load_precise_db_from_sheet(sh):
+    try:
+        ws = sh.worksheet(PARAM_SHEET_NAME)
+        data = ws.get_all_records()
+        db = {}
+        for row in data:
+            code = str(row.get('代號', '')).strip()
+            if not code: continue
+            try: shares = int(str(row.get('發行股數', 1)).replace(',', ''))
+            except: shares = 1
+            try: offset = float(row.get('類股漲幅修正', 0.0))
+            except: offset = 0.0
+            try: turn_avg = float(row.get('同類股平均週轉', 5.0))
+            except: turn_avg = 5.0
+            try: purity = float(row.get('成交量純度', 1.0))
+            except: purity = 1.0
+            market = str(row.get('市場', '上市')).strip()
+            db[code] = {"market": market, "shares": shares, "sector_offset": offset, "sector_turn_avg": turn_avg, "vol_purity": purity}
+        return db
+    except: return {}
 
 def fetch_stock_fundamental(stock_id, ticker_code, precise_db):
     market = '上市'; shares = 0
@@ -604,31 +796,9 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
         status_list.append(1); clause_list.append("第1款")
         trig, _ = check_jail_trigger_now(status_list, clause_list)
         if trig:
-            # Re-check trigger specifically for reason string (simplified for brevity)
-            return days, f"再{days}天處置" # (簡化回傳，邏輯上正確)
+            return days, f"再{days}天處置" 
             
     return 99, ""
-
-def load_precise_db_from_sheet(sh):
-    try:
-        ws = sh.worksheet(PARAM_SHEET_NAME)
-        data = ws.get_all_records()
-        db = {}
-        for row in data:
-            code = str(row.get('代號', '')).strip()
-            if not code: continue
-            try: shares = int(str(row.get('發行股數', 1)).replace(',', ''))
-            except: shares = 1
-            try: offset = float(row.get('類股漲幅修正', 0.0))
-            except: offset = 0.0
-            try: turn_avg = float(row.get('同類股平均週轉', 5.0))
-            except: turn_avg = 5.0
-            try: purity = float(row.get('成交量純度', 1.0))
-            except: purity = 1.0
-            market = str(row.get('市場', '上市')).strip()
-            db[code] = {"market": market, "shares": shares, "sector_offset": offset, "sector_turn_avg": turn_avg, "vol_purity": purity}
-        return db
-    except: return {}
 
 # ============================
 # Main
@@ -640,46 +810,19 @@ def main():
     update_market_monitoring_log(sh)
 
     cal_dates = get_official_trading_calendar(240)
+    
+    # ✅ [修正] 移除原本只抓一天的舊邏輯，改用 backfill_daily_logs
     target_trade_date_obj = cal_dates[-1]
-    
-    official_stocks = get_daily_data(target_trade_date_obj)
-    
-    # ✅ [修正] 移除 is_early 限制，只要沒資料就自動回朔 (T-1)
-    if not official_stocks:
-        print("⚠️ 無今日資料，嘗試回朔 T-1...")
-        if len(cal_dates) >= 2:
-            cal_dates = cal_dates[:-1]
-            target_trade_date_obj = cal_dates[-1]
-            official_stocks = get_daily_data(target_trade_date_obj)
-
     target_date_str = target_trade_date_obj.strftime("%Y-%m-%d")
     print(f"📅 鎖定日期: {target_date_str}")
 
     ws_log = get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
     
-    # [重複檢查邏輯]
-    existing_keys = set()
-    if official_stocks:
-        try:
-            vals = ws_log.get_all_values()
-            if len(vals)>1:
-                for r in vals[1:]:
-                    # 🔥 [Fixed] Use simple concatenation to avoid SyntaxError with f-string inner quotes
-                    if len(r)>=3 and r[0]: 
-                        key = r[0].strip() + "_" + r[2].strip().replace("'", "")
-                        existing_keys.add(key)
-        except: pass
-
-        rows_to = []
-        for s in official_stocks:
-            if f"{s['日期']}_{s['代號']}" not in existing_keys:
-                rows_to.append([s['日期'], s['市場'], f"'{s['代號']}", s['名稱'], s['觸犯條款']])
-        
-        if rows_to:
-            print(f"💾 寫入 {len(rows_to)} 筆...")
-            ws_log.append_rows(rows_to, value_input_option='USER_ENTERED')
+    # ✅ 自動檢查缺漏並往前回補（含今天/前一天/前40天）
+    backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj)
 
     print("📊 讀取歷史 Log...")
+    # [Modified] 直接讀取已經回補完的每日紀錄
     log_data = ws_log.get_all_records()
     df_log = pd.DataFrame(log_data)
     if not df_log.empty:
@@ -746,7 +889,7 @@ def main():
             
         status_30 = "".join(map(str, valid_bits)).zfill(30)
         
-        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999
+        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999，並修正 99 顯示為 X
         def safe(v):
             if v is None: return ""
             try: 
