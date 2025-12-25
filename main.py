@@ -663,7 +663,8 @@ def main():
             vals = ws_log.get_all_values()
             if len(vals)>1:
                 for r in vals[1:]:
-                    if len(r)>=3 and r[0]: existing_keys.add(f"{r[0].strip()}_{r[2].strip().replace("'", "")}")
+                    # 🔥 [Fixed here] Use single quotes for outer f-string to allow inner double quotes for replace
+                    if len(r)>=3 and r[0]: existing_keys.add(f'{r[0].strip()}_{r[2].strip().replace("'", "")}')
         except: pass
 
         rows_to = []
