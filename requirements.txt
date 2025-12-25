@@ -5,3 +5,4 @@ pandas
 yfinance
 twstock
 lxml
+urllib3
