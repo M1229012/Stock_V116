@@ -9,7 +9,7 @@ except: TW_TZ = ZoneInfo("UTC")
 
 # 核心時間變數
 TARGET_DATE = datetime.now(TW_TZ)
-CURRENT_TIME = TARGET_DATE  # <--- 補上這一行，程式就不會報錯了
+CURRENT_TIME = TARGET_DATE
 IS_NIGHT_RUN = TARGET_DATE.hour >= 20
 
 # Google Sheet 設定
@@ -19,11 +19,6 @@ PARAM_SHEET_NAME = "個股參數"
 # 時間門檻
 SAFE_CRAWL_TIME = dt_time(19, 0)
 SAFE_MARKET_OPEN_CHECK = dt_time(16, 30)
-
-# 工作表名稱
-WORKSHEET_LOG = "每日紀錄"
-WORKSHEET_STATS = "近30日熱門統計"
-WORKSHEET_MARKET = "大盤數據監控"
 
 # 統計表頭 (完全一致)
 STATS_HEADERS = [
