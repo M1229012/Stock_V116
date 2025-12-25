@@ -1,0 +1,37 @@
+name: Daily Stock Update (Modular)
+
+on:
+  schedule:
+    # 台灣時間 16:00 (盤後) 和 21:00 (當沖補單)
+    # 對應 UTC 時間 08:00 和 13:00
+    - cron: '0 8,13 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Create Service Key
+      # 從 GitHub Secrets 還原 key
+      run: |
+        echo '${{ secrets.GCP_SERVICE_KEY }}' > service_key.json
+
+    - name: Run Crawler
+      env:
+        FinMind_1: ${{ secrets.FinMind_1 }}
+      run: |
+        python main.py
