@@ -231,6 +231,12 @@ def get_jail_map(start_date_obj, end_date_obj):
 
     return jail_map
 
+def is_in_jail(code, d, jail_map):
+    if not jail_map or code not in jail_map: return False
+    for s, e in jail_map[code]:
+        if s <= d <= e: return True
+    return False
+
 def get_official_trading_calendar(days=60):
     end_str = TARGET_DATE.strftime("%Y-%m-%d")
     start_str = (TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
@@ -395,3 +401,11 @@ def load_precise_db_from_sheet(sh):
             if c: db[c] = {'market': r.get('市場','上市'), 'shares': r.get('發行股數',1)}
         return db
     except: return {}
+
+# 🔥 [補回遺漏的函式] 100% 原始程式碼邏輯
+def get_ticker_suffix(market_type):
+    m = str(market_type).upper().strip()
+    keywords = ['上櫃', 'TWO', 'TPEX', 'OTC']
+    if any(k in m for k in keywords):
+        return '.TWO'
+    return '.TW'
