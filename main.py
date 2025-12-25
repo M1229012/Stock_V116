@@ -7,17 +7,16 @@ import config
 import data
 import logic
 
-# --- ✅ 修正：Sheet 寫入安全過濾 (保留 0/-1/999) ---
+# --- Sheet 寫入安全過濾 (保留 0/-1/999) ---
 def sheet_safe(v):
     if v is None: return ""
     try:
         if isinstance(v, float) and math.isnan(v): return ""
     except: pass
-    # 這裡不轉成 ""，保留原始數值 (0, -1, 999)
     return str(v)
 
 def main():
-    print(f"🚀 啟動 V116.18 模組化復刻版 (100% 數值還原) | {config.TARGET_DATE}")
+    print(f"🚀 啟動 V116.18 模組化復刻版 (自動回朔增強版) | {config.TARGET_DATE}")
     sh = data.connect_google_sheets()
     if not sh: return
 
@@ -25,20 +24,28 @@ def main():
     cal_dates = data.get_official_trading_calendar(240)
     target_trade_date_obj = cal_dates[-1]
     
+    # 第一次嘗試爬取
     official_stocks = data.get_daily_data(target_trade_date_obj)
-    
-    is_today = (target_trade_date_obj == config.TARGET_DATE.date())
-    is_early = (config.TARGET_DATE.time() < config.SAFE_CRAWL_TIME)
-    
-    if (not official_stocks) and is_today and is_early:
-        print("🔄 啟動回朔 (T-1)...")
-        if len(cal_dates) >= 2:
-            target_trade_date_obj = cal_dates[-2]
-            official_stocks = data.get_daily_data(target_trade_date_obj)
-            cal_dates = cal_dates[:-1]
-
     target_date_str = target_trade_date_obj.strftime("%Y-%m-%d")
-    print(f"📅 鎖定日期: {target_date_str}")
+
+    # 🔥 [修改重點]：只要沒資料，無條件回朔 T-1
+    if not official_stocks:
+        print(f"⚠️ {target_date_str} 查無資料 (可能是假日、未開盤或網站延遲)。")
+        print("🔄 啟動自動回朔，嘗試抓取上一個交易日 (T-1)...")
+        
+        if len(cal_dates) >= 2:
+            # 往回推一天
+            target_trade_date_obj = cal_dates[-2]
+            target_date_str = target_trade_date_obj.strftime("%Y-%m-%d")
+            print(f"📅 改鎖定日期: {target_date_str}")
+            
+            # 重抓
+            official_stocks = data.get_daily_data(target_trade_date_obj)
+            cal_dates = cal_dates[:-1] # 調整日曆列表以符合新日期
+        else:
+            print("❌ 無法回朔 (交易日曆不足)。")
+
+    print(f"📅 最終確認日期: {target_date_str}")
 
     ws_log = data.get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
     if official_stocks:
@@ -61,6 +68,8 @@ def main():
         if rows_to_append:
             ws_log.append_rows(rows_to_append, value_input_option='USER_ENTERED')
             print(f"✅ 已寫入 {len(rows_to_append)} 筆新資料。")
+    else:
+        print("💤 本次執行無任何資料可寫入。")
 
     print("📊 讀取歷史 Log...")
     log_data = ws_log.get_all_records()
@@ -141,11 +150,10 @@ def main():
 
         fund = data.fetch_stock_fundamental(code, ticker_code, precise_db_cache)
 
-        # 這裡的邏輯需要跟原版一致：如果 config 沒設定 IS_NIGHT_RUN，則看 TARGET_DATE 小時
-        # 因為 config.py 已經定義了 TARGET_DATE，我們直接用它判斷
         dt_today, dt_avg6 = 0.0, 0.0
+        # 這裡依照 config 的 TARGET_DATE 判斷，若無 config.TARGET_DATE 則需修正 config
         if config.TARGET_DATE.hour >= 20:
-            dt_today, dt_avg6 = data.get_daytrade_stats_finmind(code, config.TARGET_DATE.strftime("%Y-%m-%d"))
+            dt_today, dt_avg6 = data.get_daytrade_stats_finmind(code, target_trade_date_obj.strftime("%Y-%m-%d"))
 
         risk_res = logic.calculate_full_risk(code, hist, fund, 99 if est_days_display=="X" else int(est_days_display), dt_today, dt_avg6)
 
