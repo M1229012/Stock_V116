@@ -6,26 +6,23 @@ import yfinance as yf
 import time
 import re
 from datetime import datetime, timedelta, date
-from config import *
+import config  # ✅ 引入 config 以使用全域狀態
 from logic import parse_clause_ids_strict
 
-_CURRENT_TOKEN_IDX = 0
-_FINMIND_CACHE = {}
-
-# --- 輔助函式: 型別安全轉換 ---
-def _to_int(x):
+# --- 輔助函式 ---
+def _to_int_safe(x, default=0):
     try:
-        if x is None: return None
-        if isinstance(x, str) and x.strip() == "": return None
+        if x is None: return default
+        if isinstance(x, str) and x.strip() == "": return default
         return int(float(x))
-    except: return None
+    except: return default
 
-def _to_float(x):
+def _to_float_safe(x, default=0.0):
     try:
-        if x is None: return None
-        if isinstance(x, str) and x.strip() == "": return None
+        if x is None: return default
+        if isinstance(x, str) and x.strip() == "": return default
         return float(x)
-    except: return None
+    except: return default
 
 # --- 連線與工具 ---
 def connect_google_sheets():
@@ -33,133 +30,130 @@ def connect_google_sheets():
         key_path = "service_key.json"
         if not os.path.exists(key_path): return None
         gc = gspread.service_account(filename=key_path)
-        try: sh = gc.open(SHEET_NAME)
-        except: sh = gc.create(SHEET_NAME)
+        try: sh = gc.open(config.SHEET_NAME)
+        except: sh = gc.create(config.SHEET_NAME)
         return sh
     except: return None
 
 def get_or_create_ws(sh, title, headers=None, rows=5000, cols=20):
+    # ✅ 自動 resize 避免欄位錯位
+    need_cols = max(cols, len(headers) if headers else 0)
     try:
         ws = sh.worksheet(title)
+        try:
+            if headers and ws.col_count < need_cols:
+                ws.resize(rows=ws.row_count, cols=need_cols)
+        except: pass
         return ws
     except:
-        ws = sh.add_worksheet(title=title, rows=str(rows), cols=str(cols))
-        if headers: ws.append_row(headers)
+        ws = sh.add_worksheet(title=title, rows=str(rows), cols=str(need_cols))
+        if headers:
+            ws.append_row(headers, value_input_option="USER_ENTERED")
         return ws
 
 def load_precise_db_from_sheet(sh):
     try:
-        ws = sh.worksheet(PARAM_SHEET_NAME)
+        ws = sh.worksheet(config.PARAM_SHEET_NAME)
+        data = ws.get_all_records()
         db = {}
-        for r in ws.get_all_records():
-            c = str(r.get('代號','')).strip()
-            if c: db[c] = {'market': r.get('市場','上市'), 'shares': r.get('發行股數',1)}
+        for row in data:
+            code = str(row.get('代號','')).strip()
+            if not code: continue
+            try: shares = int(str(row.get('發行股數', 1)).replace(',', ''))
+            except: shares = 1
+            try: offset = float(row.get('類股漲幅修正', 0.0))
+            except: offset = 0.0
+            try: turn_avg = float(row.get('同類股平均週轉', 5.0))
+            except: turn_avg = 5.0
+            try: purity = float(row.get('成交量純度', 1.0))
+            except: purity = 1.0
+            market = str(row.get('市場', '上市')).strip()
+            db[code] = {"market": market, "shares": shares, "sector_offset": offset, "sector_turn_avg": turn_avg, "vol_purity": purity}
         return db
     except: return {}
 
-# --- 資料抓取: FinMind ---
+# --- FinMind (✅ 修正：完全使用 config 的全域變數) ---
 def finmind_get(dataset, data_id=None, start_date=None, end_date=None):
-    global _CURRENT_TOKEN_IDX
     cache_key = (dataset, data_id, start_date, end_date)
-    if cache_key in _FINMIND_CACHE: return _FINMIND_CACHE[cache_key].copy()
+    
+    # 讀取 config cache
+    if cache_key in config._FINMIND_CACHE:
+        return config._FINMIND_CACHE[cache_key].copy()
+
     params = {"dataset": dataset}
     if data_id: params["data_id"] = str(data_id)
     if start_date: params["start_date"] = start_date
     if end_date: params["end_date"] = end_date
-    if not FINMIND_TOKENS: return pd.DataFrame()
-    
+    if not config.FINMIND_TOKENS:
+        return pd.DataFrame()
+
     for _ in range(4):
-        headers = {"Authorization": f"Bearer {FINMIND_TOKENS[_CURRENT_TOKEN_IDX]}", "User-Agent": "Mozilla/5.0"}
+        # 使用 config index
+        current_token = config.FINMIND_TOKENS[config.CURRENT_TOKEN_INDEX]
+        headers = {
+            "Authorization": f"Bearer {current_token}",
+            "User-Agent": "Mozilla/5.0",
+            "Connection": "close",
+        }
         try:
-            r = requests.get(FINMIND_API_URL, params=params, headers=headers, timeout=10)
+            r = requests.get(config.FINMIND_API_URL, params=params, headers=headers, timeout=10)
             if r.status_code == 200:
                 j = r.json()
                 df = pd.DataFrame(j.get("data", []))
-                if len(_FINMIND_CACHE) >= 2000: _FINMIND_CACHE.clear()
-                _FINMIND_CACHE[cache_key] = df
+                # 更新 config cache
+                if len(config._FINMIND_CACHE) >= 2000:
+                    config._FINMIND_CACHE.clear()
+                config._FINMIND_CACHE[cache_key] = df
                 return df.copy()
-            else:
-                _CURRENT_TOKEN_IDX = (_CURRENT_TOKEN_IDX + 1) % len(FINMIND_TOKENS)
-                time.sleep(2)
-        except: time.sleep(1)
+
+            # 輪替 config index
+            config.CURRENT_TOKEN_INDEX = (config.CURRENT_TOKEN_INDEX + 1) % len(config.FINMIND_TOKENS)
+            time.sleep(2)
+        except:
+            time.sleep(1)
+
     return pd.DataFrame()
 
-# --- 資料抓取: Yahoo History ---
-def fetch_history_data(ticker):
-    try:
-        df = yf.Ticker(ticker).history(period="1y", auto_adjust=False)
-        if not df.empty: df.index = df.index.tz_localize(None)
-        return df
-    except: return pd.DataFrame()
-
-# --- 資料抓取: 基本面 (✅ 依照您的要求修改: 支援 Retry + None) ---
+# --- 基本面抓取 (✅ 缺值回 0) ---
 def fetch_stock_fundamental(code, ticker, precise_db, retries=3, sleep_sec=1.2):
-    """
-    回傳: shares, pe, pb (皆可能為 None)
-    """
-    # 1. 先從參數表拿 shares
-    param_shares = None
+    param_shares = 0
     if str(code) in precise_db:
-        param_shares = precise_db[str(code)].get('shares')
+        param_shares = _to_int_safe(precise_db[str(code)].get('shares'), 0)
     
-    shares = _to_int(param_shares)
-    data = {"shares": shares, "pe": None, "pb": None}
+    data = {"shares": param_shares, "pe": 0, "pb": 0}
 
-    # 2. 嘗試抓取 Yahoo (帶 Retry)
     for attempt in range(1, retries + 1):
         try:
             t = yf.Ticker(ticker)
-            # 嘗試獲取 info
             info = getattr(t, "info", None) or {}
             
-            # shares: 參數表沒有才用 Yahoo
-            if data["shares"] is None or data["shares"] <= 1:
-                so = _to_int(info.get("sharesOutstanding"))
-                if so and so > 1:
-                    data["shares"] = so
+            if data["shares"] <= 1:
+                so = _to_int_safe(info.get("sharesOutstanding"), 0)
+                if so > 1: data["shares"] = so
                 else:
-                    # 再試 fast_info
                     fi = getattr(t, "fast_info", None) or {}
-                    so2 = _to_int(fi.get("shares"))
-                    if so2 and so2 > 1:
-                        data["shares"] = so2
+                    so2 = _to_int_safe(fi.get("shares"), 0)
+                    if so2 > 1: data["shares"] = so2
             
-            # PE
-            pe = _to_float(info.get("trailingPE"))
-            if pe is None:
-                pe = _to_float(info.get("forwardPE"))
+            pe = _to_float_safe(info.get("trailingPE"), 0)
+            if pe == 0: pe = _to_float_safe(info.get("forwardPE"), 0)
             data["pe"] = pe
-            
-            # PB
-            data["pb"] = _to_float(info.get("priceToBook"))
-            
-            # 成功取得資料就跳出
+            data["pb"] = _to_float_safe(info.get("priceToBook"), 0)
             return data
-
-        except Exception:
-            time.sleep(sleep_sec * attempt)
+        except: time.sleep(sleep_sec * attempt)
             
     return data
 
-# --- 資料抓取: 當沖 (FinMind) ---
-def get_daytrade_stats_finmind(code, date_str):
-    end = date_str
-    start = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
-    df_dt = finmind_get("TaiwanStockDayTrading", code, start, end)
-    df_p = finmind_get("TaiwanStockPrice", code, start, end)
-    if df_dt.empty or df_p.empty: return 0.0, 0.0
+# --- Yahoo History ---
+def fetch_history_data(ticker_code):
     try:
-        m = pd.merge(df_p[['date','Trading_Volume']], df_dt[['date','Volume']], on='date', how='inner')
-        if m.empty: return 0.0, 0.0
-        m = m.sort_values('date')
-        last = m.iloc[-1]
-        td = (last['Volume']/last['Trading_Volume']*100) if last['Trading_Volume']>0 else 0
-        avg = m.tail(6); sum_v = avg['Volume'].sum(); sum_t = avg['Trading_Volume'].sum()
-        avg_td = (sum_v/sum_t*100) if sum_t>0 else 0
-        return round(td, 2), round(avg_td, 2)
-    except: return 0.0, 0.0
+        df = yf.Ticker(ticker_code).history(period="1y", auto_adjust=False)
+        if df.empty: return pd.DataFrame()
+        df.index = df.index.tz_localize(None)
+        return df
+    except: return pd.DataFrame()
 
-# --- 爬蟲: 官方公告 ---
+# --- 官方公告爬蟲 (保留 UA 確保 Actions 可行) ---
 def get_daily_data(date_obj):
     date_str_nodash = date_obj.strftime("%Y%m%d")
     date_str = date_obj.strftime("%Y-%m-%d")
@@ -168,27 +162,45 @@ def get_daily_data(date_obj):
 
     # TWSE
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Connection": "close",
+        }
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/notice",
-                         params={"startDate": date_str_nodash, "endDate": date_str_nodash, "response": "json"}, timeout=10)
-        if r.status_code == 200 and 'data' in r.json():
-            for i in r.json()['data']:
-                code, name = str(i[1]).strip(), str(i[2]).strip()
-                if len(code)==4 and code.isdigit():
-                    raw = " ".join([str(x) for x in i])
-                    ids = parse_clause_ids_strict(raw)
-                    c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
-                    rows.append({'日期':date_str, '市場':'TWSE', '代號':code, '名稱':name, '觸犯條款':c_str})
+                         params={"startDate": date_str_nodash, "endDate": date_str_nodash, "response": "json"}, 
+                         headers=headers, timeout=10)
+        
+        if r.status_code == 200:
+            d = r.json()
+            if 'data' in d:
+                for i in d['data']:
+                    code = str(i[1]).strip()
+                    name = str(i[2]).strip()
+                    if not (code.isdigit() and len(code) == 4): continue
+                    raw_text = " ".join([str(x) for x in i])
+                    ids = parse_clause_ids_strict(raw_text)
+                    clause_str = "、".join([f"第{k}款" for k in sorted(ids)])
+                    if not clause_str: clause_str = raw_text
+                    rows.append({'日期': date_str, '市場': 'TWSE', '代號': code, '名稱': name, '觸犯條款': clause_str})
     except: pass
 
-    # TPEx
+    # TPEx (保留合併多表邏輯)
     try:
         roc = f"{date_obj.year-1911}/{date_obj.month:02d}/{date_obj.day:02d}"
-        r = requests.post("https://www.tpex.org.tw/www/zh-tw/bulletin/attention", data={'date':roc,'response':'json'}, headers={'User-Agent':'Mozilla/5.0','Referer':'https://www.tpex.org.tw/'}, timeout=10)
+        headers_tpex = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.tpex.org.tw/'}
+        r = requests.post("https://www.tpex.org.tw/www/zh-tw/bulletin/attention", 
+                          data={'date': roc, 'response': 'json'}, 
+                          headers=headers_tpex, 
+                          timeout=10)
         if r.status_code == 200:
             res = r.json()
-            target = res.get('data', [])
-            if 'tables' in res: target = res['tables'][0].get('data', [])
-            # Filter date
+            target = []
+            if 'tables' in res and isinstance(res['tables'], list):
+                for t in res['tables']: target.extend(t.get('data', []))
+            elif 'data' in res:
+                target = res['data']
+            
             final_target = [row for row in target if len(row)>5 and (str(row[5]).strip() in [roc, date_str])]
             for i in final_target:
                 code, name = str(i[1]).strip(), str(i[2]).strip()
@@ -196,19 +208,185 @@ def get_daily_data(date_obj):
                     raw = " ".join([str(x) for x in i])
                     ids = parse_clause_ids_strict(raw)
                     c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
-                    rows.append({'日期':date_str, '市場':'TPEx', '代號':code, '名稱':name, '觸犯條款':c_str})
+                    rows.append({'日期': date_str, '市場': 'TPEx', '代號': code, '名稱': name, '觸犯條款': c_str})
     except: pass
+    
+    if rows: print(f"✅ 成功抓到 {len(rows)} 檔注意股。")
+    else: print(f"⚠️ 該日 ({date_str}) 查無資料。")
     return rows
 
-# --- 處置名單 & 大盤 & 排除日 ---
-# (為了縮短篇幅，這部分與上一版完全相同，請確保您的 data.py 包含 update_market_monitoring_log, get_jail_map, get_official_trading_calendar 等)
-# 請確認您的 data.py 保留了完整的 update_market_monitoring_log, get_jail_map, get_ticker_suffix (上一輪補的)
-# 這裡僅列出最重要的 ticker_suffix 供確認
+# --- Jail Map, Ticker Suffix, Market Update ---
 def get_ticker_suffix(market_type):
     m = str(market_type).upper().strip()
     if any(k in m for k in ['上櫃', 'TWO', 'TPEX', 'OTC']): return '.TWO'
     return '.TW'
 
-# ... (其餘 get_jail_map, get_official_trading_calendar, update_market_monitoring_log 請保留原樣) ...
-# ⚠️ 注意：請確保 data.py 內有完整的 update_market_monitoring_log, get_jail_map, get_official_trading_calendar 函式
-# (我在這裡省略是為了避免回覆過長被截斷，實際檔案請保留)
+def parse_roc_date(s):
+    try:
+        p = re.split(r'[/-]', str(s).strip())
+        if len(p)==3: return date(int(p[0])+1911, int(p[1]), int(p[2]))
+    except: return None
+    return None
+
+def parse_jail_period(s):
+    if not s: return None, None
+    d = s.split('～') if '～' in s else s.split('~')
+    if len(d)<2 and '-' in s: d = s.split('-')
+    if len(d)>=2:
+        s1, s2 = parse_roc_date(d[0].strip()), parse_roc_date(d[1].strip())
+        if s1 and s2: return s1, s2
+    return None, None
+
+def get_jail_map(sd, ed):
+    print("🔒 正在下載處置(Jail)名單...")
+    jm = {}
+    s_str, e_str = sd.strftime("%Y%m%d"), ed.strftime("%Y%m%d")
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish", 
+                         params={"startDate":s_str,"endDate":e_str,"response":"json"}, 
+                         headers=headers, timeout=10)
+        j = r.json()
+        if isinstance(j.get("tables"), list) and j["tables"]:
+            data_rows = j["tables"][0].get('data', [])
+            for row in data_rows:
+                try:
+                    c = str(row[2]).strip()
+                    s, e = parse_jail_period(str(row[6]))
+                    if s and e: jm.setdefault(c,[]).append((s,e))
+                except: continue
+    except: pass
+    
+    try:
+        r = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information", timeout=10)
+        for row in r.json():
+            try:
+                c = str(row.get("SecuritiesCompanyCode","")).strip()
+                s, e = parse_jail_period(str(row.get("DispositionPeriod","")))
+                if s and e and e>=sd and s<=ed: jm.setdefault(c,[]).append((s,e))
+            except: continue
+    except: pass
+    for k in jm: jm[k].sort(key=lambda x:x[0])
+    return jm
+
+def get_official_trading_calendar(days=60):
+    end = config.TARGET_DATE.strftime("%Y-%m-%d")
+    start = (config.TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
+    print("📅 下載交易日曆...")
+    df = finmind_get("TaiwanStockTradingDate", start_date=start, end_date=end)
+    dates = []
+    if not df.empty:
+        df['date'] = pd.to_datetime(df['date']).dt.date
+        dates = sorted(df['date'].tolist())
+    else:
+        curr = config.TARGET_DATE.date()
+        while len(dates) < days:
+            if curr.weekday()<5: dates.append(curr)
+            curr -= timedelta(days=1)
+        dates = sorted(dates)
+    today = config.TARGET_DATE.date()
+    if dates and today > dates[-1] and today.weekday()<5:
+        if config.TARGET_DATE.time() > config.SAFE_MARKET_OPEN_CHECK: dates.append(today)
+    return dates[-days:]
+
+def get_daytrade_stats_finmind(stock_id, target_date_str):
+    end_date = target_date_str
+    start_date = (datetime.strptime(target_date_str, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
+    df_dt = finmind_get("TaiwanStockDayTrading", stock_id, start_date=start_date, end_date=end_date)
+    df_p = finmind_get("TaiwanStockPrice", stock_id, start_date=start_date, end_date=end_date)
+    if df_dt.empty or df_p.empty: return 0.0, 0.0
+    try:
+        merged = pd.merge(df_p[['date', 'Trading_Volume']], df_dt[['date', 'Volume']], on='date', how='inner')
+        if merged.empty: return 0.0, 0.0
+        merged['date'] = pd.to_datetime(merged['date'])
+        merged = merged.sort_values('date')
+        recent_6 = merged.tail(6)
+        last_row = recent_6.iloc[-1]
+        today_ratio = (last_row['Volume'] / last_row['Trading_Volume'] * 100.0) if last_row['Trading_Volume'] > 0 else 0.0
+        sum_dt = recent_6['Volume'].sum()
+        sum_total = recent_6['Trading_Volume'].sum()
+        avg_6_ratio = (sum_dt / sum_total * 100.0) if sum_total > 0 else 0.0
+        return round(today_ratio, 2), round(avg_6_ratio, 2)
+    except: return 0.0, 0.0
+
+def update_market_monitoring_log(sh):
+    print("📊 更新大盤數據...")
+    HEADERS = ['日期', '代號', '名稱', '收盤價', '漲跌幅(%)', '成交金額(億)']
+    ws_market = get_or_create_ws(sh, "大盤數據監控", headers=HEADERS, cols=10)
+    
+    def norm_date(s):
+        if not s: return ""
+        try: return pd.to_datetime(s, errors='coerce').strftime("%Y-%m-%d")
+        except: return str(s).strip()
+
+    key_to_row = {}
+    try:
+        all_vals = ws_market.get_all_values()
+        for r_idx, row in enumerate(all_vals[1:], start=2):
+            if len(row) >= 2:
+                key_to_row[f"{norm_date(row[0])}_{str(row[1]).strip()}"] = r_idx
+    except: pass
+
+    existing_keys = set(key_to_row.keys())
+    
+    try:
+        targets = [
+            {'fin_id': 'TAIEX', 'code': '^TWII', 'name': '加權指數'},
+            {'fin_id': 'TPEx',  'code': '^TWOII', 'name': '櫃買指數'}
+        ]
+        start_date_str = (config.TARGET_DATE - timedelta(days=45)).strftime("%Y-%m-%d")
+        today_str = config.TARGET_DATE.strftime("%Y-%m-%d")
+        
+        dfs = {}
+        all_dates = set()
+        for t in targets:
+            df = finmind_get("TaiwanStockPrice", data_id=t['fin_id'], start_date=start_date_str)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+                df.index = df.index.tz_localize(None)
+                if 'close' in df.columns:
+                    df['Close'] = df['close'].astype(float)
+                    df['Pct'] = df['Close'].pct_change() * 100
+                if 'Turnover' in df.columns: df['Volume'] = df['Turnover'].astype(float)
+                elif 'Trading_money' in df.columns: df['Volume'] = df['Trading_money'].astype(float)
+                else: df['Volume'] = 0.0
+                dfs[t['code']] = df
+                all_dates.update(df.index.strftime("%Y-%m-%d").tolist())
+
+        new_rows = []
+        for d in sorted(all_dates):
+            for t in targets:
+                code, name = t['code'], t['name']
+                df = dfs.get(code)
+                if df is None or d not in df.index.strftime("%Y-%m-%d"): continue
+                try: 
+                    row = df.loc[d] if d in df.index else df[df.index.strftime("%Y-%m-%d") == d].iloc[0]
+                except: continue
+                
+                if pd.isna(row.get('Close')): continue
+                close = round(float(row['Close']), 2)
+                pct = round(float(row.get('Pct', 0) or 0), 2)
+                vol = round(float(row.get('Volume', 0) or 0) / 100000000, 2)
+                
+                row_data = [d, code, name, close, pct, vol]
+                comp_key = f"{d}_{code}"
+                
+                if d == today_str and config.TARGET_DATE.time() < config.SAFE_MARKET_OPEN_CHECK: continue
+                
+                if d == today_str and comp_key in key_to_row:
+                    try:
+                        r_num = key_to_row[comp_key]
+                        ws_market.update(range_name=f'A{r_num}:F{r_num}', values=[row_data], value_input_option="USER_ENTERED")
+                        print(f"   🔄 更新今日 {name}")
+                    except: pass
+                    continue
+
+                if comp_key not in existing_keys:
+                    new_rows.append(row_data)
+
+        if new_rows:
+            ws_market.append_rows(new_rows, value_input_option="USER_ENTERED")
+            print(f"   ✅ 補入 {len(new_rows)} 筆大盤數據")
+    except Exception as e:
+        print(f"   ❌ 大盤更新失敗: {e}")
