@@ -7,7 +7,7 @@ import data
 import logic
 
 def main():
-    print(f"🚀 啟動 V116.18 模組化復刻版 (純文字輸出) | {config.CURRENT_TIME}")
+    print(f"🚀 啟動 V116.18 模組化復刻版 (防重複+純文字) | {config.CURRENT_TIME}")
     sh = data.connect_google_sheets()
     if not sh: return
 
@@ -35,13 +35,46 @@ def main():
     target_date_str = target_date_obj.strftime("%Y-%m-%d")
     print(f"📅 鎖定日期: {target_date_str}")
 
-    # 3. 寫入 Log
+    # 3. 寫入 Log (🔥 這裡補回了「防重複檢查」)
     ws_log = data.get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
+    
     if official_stocks:
-        print("💾 寫入每日紀錄...")
-        # 🔥 [修正] 代號加上 ' 強制為文字，其他欄位轉 str
-        rows = [[str(s['日期']), str(s['市場']), f"'{s['代號']}", str(s['名稱']), str(s['觸犯條款'])] for s in official_stocks]
-        ws_log.append_rows(rows, value_input_option='USER_ENTERED')
+        print("💾 檢查重複並寫入每日紀錄...")
+        
+        # A. 讀取現有資料建立索引
+        existing_data = ws_log.get_all_values()
+        existing_keys = set()
+        
+        # 跳過標題列，建立 "日期_代號" 的集合
+        if len(existing_data) > 1:
+            for row in existing_data[1:]:
+                # 確保 row 長度足夠且日期欄位有值
+                if len(row) >= 3 and row[0]:
+                    d_txt = str(row[0]).strip()
+                    # 去除可能存在的單引號 ' 以便比對
+                    c_txt = str(row[2]).strip().replace("'", "") 
+                    existing_keys.add(f"{d_txt}_{c_txt}")
+
+        # B. 過濾重複資料
+        rows_to_append = []
+        for s in official_stocks:
+            key = f"{s['日期']}_{s['代號']}"
+            if key not in existing_keys:
+                # 加上 ' 強制為文字格式
+                rows_to_append.append([
+                    str(s['日期']), 
+                    str(s['市場']), 
+                    f"'{s['代號']}", 
+                    str(s['名稱']), 
+                    str(s['觸犯條款'])
+                ])
+        
+        # C. 寫入不重複的新資料
+        if rows_to_append:
+            ws_log.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+            print(f"✅ 已寫入 {len(rows_to_append)} 筆新資料 (已過濾重複)。")
+        else:
+            print("💤 資料庫已有今日資料，無需重複寫入。")
 
     # 4. 準備掃描
     print("📊 讀取歷史 Log...")
@@ -49,7 +82,8 @@ def main():
     df_log = pd.DataFrame(log_data)
     
     if not df_log.empty:
-        df_log['代號'] = df_log['代號'].astype(str).str.strip().str.replace("'", "") # 讀取時去掉單引號以便比對
+        # 讀取時去掉單引號以便後續計算
+        df_log['代號'] = df_log['代號'].astype(str).str.strip().str.replace("'", "")
         df_log['日期'] = df_log['日期'].astype(str).str.strip()
 
     clause_map = {}
@@ -103,20 +137,20 @@ def main():
         # E. 風險計算
         risk = logic.calculate_full_risk(code, hist, fund, est_days, dt_today, dt_avg6)
         
-        # F. 整合 (🔥 強制轉文字區塊)
+        # F. 整合 (強制轉文字)
         status_30_str = "".join([str(1 if logic.is_valid_accumulation_day(logic.parse_clause_ids_strict(c)) else 0) for c in clauses])
         status_30_full = status_30_str.zfill(30)
         status_10_sub = status_30_full[-10:]
         last_date = valid_dates[-1].strftime("%Y-%m-%d") if valid_dates else "無"
         
         row = [
-            f"'{code}",           # [文字] 代號 (加單引號)
+            f"'{code}",           # [文字] 代號
             str(name),            # [文字] 名稱
-            "0",                  # [文字] 連續天數 (TODO: 若需計算需補上 streak 邏輯)
+            "0",                  # [文字] 連續天數 (需自行實作 streak 邏輯)
             str(sum(bits)),       # [文字] 30日次數
             str(sum(bits[-10:])), # [文字] 10日次數
             str(last_date),       # [文字] 日期
-            f"'{status_30_full}", # [文字] 30日狀態碼 (加單引號，防止 leading zero 消失)
+            f"'{status_30_full}", # [文字] 30日狀態碼 (加單引號)
             f"'{status_10_sub}",  # [文字] 10日狀態碼 (加單引號)
             str(est_days),        # [文字] 最快天數
             str(reason),          # [文字] 原因
@@ -143,7 +177,6 @@ def main():
         ws_stats = data.get_or_create_ws(sh, "近30日熱門統計", headers=config.STATS_HEADERS)
         ws_stats.clear()
         ws_stats.append_row(config.STATS_HEADERS, value_input_option='USER_ENTERED')
-        # USER_ENTERED 會識別我們加的單引號 '，將其視為強制文字格式
         ws_stats.append_rows(rows_stats, value_input_option='USER_ENTERED')
         print("✅ 完成")
 
