@@ -2,4 +2,5 @@
 name = "stock-v116"
 type = "job"
 command = "python main.py"
-schedule = "30 13 * * *"
+# 修改這裡：改成 "0 * * * *" 代表每小時的第 0 分鐘執行一次
+schedule = "0 * * * *"
