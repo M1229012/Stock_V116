@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回朔修正)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 最終修正)
 """
 
 import os
@@ -43,7 +43,7 @@ PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
 
-# ✅ [修正] 補回遺漏的變數定義
+# ✅ [修正] 補回變數
 IS_NIGHT_RUN = TARGET_DATE.hour >= 20
 
 SAFE_CRAWL_TIME = dt_time(19, 0)
@@ -664,7 +664,7 @@ def main():
             vals = ws_log.get_all_values()
             if len(vals)>1:
                 for r in vals[1:]:
-                    # 🔥 [Fix] Use simple concatenation to avoid SyntaxError with f-string inner quotes
+                    # 🔥 [Fixed] Use simple concatenation to avoid SyntaxError with f-string inner quotes
                     if len(r)>=3 and r[0]: 
                         key = r[0].strip() + "_" + r[2].strip().replace("'", "")
                         existing_keys.add(key)
@@ -746,7 +746,7 @@ def main():
             
         status_30 = "".join(map(str, valid_bits)).zfill(30)
         
-        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999，並修正 99 顯示為 X
+        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999
         def safe(v):
             if v is None: return ""
             try: 
