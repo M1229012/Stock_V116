@@ -59,102 +59,6 @@ def finmind_get(dataset, data_id=None, start_date=None, end_date=None):
     return pd.DataFrame()
 
 # ============================
-# 🔥 大盤監控更新 (100% 還原原版邏輯)
-# ============================
-def update_market_monitoring_log(sh):
-    print("📊 檢查並更新「大盤數據監控」...")
-    HEADERS = ['日期', '代號', '名稱', '收盤價', '漲跌幅(%)', '成交金額(億)']
-    ws_market = get_or_create_ws(sh, "大盤數據監控", headers=HEADERS, cols=10)
-
-    def norm_date(s):
-        s = str(s).strip()
-        if not s: return ""
-        try: return pd.to_datetime(s, errors='coerce').strftime("%Y-%m-%d")
-        except: return s
-
-    key_to_row = {}
-    try:
-        all_vals = ws_market.get_all_values()
-        for r_idx, row in enumerate(all_vals[1:], start=2):
-            if len(row) >= 2:
-                d_str = norm_date(row[0])
-                c_str = str(row[1]).strip()
-                if d_str and c_str:
-                    key_to_row[f"{d_str}_{c_str}"] = r_idx
-    except: pass
-
-    existing_keys = set(key_to_row.keys())
-
-    try:
-        targets = [
-            {'fin_id': 'TAIEX', 'code': '^TWII', 'name': '加權指數'},
-            {'fin_id': 'TPEx',  'code': '^TWOII', 'name': '櫃買指數'}
-        ]
-        start_date_str = (TARGET_DATE - timedelta(days=45)).strftime("%Y-%m-%d")
-        
-        dfs = {}
-        for t in targets:
-            fin_id = t['fin_id']; code = t['code']
-            df = finmind_get("TaiwanStockPrice", data_id=fin_id, start_date=start_date_str)
-            if not df.empty:
-                if 'date' in df.columns:
-                    df['date'] = pd.to_datetime(df['date'])
-                    df.set_index('date', inplace=True)
-                    df.index = df.index.tz_localize(None)
-                if 'close' in df.columns:
-                    df['Close'] = df['close'].astype(float)
-                    df['Pct'] = df['Close'].pct_change() * 100
-                if 'Turnover' in df.columns: df['Volume'] = df['Turnover'].astype(float)
-                elif 'Trading_money' in df.columns: df['Volume'] = df['Trading_money'].astype(float)
-                else: df['Volume'] = 0.0
-                dfs[code] = df
-
-        new_rows = []
-        today_str = TARGET_DATE.strftime("%Y-%m-%d")
-        all_dates = set()
-        for df in dfs.values():
-            all_dates.update(df.index.strftime("%Y-%m-%d").tolist())
-
-        for d in sorted(all_dates):
-            for t in targets:
-                code = t['code']; name = t['name']
-                df = dfs.get(code)
-                if df is None or d not in df.index.strftime("%Y-%m-%d"): continue
-                
-                try: row = df.loc[d]
-                except: row = df[df.index.strftime("%Y-%m-%d") == d].iloc[0]
-                
-                close_val = row.get('Close', 0)
-                if pd.isna(close_val): continue
-                
-                close = round(float(close_val), 2)
-                pct = round(float(row.get('Pct', 0) or 0), 2)
-                vol_raw = float(row.get('Volume', 0) or 0)
-                vol_billion = round(vol_raw / 100000000, 2)
-                
-                row_data = [d, code, name, close, pct, vol_billion]
-                comp_key = f"{d}_{code}"
-                
-                if d == today_str and TARGET_DATE.time() < SAFE_MARKET_OPEN_CHECK: continue
-
-                if d == today_str and comp_key in key_to_row and TARGET_DATE.time() >= SAFE_MARKET_OPEN_CHECK:
-                    r_num = key_to_row[comp_key]
-                    try:
-                        ws_market.update(values=[row_data], range_name=f'A{r_num}:F{r_num}', value_input_option="USER_ENTERED")
-                        print(f"   🔄 已覆寫更新今日 ({d} {name})。")
-                    except: pass
-                    continue
-
-                if comp_key in existing_keys: continue
-                if close > 0: new_rows.append(row_data)
-
-        if new_rows:
-            ws_market.append_rows(new_rows, value_input_option="USER_ENTERED")
-            print(f"   ✅ 已補入 {len(new_rows)} 筆大盤數據。")
-    except Exception as e:
-        print(f"   ❌ 大盤數據更新失敗: {e}")
-
-# ============================
 # 🔥 官方公告爬蟲 (V116.18 原版 100% 還原)
 # ============================
 def get_daily_data(date_obj):
@@ -223,7 +127,7 @@ def get_daily_data(date_obj):
     else: print(f"⚠️ 該日 ({date_str}) 查無資料。")
     return rows
 
-# --- Jail Map & Calendar (保留原版邏輯) ---
+# --- Jail Map & Calendar ---
 def parse_roc_date(roc_date_str):
     try:
         roc_date_str = str(roc_date_str).strip()
@@ -327,12 +231,6 @@ def get_jail_map(start_date_obj, end_date_obj):
 
     return jail_map
 
-def is_in_jail(code, d, jail_map):
-    if not jail_map or code not in jail_map: return False
-    for s, e in jail_map[code]:
-        if s <= d <= e: return True
-    return False
-
 def get_official_trading_calendar(days=60):
     end_str = TARGET_DATE.strftime("%Y-%m-%d")
     start_str = (TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
@@ -358,18 +256,98 @@ def get_official_trading_calendar(days=60):
 
     return dates[-days:]
 
-def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, n=30):
-    last_jail_end = date(1900, 1, 1)
-    if jail_map and stock_id in jail_map:
-        last_jail_end = jail_map[stock_id][-1][1]
+def update_market_monitoring_log(sh):
+    print("📊 檢查並更新「大盤數據監控」...")
+    HEADERS = ['日期', '代號', '名稱', '收盤價', '漲跌幅(%)', '成交金額(億)']
+    ws_market = get_or_create_ws(sh, "大盤數據監控", headers=HEADERS, cols=10)
 
-    picked = []
-    for d in reversed(cal_dates):
-        if d <= last_jail_end: break
-        if is_in_jail(stock_id, d, jail_map): continue
-        picked.append(d)
-        if len(picked) >= n: break
-    return list(reversed(picked))
+    def norm_date(s):
+        s = str(s).strip()
+        if not s: return ""
+        try: return pd.to_datetime(s, errors='coerce').strftime("%Y-%m-%d")
+        except: return s
+
+    key_to_row = {}
+    try:
+        all_vals = ws_market.get_all_values()
+        for r_idx, row in enumerate(all_vals[1:], start=2):
+            if len(row) >= 2:
+                d_str = norm_date(row[0])
+                c_str = str(row[1]).strip()
+                if d_str and c_str:
+                    key_to_row[f"{d_str}_{c_str}"] = r_idx
+    except: pass
+
+    existing_keys = set(key_to_row.keys())
+
+    try:
+        targets = [
+            {'fin_id': 'TAIEX', 'code': '^TWII', 'name': '加權指數'},
+            {'fin_id': 'TPEx',  'code': '^TWOII', 'name': '櫃買指數'}
+        ]
+        start_date_str = (TARGET_DATE - timedelta(days=45)).strftime("%Y-%m-%d")
+        
+        dfs = {}
+        for t in targets:
+            fin_id = t['fin_id']; code = t['code']
+            df = finmind_get("TaiwanStockPrice", data_id=fin_id, start_date=start_date_str)
+            if not df.empty:
+                if 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    df.index = df.index.tz_localize(None)
+                if 'close' in df.columns:
+                    df['Close'] = df['close'].astype(float)
+                    df['Pct'] = df['Close'].pct_change() * 100
+                if 'Turnover' in df.columns: df['Volume'] = df['Turnover'].astype(float)
+                elif 'Trading_money' in df.columns: df['Volume'] = df['Trading_money'].astype(float)
+                else: df['Volume'] = 0.0
+                dfs[code] = df
+
+        new_rows = []
+        today_str = TARGET_DATE.strftime("%Y-%m-%d")
+        all_dates = set()
+        for df in dfs.values():
+            all_dates.update(df.index.strftime("%Y-%m-%d").tolist())
+
+        for d in sorted(all_dates):
+            for t in targets:
+                code = t['code']; name = t['name']
+                df = dfs.get(code)
+                if df is None or d not in df.index.strftime("%Y-%m-%d"): continue
+                
+                try: row = df.loc[d]
+                except: row = df[df.index.strftime("%Y-%m-%d") == d].iloc[0]
+                
+                close_val = row.get('Close', 0)
+                if pd.isna(close_val): continue
+                
+                close = round(float(close_val), 2)
+                pct = round(float(row.get('Pct', 0) or 0), 2)
+                vol_raw = float(row.get('Volume', 0) or 0)
+                vol_billion = round(vol_raw / 100000000, 2)
+                
+                row_data = [d, code, name, close, pct, vol_billion]
+                comp_key = f"{d}_{code}"
+                
+                if d == today_str and TARGET_DATE.time() < SAFE_MARKET_OPEN_CHECK: continue
+
+                if d == today_str and comp_key in key_to_row and TARGET_DATE.time() >= SAFE_MARKET_OPEN_CHECK:
+                    r_num = key_to_row[comp_key]
+                    try:
+                        ws_market.update(values=[row_data], range_name=f'A{r_num}:F{r_num}', value_input_option="USER_ENTERED")
+                        print(f"   🔄 已覆寫更新今日 ({d} {name})。")
+                    except: pass
+                    continue
+
+                if comp_key in existing_keys: continue
+                if close > 0: new_rows.append(row_data)
+
+        if new_rows:
+            ws_market.append_rows(new_rows, value_input_option="USER_ENTERED")
+            print(f"   ✅ 已補入 {len(new_rows)} 筆大盤數據。")
+    except Exception as e:
+        print(f"   ❌ 大盤數據更新失敗: {e}")
 
 def fetch_history_data(ticker):
     try:
