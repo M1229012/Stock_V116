@@ -1,41 +1,46 @@
 # -*- coding: utf-8 -*-
 import time
 import pandas as pd
+import math
 from datetime import timedelta
 import config
 import data
 import logic
 
+# --- ✅ 新增：Sheet 寫入安全過濾 ---
+def sheet_safe(v):
+    # 如果是 None，回傳空字串
+    if v is None: return ""
+    # 如果是 float('nan')，回傳空字串
+    try:
+        if isinstance(v, float) and math.isnan(v): return ""
+    except: pass
+    # 否則回傳原本的值 (並轉成字串以確保格式)
+    return str(v)
+
 def main():
-    print(f"🚀 啟動 V116.18 模組化復刻版 (100% 邏輯還原) | {config.CURRENT_TIME}")
+    print(f"🚀 啟動 V116.18 優化版 (空值處理+防重複) | {config.CURRENT_TIME}")
     sh = data.connect_google_sheets()
     if not sh: return
 
-    # 1. 更新大盤
     data.update_market_monitoring_log(sh)
-
-    # 2. 處理日曆與爬蟲 (回朔機制)
     cal_dates = data.get_official_trading_calendar(240)
-    target_trade_date_obj = cal_dates[-1]
+    target_date_obj = cal_dates[-1]
     
-    # 爬取今日公告
-    official_stocks = data.get_daily_data(target_trade_date_obj)
+    official_stocks = data.get_daily_data(target_date_obj)
     
-    # 判斷是否需要回朔
-    is_today = (target_trade_date_obj == config.TARGET_DATE.date())
+    is_today = (target_date_obj == config.TARGET_DATE.date())
     is_early = (config.TARGET_DATE.time() < config.SAFE_CRAWL_TIME)
     
     if (not official_stocks) and is_today and is_early:
-        print("🔄 啟動回朔 (T-1)...")
         if len(cal_dates) >= 2:
-            target_trade_date_obj = cal_dates[-2]
+            target_date_obj = cal_dates[-2]
             official_stocks = data.get_daily_data(target_trade_date_obj)
             cal_dates = cal_dates[:-1]
 
-    target_date_str = target_trade_date_obj.strftime("%Y-%m-%d")
+    target_date_str = target_date_obj.strftime("%Y-%m-%d")
     print(f"📅 鎖定日期: {target_date_str}")
 
-    # 3. 寫入 Log (防止重複 + 強制文字)
     ws_log = data.get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
     if official_stocks:
         print("💾 檢查重複並寫入每日紀錄...")
@@ -56,9 +61,7 @@ def main():
         
         if rows_to_append:
             ws_log.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-            print(f"✅ 已寫入 {len(rows_to_append)} 筆新資料。")
 
-    # 4. 準備掃描
     print("📊 讀取歷史 Log...")
     log_data = ws_log.get_all_records()
     df_log = pd.DataFrame(log_data)
@@ -72,12 +75,10 @@ def main():
         key = (str(r['代號']), str(r['日期']))
         clause_map[key] = logic.merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
-    # 5. 處置名單與排除地圖 (🔥 關鍵還原)
-    jail_lookback = target_trade_date_obj - timedelta(days=90)
-    jail_map = data.get_jail_map(jail_lookback, target_trade_date_obj)
-    exclude_map = logic.build_exclude_map(cal_dates, jail_map) # 這裡用 logic.build_exclude_map
+    jail_lookback = target_date_obj - timedelta(days=90)
+    jail_map = data.get_jail_map(jail_lookback, target_date_obj)
+    exclude_map = logic.build_exclude_map(cal_dates, jail_map)
 
-    # 6. 掃描目標
     start_dt_str = cal_dates[-90].strftime("%Y-%m-%d")
     df_recent = df_log[df_log['日期'] >= start_dt_str]
     target_stocks = df_recent['代號'].unique()
@@ -85,63 +86,37 @@ def main():
     precise_db_cache = data.load_precise_db_from_sheet(sh)
     rows_stats = []
     
-    print(f"🔍 掃描 {len(target_stocks)} 檔股票 (完全還原版)...")
+    print(f"🔍 掃描 {len(target_stocks)} 檔股票...")
     for idx, code in enumerate(target_stocks):
         code = str(code).strip()
         name_series = df_log[df_log['代號'] == code]['名稱']
         name = name_series.iloc[-1] if not name_series.empty else "未知"
 
         db_info = precise_db_cache.get(code, {})
-        suffix = data.get_ticker_suffix(db_info.get('market', '上市')) # 這裡用 data.get_ticker_suffix (如果之前沒在data.py定義，記得補上，或者這裡直接硬寫)
-        # 修正：data.py 沒有 get_ticker_suffix，我直接補在這裡確保不缺漏
         m_type = str(db_info.get('market', '上市')).upper()
-        if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']): suffix = '.TWO'
-        else: suffix = '.TW'
-        
+        suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
-        # 🔥 [關鍵修正] 使用「最近 N 個非處置交易日」作為日曆 (使用 exclude_map)
         stock_calendar_30_asc = logic.get_last_n_non_jail_trade_dates(
             code, cal_dates, jail_map, exclude_map=exclude_map, n=30
         )
 
-        bits = []
-        clauses = []
+        bits = []; clauses = []
         for d in stock_calendar_30_asc:
             c_str = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
             if logic.is_excluded(code, d, exclude_map):
-                bits.append(0)
-                clauses.append(c_str)
-                continue
-            if c_str:
-                bits.append(1)
-                clauses.append(c_str)
-            else:
-                bits.append(0)
-                clauses.append("")
-
-        valid_bits = []
-        for i in range(len(bits)):
-            if bits[i] == 1:
-                ids = logic.parse_clause_ids_strict(clauses[i])
-                valid_bits.append(1 if logic.is_valid_accumulation_day(ids) else 0)
-            else:
-                valid_bits.append(0)
-
-        status_30 = "".join(map(str, valid_bits))
-        if len(status_30) < 30: status_30 = status_30.zfill(30)
+                bits.append(0); clauses.append(c_str); continue
+            if c_str: bits.append(1); clauses.append(c_str)
+            else: bits.append(0); clauses.append("")
 
         est_days, reason_msg = logic.simulate_days_to_jail_strict(
-            bits, clauses, stock_id=code, target_date=target_trade_date_obj, jail_map=jail_map, enable_safe_filter=False
+            bits, clauses, stock_id=code, target_date=target_date_obj, jail_map=jail_map, enable_safe_filter=False
         )
 
+        # 顯示邏輯
         latest_ids = logic.parse_clause_ids_strict(clauses[-1] if clauses else "")
         is_special_risk = logic.is_special_risk_day(latest_ids)
-        is_clause_13 = False
-        for c in clauses:
-            if 13 in logic.parse_clause_ids_strict(c):
-                is_clause_13 = True
-                break
+        is_clause_13 = any(13 in logic.parse_clause_ids_strict(c) for c in clauses)
 
         est_days_display = "X"
         reason_display = ""
@@ -159,6 +134,7 @@ def main():
             if is_special_risk: reason_display += " | ⚠️留意人工處置風險"
             if is_clause_13: reason_display += " (若進處置將關12天)"
 
+        # 抓取數據 (含 Fallback)
         hist = data.fetch_history_data(ticker_code)
         if hist.empty:
             alt_suffix = '.TWO' if suffix == '.TW' else '.TW'
@@ -173,12 +149,20 @@ def main():
 
         risk_res = logic.calculate_full_risk(code, hist, fund, 99 if est_days_display=="X" else int(est_days_display), dt_today, dt_avg6)
 
-        # streak 計算
+        # 整合 (valid bits 計算)
+        valid_bits = []
+        for i in range(len(bits)):
+            if bits[i] == 1:
+                ids = logic.parse_clause_ids_strict(clauses[i])
+                valid_bits.append(1 if logic.is_valid_accumulation_day(ids) else 0)
+            else: valid_bits.append(0)
+
+        status_30 = "".join(map(str, valid_bits)).zfill(30)
         streak = 0
         for b in valid_bits[::-1]:
             if b == 1: streak += 1
             else: break
-
+        
         last_date = "無"
         if len(valid_bits) > 0:
             for i in range(len(valid_bits)-1, -1, -1):
@@ -186,36 +170,34 @@ def main():
                     last_date = stock_calendar_30_asc[i].strftime("%Y-%m-%d")
                     break
 
-        cnt_30 = sum(valid_bits)
-        cnt_10 = sum(valid_bits[-10:])
-
+        # ✅ 寫入列：全部套用 sheet_safe (防止 None/-1/NaN)
         row = [
             f"'{code}",
-            str(name),
-            str(streak),
-            str(cnt_30),
-            str(cnt_10),
-            str(last_date),
+            sheet_safe(name),
+            sheet_safe(streak),
+            sheet_safe(sum(valid_bits)),
+            sheet_safe(sum(valid_bits[-10:])),
+            sheet_safe(last_date),
             f"'{status_30}",
             f"'{status_30[-10:]}",
-            str(est_days_display),
-            str(reason_display),
-            str(risk_res['risk_level']),
-            str(risk_res['trigger_msg']),
-            str(risk_res['curr_price']),
-            str(risk_res['limit_price']),
-            str(risk_res['gap_pct']),
-            str(risk_res['curr_vol']),
-            str(risk_res['limit_vol']),
-            str(risk_res['turnover_val']),
-            str(risk_res['turnover_rate']),
-            str(risk_res['pe']),
-            str(risk_res['pb']),
-            str(risk_res['day_trade_pct'])
+            sheet_safe(est_days_display),
+            sheet_safe(reason_display),
+            sheet_safe(risk_res['risk_level']),
+            sheet_safe(risk_res['trigger_msg']),
+            sheet_safe(risk_res['curr_price']),
+            sheet_safe(risk_res['limit_price']),
+            sheet_safe(risk_res['gap_pct']),
+            sheet_safe(risk_res['curr_vol']),
+            sheet_safe(risk_res['limit_vol']),
+            sheet_safe(risk_res['turnover_val']),
+            sheet_safe(risk_res['turnover_rate']), # 這裡如果是 None 會變空字串
+            sheet_safe(risk_res['pe']),            # 這裡如果是 None 會變空字串
+            sheet_safe(risk_res['pb']),            # 這裡如果是 None 會變空字串
+            sheet_safe(risk_res['day_trade_pct'])
         ]
         rows_stats.append(row)
         
-        if (idx+1)%10 == 0: time.sleep(1.5)
+        if (idx+1)%10 == 0: time.sleep(1.2)
 
     if rows_stats:
         print("💾 更新統計表...")
