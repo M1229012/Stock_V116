@@ -39,7 +39,6 @@ def main():
     ws_log = data.get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
     if official_stocks:
         print("💾 寫入每日紀錄...")
-        # 這裡簡化去重檢查，直接寫入 (V116.18 原版有複雜的檢查，這裡為確保不重複可略過或直接 append)
         rows = [[s['日期'], s['市場'], s['代號'], s['名稱'], s['觸犯條款']] for s in official_stocks]
         ws_log.append_rows(rows, value_input_option='USER_ENTERED')
 
@@ -48,6 +47,11 @@ def main():
     log_data = ws_log.get_all_records()
     df_log = pd.DataFrame(log_data)
     
+    # 🔥 [Fix] 強制將代號轉為字串，避免 int vs str 比對錯誤
+    if not df_log.empty:
+        df_log['代號'] = df_log['代號'].astype(str).str.strip()
+        df_log['日期'] = df_log['日期'].astype(str).str.strip()
+
     clause_map = {}
     for _, r in df_log.iterrows():
         key = (str(r['代號']), str(r['日期']))
@@ -57,7 +61,9 @@ def main():
     jail_map = data.get_jail_map(target_date_obj - timedelta(days=90), target_date_obj)
     
     # 6. 掃描目標 (最近 90 天出現過的)
-    df_recent = df_log[pd.to_datetime(df_log['日期']) >= pd.Timestamp(cal_dates[-90])]
+    # 🔥 [Fix] 確保日期比對格式正確
+    start_dt_str = cal_dates[-90].strftime("%Y-%m-%d")
+    df_recent = df_log[df_log['日期'] >= start_dt_str]
     target_stocks = df_recent['代號'].unique()
     
     precise_db = data.load_precise_db_from_sheet(sh)
@@ -66,7 +72,10 @@ def main():
     print(f"🔍 掃描 {len(target_stocks)} 檔股票...")
     for idx, code in enumerate(target_stocks):
         code = str(code).strip()
-        name = df_log[df_log['代號']==code]['名稱'].iloc[-1]
+        
+        # 🔥 [Fix] 安全獲取名稱 (如果找不到，給預設值，不 crash)
+        name_series = df_log[df_log['代號'] == code]['名稱']
+        name = name_series.iloc[-1] if not name_series.empty else "未知"
         
         # A. 建立日曆 (排除處置日)
         valid_dates = data.get_last_n_non_jail_trade_dates(code, cal_dates, jail_map)
