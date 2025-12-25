@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回朔修正)
 """
 
 import os
@@ -644,12 +644,10 @@ def main():
     
     official_stocks = get_daily_data(target_trade_date_obj)
     
-    is_today = (target_trade_date_obj == TARGET_DATE.date())
-    is_early = (TARGET_DATE.time() < SAFE_CRAWL_TIME)
-    
-    if (not official_stocks) and is_today and is_early:
+    # ✅ [修正] 移除 is_early 限制，只要沒資料就自動回朔 (T-1)
+    if not official_stocks:
+        print("⚠️ 無今日資料，嘗試回朔 T-1...")
         if len(cal_dates) >= 2:
-            print("🔄 啟動「時光回朔機制」...")
             cal_dates = cal_dates[:-1]
             target_trade_date_obj = cal_dates[-1]
             official_stocks = get_daily_data(target_trade_date_obj)
@@ -748,7 +746,7 @@ def main():
             
         status_30 = "".join(map(str, valid_bits)).zfill(30)
         
-        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999
+        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999，並修正 99 顯示為 X
         def safe(v):
             if v is None: return ""
             try: 
@@ -756,10 +754,13 @@ def main():
             except: pass
             return str(v)
 
+        # ✅ [修正] 顯示邏輯：若 est_days 為 99 則顯示 X
+        est_days_display = "X" if est_days == 99 else safe(est_days)
+
         row = [
             f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
             stock_calendar[-1].strftime("%Y-%m-%d") if stock_calendar else "",
-            f"'{status_30}", f"'{status_30[-10:]}", safe(est_days), safe(reason),
+            f"'{status_30}", f"'{status_30[-10:]}", est_days_display, safe(reason),
             safe(risk['risk_level']), safe(risk['trigger_msg']),
             safe(risk['curr_price']), safe(risk['limit_price']), safe(risk['gap_pct']),
             safe(risk['curr_vol']), safe(risk['limit_vol']), safe(risk['turnover_val']),
