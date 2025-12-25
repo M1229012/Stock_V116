@@ -43,6 +43,9 @@ PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
 
+# ✅ [修正] 補回遺漏的變數定義
+IS_NIGHT_RUN = TARGET_DATE.hour >= 20
+
 SAFE_CRAWL_TIME = dt_time(19, 0)
 SAFE_MARKET_OPEN_CHECK = dt_time(16, 30)
 
