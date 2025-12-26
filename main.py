@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 穩定性修正 Final)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度強化)
 修正重點：
-1. [Jail] get_jail_map: TWSE 改用動態欄位索引解析，避免證交所欄位順序變動導致抓錯。
-2. [Log] main: 讀取歷史 Log 時強制將日期標準化為 YYYY-MM-DD，解決 Google Sheets 格式混亂問題。
-3. [保留] 包含所有先前修正 (TPEx Warm-up/Retry, 17:30時序, 21:00當沖, T-2修復)。
+1. [防呆] fetch_twse/tpex_attention_rows: 失敗時明確回傳 None (區分「無資料」與「抓失敗」)。
+2. [邏輯] get_daily_data: 任一市場抓取失敗即回傳 None，避免資料不全。
+3. [回補] backfill_daily_logs: 遇到 None 跳過更新狀態，確保下次能自動回補。
 """
 
 import os
@@ -73,7 +73,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Stability & Date Format)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Reliability Patch)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -307,102 +307,149 @@ def update_market_monitoring_log(sh):
         if new_rows: ws_market.append_rows(new_rows, value_input_option="USER_ENTERED")
     except Exception as e: print(f" ❌ 大盤更新失敗: {e}")
 
+# ============================
+# 🔥 處置資料抓取 (Jail) —— 與 Final 1223 一致版
+# ============================
 def parse_roc_date(roc_date_str):
     try:
-        p = re.split(r'[/-]', str(roc_date_str).strip())
-        if len(p) == 3: return date(int(p[0]) + 1911, int(p[1]), int(p[2]))
-    except: return None
+        roc_date_str = str(roc_date_str).strip()
+        parts = re.split(r"[/-]", roc_date_str)
+        if len(parts) == 3:
+            y = int(parts[0]) + 1911
+            m = int(parts[1])
+            d = int(parts[2])
+            return date(y, m, d)
+    except:
+        return None
     return None
 
 def parse_jail_period(period_str):
-    if not period_str: return None, None
-    d = period_str.split('～') if '～' in period_str else period_str.split('~')
-    if len(d)<2 and '-' in period_str: d = period_str.split('-')
-    if len(d) >= 2:
-        s, e = parse_roc_date(d[0].strip()), parse_roc_date(d[1].strip())
-        if s and e: return s, e
+    if not period_str:
+        return None, None
+
+    s = str(period_str).strip()
+    dates = []
+    if "～" in s:
+        dates = s.split("～")
+    elif "~" in s:
+        dates = s.split("~")
+    elif "-" in s and "/" in s and s.count("-") == 1:
+        dates = s.split("-")
+
+    if len(dates) >= 2:
+        sd = parse_roc_date(dates[0].strip())
+        ed = parse_roc_date(dates[1].strip())
+        if sd and ed:
+            return sd, ed
     return None, None
 
 def get_jail_map(start_date_obj, end_date_obj):
-    print("🔒 正在下載處置(Jail)名單...")
+    print("🔒 正在下載處置(Jail)名單以建立濾網...")
     jail_map = {}
+
     s_str = start_date_obj.strftime("%Y%m%d")
     e_str = end_date_obj.strftime("%Y%m%d")
 
-    # ✅ TWSE 處置名單：改用動態欄位解析
+    # 1) TWSE (上市) - 動態欄位解析
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish", params={"startDate": s_str, "endDate": e_str, "response": "json"}, headers=headers, timeout=10)
+        url = "https://www.twse.com.tw/rwd/zh/announcement/punish"
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        r = requests.get(
+            url,
+            params={"startDate": s_str, "endDate": e_str, "response": "json"},
+            headers=headers,
+            timeout=10,
+        )
         j = r.json()
+
         if isinstance(j.get("tables"), list) and j["tables"]:
-            t0 = j["tables"][0]
-            fields = t0.get("fields", []) or []
-            data_rows = t0.get("data", []) or []
+            t = j["tables"][0]
+            fields = t.get("fields", []) or []
+            data_rows = t.get("data", []) or []
 
             def find_idx(keys):
                 for i, f in enumerate(fields):
                     fs = str(f)
-                    if any(k in fs for k in keys): return i
+                    if any(k in fs for k in keys):
+                        return i
                 return None
 
-            idx_code = find_idx(["證券代號", "代號"])
-            idx_period = find_idx(["處置起迄時間", "處置期間", "起迄", "起迄時間"])
+            idx_code = find_idx(["證券代號", "代號", "有價證券代號"])
+            idx_period = find_idx(["處置起迄時間", "處置起訖時間", "處置期間", "起迄"])
+
+            # fallback
+            if idx_code is None: idx_code = 2
+            if idx_period is None: idx_period = 6
 
             for row in data_rows:
                 try:
-                    c = str(row[idx_code]).strip() if idx_code is not None else str(row[2]).strip()
-                    p = str(row[idx_period]).strip() if idx_period is not None else str(row[6]).strip()
-                    
-                    s, e = parse_jail_period(p)
-                    if s and e: jail_map.setdefault(c, []).append((s, e))
-                except: continue
-    except: pass
+                    code = str(row[idx_code]).strip()
+                    p = str(row[idx_period]).strip()
+                    sd, ed = parse_jail_period(p)
+                    if sd and ed:
+                        jail_map.setdefault(code, []).append((sd, ed))
+                except:
+                    continue
+    except:
+        pass
 
-    # TPEx 處置名單
+    # 2) TPEx (上櫃) - 四碼檢查
     try:
-        r = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information", timeout=10)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information", headers=headers, timeout=10)
         for item in r.json():
             try:
-                c = str(item.get("SecuritiesCompanyCode", "")).strip()
-                if not (c.isdigit() and len(c)==4): continue
+                code = str(item.get("SecuritiesCompanyCode", "")).strip()
+                if not (code.isdigit() and len(code) == 4):
+                    continue
 
-                s, e = parse_jail_period(str(item.get("DispositionPeriod", "")).strip())
-                if s and e and e >= start_date_obj and s <= end_date_obj:
-                    jail_map.setdefault(c, []).append((s, e))
-            except: continue
-    except: pass
+                sd, ed = parse_jail_period(str(item.get("DispositionPeriod", "")).strip())
+                if sd and ed and ed >= start_date_obj and sd <= end_date_obj:
+                    jail_map.setdefault(code, []).append((sd, ed))
+            except:
+                continue
+    except:
+        pass
 
-    for k in jail_map: jail_map[k] = sorted(jail_map[k], key=lambda x: x[0])
+    for k in jail_map:
+        jail_map[k] = sorted(jail_map[k], key=lambda x: x[0])
     return jail_map
 
 def is_in_jail(stock_id, target_date, jail_map):
-    if not jail_map or stock_id not in jail_map: return False
+    if not jail_map or stock_id not in jail_map:
+        return False
     for s, e in jail_map[stock_id]:
-        if s <= target_date <= e: return True
+        if s <= target_date <= e:
+            return True
     return False
 
 def prev_trade_date(d, cal_dates):
     try:
         idx = cal_dates.index(d)
-        if idx > 0:
-            return cal_dates[idx - 1]
-        return None
+        return cal_dates[idx - 1] if idx > 0 else None
     except:
-        for i in range(len(cal_dates)-1, -1, -1):
+        for i in range(len(cal_dates) - 1, -1, -1):
             if cal_dates[i] < d:
                 return cal_dates[i]
         return None
 
 def build_exclude_map(cal_dates, jail_map):
     exclude_map = {}
-    if not jail_map: return exclude_map
+    if not jail_map:
+        return exclude_map
+
     for code, periods in jail_map.items():
         s = set()
         for start, end in periods:
+            # 2) 處置前一日
             pd = prev_trade_date(start, cal_dates)
-            if pd: s.add(pd)
+            if pd:
+                s.add(pd)
+            # 1) 處置期間（只放交易日）
             for d in cal_dates:
-                if start <= d <= end: s.add(d)
+                if start <= d <= end:
+                    s.add(d)
         exclude_map[code] = s
     return exclude_map
 
@@ -410,41 +457,62 @@ def is_excluded(code, d, exclude_map):
     return bool(exclude_map) and (code in exclude_map) and (d in exclude_map[code])
 
 def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30):
+    # 🔥 剛出關歸零：只看最近一次處置結束日
     last_jail_end = date(1900, 1, 1)
-    if jail_map and stock_id in jail_map: last_jail_end = jail_map[stock_id][-1][1]
+    if jail_map and stock_id in jail_map and jail_map[stock_id]:
+        last_jail_end = jail_map[stock_id][-1][1]
+
     picked = []
     for d in reversed(cal_dates):
-        if d <= last_jail_end: break # 剛出關前全部不要
-        if is_excluded(stock_id, d, exclude_map): continue
-        if jail_map and is_in_jail(stock_id, d, jail_map): continue
+        # ✅ 剛出關前全部不要
+        if d <= last_jail_end:
+            break
+        if is_excluded(stock_id, d, exclude_map):
+            continue
+        if jail_map and is_in_jail(stock_id, d, jail_map):
+            continue
         picked.append(d)
-        if len(picked) >= n: break
+        if len(picked) >= n:
+            break
+
     return list(reversed(picked))
 
+# ============================
+# 🔥 每日公告爬蟲區 (TWSE / TPEx 分離 + Warm-up)
+# ============================
+# ✅ [修正] 失敗時回傳 None，方便上層判斷
 def fetch_twse_attention_rows(date_obj, date_str):
     date_str_nodash = date_obj.strftime("%Y%m%d")
     rows = []
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/notice",
-                         params={"startDate": date_str_nodash, "endDate": date_str_nodash, "response": "json"}, headers=headers, timeout=10)
-        if r.status_code == 200:
-            d = r.json()
-            if 'data' in d:
-                for i in d['data']:
-                    code = str(i[1]).strip(); name = str(i[2]).strip()
-                    if len(code)==4 and code.isdigit():
-                        raw = " ".join([str(x) for x in i])
-                        ids = parse_clause_ids_strict(raw)
-                        c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
-                        rows.append({'日期': date_str, '市場': 'TWSE', '代號': code, '名稱': name, '觸犯條款': c_str})
-    except: pass
+        r = requests.get(
+            "https://www.twse.com.tw/rwd/zh/announcement/notice",
+            params={"startDate": date_str_nodash, "endDate": date_str_nodash, "response": "json"},
+            headers=headers,
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None # 視為失敗
+
+        d = r.json()
+        for i in d.get("data", []) or []:
+            code = str(i[1]).strip()
+            name = str(i[2]).strip()
+            if len(code) == 4 and code.isdigit():
+                raw = " ".join([str(x) for x in i])
+                ids = parse_clause_ids_strict(raw)
+                c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
+                rows.append({"日期": date_str, "市場": "TWSE", "代號": code, "名稱": name, "觸犯條款": c_str})
+    except:
+        return None # 異常視為失敗
     return rows
 
+# ✅ [修正] 失敗時回傳 None
 def fetch_tpex_attention_rows(date_obj, date_str):
     roc_date = f"{date_obj.year - 1911}/{date_obj.month:02d}/{date_obj.day:02d}"
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/attention"
-    
+
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://www.tpex.org.tw/",
@@ -456,6 +524,7 @@ def fetch_tpex_attention_rows(date_obj, date_str):
     payload = {"date": roc_date, "response": "json"}
 
     s = requests.Session()
+
     try:
         s.get("https://www.tpex.org.tw/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     except:
@@ -464,76 +533,64 @@ def fetch_tpex_attention_rows(date_obj, date_str):
     for attempt in range(1, 4):
         try:
             r = s.post(url, data=payload, headers=headers, timeout=12)
-
             if r.status_code != 200:
-                print(f"⚠️ TPEx attention HTTP {r.status_code} (attempt {attempt})")
-                time.sleep(0.6 + random.random())
+                time.sleep(0.8)
                 continue
 
-            try:
-                res = r.json()
-            except Exception as e:
-                print(f"⚠️ TPEx decode JSON failed: {e}")
-                print(f"   Response excerpt: {r.text[:200]}")
-                time.sleep(0.6 + random.random())
-                continue
+            res = r.json()
 
             target = []
             if "tables" in res:
-                for t in res["tables"]: target.extend(t.get("data", []))
-            elif "data" in res:
-                target = res["data"]
-
-            filtered_target = []
-            for row in target or []:
-                if len(row) > 5:
-                    row_date = str(row[5]).strip()
-                    if row_date == roc_date or row_date == date_str:
-                        filtered_target.append(row)
+                for t in res["tables"]:
+                    target.extend(t.get("data", []) or [])
+            else:
+                target = res.get("data", []) or []
 
             rows = []
-            for i in filtered_target:
+            for i in target:
+                if len(i) <= 5:
+                    continue
+                row_date = str(i[5]).strip()
+                if row_date not in (roc_date, date_str):
+                    continue
+
                 code = str(i[1]).strip()
                 name = str(i[2]).strip()
-                if not (code.isdigit() and len(code) == 4): continue
+                if not (code.isdigit() and len(code) == 4):
+                    continue
 
-                raw_text = " ".join([str(x) for x in i])
-                ids = parse_clause_ids_strict(raw_text)
-                clause_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else raw_text
+                raw = " ".join([str(x) for x in i])
+                ids = parse_clause_ids_strict(raw)
+                c_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else raw
 
-                rows.append({
-                    "日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": clause_str
-                })
-            
+                rows.append({"日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": c_str})
+
             return rows
+        except:
+            time.sleep(0.8)
 
-        except Exception as e:
-            print(f"⚠️ TPEx attention exception (attempt {attempt}): {e}")
-            time.sleep(0.6 + random.random())
+    return None # ✅ 失敗回傳 None
 
-    print("❌ TPEx attention failed after retries.")
-    return None
-
+# ✅ [修正] 任一失敗即回傳 None
 def get_daily_data(date_obj):
     date_str = date_obj.strftime("%Y-%m-%d")
-    rows = []
     print(f"📡 爬取公告 {date_str}...")
-    
-    rows.extend(fetch_twse_attention_rows(date_obj, date_str))
-    
-    tpex_rows = fetch_tpex_attention_rows(date_obj, date_str)
-    tpex_failed = (tpex_rows is None)
 
-    if tpex_failed:
-        print("❌ TPEx 抓取失敗 (全部重試皆無回應)")
-    else:
-        rows.extend(tpex_rows)
-    
-    if not rows and tpex_failed:
+    twse_rows = fetch_twse_attention_rows(date_obj, date_str)
+    tpex_rows = fetch_tpex_attention_rows(date_obj, date_str)
+
+    if twse_rows is None or tpex_rows is None:
+        print("❌ 抓取失敗（回傳 None），本輪不寫入狀態，留待下次回補")
         return None
 
-    if rows: print(f"✅ 抓到 {len(rows)} 檔")
-    else: print(f"⚠️ 無資料")
+    rows = []
+    rows.extend(twse_rows)
+    rows.extend(tpex_rows)
+
+    if rows:
+        print(f"✅ 抓到 {len(rows)} 檔")
+    else:
+        print("⚠️ 無資料")
     return rows
 
 def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
@@ -573,8 +630,9 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
 
         data = get_daily_data(d)
         
+        # ✅ 若回傳 None 代表抓取失敗，跳過不更新狀態
         if data is None:
-            print(f"⚠️ {d_str} TPEx 抓取失敗(None)，本輪跳過狀態更新，留待下次回補")
+            print(f"⚠️ {d_str} 抓取失敗(None)，跳過不更新狀態")
             continue
 
         official_cnt = len(data)
