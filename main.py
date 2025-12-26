@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 19:00 穩健回補)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - T-2 回朔 Bug 修復)
 修正重點：
-1. backfill_daily_logs: 針對「今日」的回補檢查，改用 SAFE_CRAWL_TIME (19:00) 作為門檻，避免太早抓到空資料。
-2. 保留所有前次修正 (狀態表重建、防 NameError、移除 2.1 回填)。
+1. main(): 修正回朔邏輯。只有當 cal_dates[-1] 確實為今日，且時間早於 17:30 時，才退回 T-1。
+   避免在早上 (日曆尚未包含今日) 執行時誤退至 T-2。
 """
 
 import os
@@ -46,10 +46,14 @@ PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
 
-# 變數定義
-IS_NIGHT_RUN = TARGET_DATE.hour >= 20
-SAFE_CRAWL_TIME = dt_time(19, 0)
-SAFE_MARKET_OPEN_CHECK = dt_time(16, 30)
+# ✅ [修正] 時間門檻與布林標記
+SAFE_CRAWL_TIME = dt_time(17, 30)        # 其他資訊（注意股/統計）固定 17:30 後跑
+DAYTRADE_PUBLISH_TIME = dt_time(21, 0)   # 當沖率 21:00 後才抓
+SAFE_MARKET_OPEN_CHECK = dt_time(16, 30) # 用於判斷日曆是否該有今天
+
+IS_NIGHT_RUN = TARGET_DATE.hour >= 20 # 保留舊變數兼容，主要邏輯改用下方兩個
+IS_AFTER_SAFE = TARGET_DATE.time() >= SAFE_CRAWL_TIME
+IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   # 最多回補幾個交易日(往前)
@@ -67,8 +71,9 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Safe Crawl Time Backfill)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Date Rollback Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
 try: twstock.__update_codes()
 except: pass
@@ -152,75 +157,49 @@ def get_or_create_ws(sh, title, headers=None, rows=5000, cols=20):
         return ws
 
 def load_log_index(ws_log):
-    """
-    讀取「每日紀錄」並建立：
-    - existing_keys:  { 'YYYY-MM-DD_2330', ... }
-    - date_counts:    { 'YYYY-MM-DD': 筆數, ... }
-    """
     existing_keys = set()
     date_counts = {}
     try:
         vals = ws_log.get_all_values()
-        if not vals or len(vals) <= 1:
-            return existing_keys, date_counts
-
+        if not vals or len(vals) <= 1: return existing_keys, date_counts
         for r in vals[1:]:
             if len(r) >= 3 and str(r[0]).strip():
                 d = str(r[0]).strip()
-                # f-string + replace fix
                 code = str(r[2]).strip().replace("'", "")
                 if code:
                     k = d + "_" + code
                     existing_keys.add(k)
                     date_counts[d] = date_counts.get(d, 0) + 1
-    except:
-        pass
+    except: pass
     return existing_keys, date_counts
 
 def load_status_index(ws_status):
-    """
-    讀取「爬取狀態」並建立：
-    - key_to_row:  { 'YYYY-MM-DD': row_number }
-    - cnt_map:     { 'YYYY-MM-DD': 官方檔數(int) }
-    """
     key_to_row = {}
     cnt_map = {}
     try:
         vals = ws_status.get_all_values()
-        if not vals or len(vals) <= 1:
-            return key_to_row, cnt_map
-
+        if not vals or len(vals) <= 1: return key_to_row, cnt_map
         for r_idx, row in enumerate(vals[1:], start=2):
             if len(row) >= 1 and str(row[0]).strip():
                 d = str(row[0]).strip()
                 key_to_row[d] = r_idx
                 c = 0
                 if len(row) >= 2:
-                    try:
-                        c = int(str(row[1]).strip())
-                    except:
-                        c = 0
+                    try: c = int(str(row[1]).strip())
+                    except: c = 0
                 cnt_map[d] = c
-    except:
-        pass
+    except: pass
     return key_to_row, cnt_map
 
 def upsert_status(ws_status, key_to_row, date_str, count, now_str):
-    """
-    寫入/更新「爬取狀態」：日期、抓到檔數、最後更新時間
-    """
     row_data = [date_str, int(count), now_str]
     if date_str in key_to_row:
         r = key_to_row[date_str]
-        try:
-            ws_status.update(values=[row_data], range_name=f"A{r}:C{r}", value_input_option="USER_ENTERED")
-        except:
-            pass
+        try: ws_status.update(values=[row_data], range_name=f"A{r}:C{r}", value_input_option="USER_ENTERED")
+        except: pass
     else:
-        try:
-            ws_status.append_row(row_data, value_input_option="USER_ENTERED")
-        except:
-            pass
+        try: ws_status.append_row(row_data, value_input_option="USER_ENTERED")
+        except: pass
 
 def finmind_get(dataset, data_id=None, start_date=None, end_date=None):
     global CURRENT_TOKEN_INDEX
@@ -348,7 +327,6 @@ def get_jail_map(start_date_obj, end_date_obj):
     s_str = start_date_obj.strftime("%Y%m%d")
     e_str = end_date_obj.strftime("%Y%m%d")
 
-    # ✅ [修正] 加上 Headers 避免 403
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish", params={"startDate": s_str, "endDate": e_str, "response": "json"}, headers=headers, timeout=10)
@@ -386,9 +364,14 @@ def is_in_jail(stock_id, target_date, jail_map):
 def prev_trade_date(d, cal_dates):
     try:
         idx = cal_dates.index(d)
-        if idx > 0: return cal_dates[idx - 1]
-    except: pass
-    return None
+        if idx > 0:
+            return cal_dates[idx - 1]
+        return None
+    except:
+        for i in range(len(cal_dates)-1, -1, -1):
+            if cal_dates[i] < d:
+                return cal_dates[i]
+        return None
 
 def build_exclude_map(cal_dates, jail_map):
     exclude_map = {}
@@ -424,7 +407,6 @@ def get_daily_data(date_obj):
     rows = []
     print(f"📡 爬取公告 {date_str}...")
 
-    # ✅ [修正] 加上 Headers 避免 403
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/notice",
@@ -441,7 +423,6 @@ def get_daily_data(date_obj):
                         rows.append({'日期': date_str, '市場': 'TWSE', '代號': code, '名稱': name, '觸犯條款': c_str})
     except: pass
 
-    # ✅ [修正] TPEx 合併多表
     try:
         roc = f"{date_obj.year-1911}/{date_obj.month:02d}/{date_obj.day:02d}"
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.tpex.org.tw/'}
@@ -469,35 +450,17 @@ def get_daily_data(date_obj):
     else: print(f"⚠️ 無資料")
     return rows
 
-# ✅ [修正] 狀態表重建邏輯
 def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
-    """
-    自動回補「每日紀錄」：
-    - 最近 VERIFY_RECENT_DAYS 交易日：每次必抓
-    - 最近 MAX_BACKFILL_TRADING_DAYS 交易日：若偵測到缺漏就回補
-    """
     now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
-
-    # 1) 先建立 log 索引
     existing_keys, date_counts = load_log_index(ws_log)
-
-    # 2) 準備/讀取 狀態表
     ws_status = get_or_create_ws(sh, "爬取狀態", headers=["日期", "抓到檔數", "最後更新時間"], cols=5)
     key_to_row, status_cnt = load_status_index(ws_status)
-
     status_is_new = (len(status_cnt) == 0)
 
-    # 2.1) [Modified] 註解掉此段，避免用殘缺的每日紀錄回填狀態表
-    #      直接交給 (D) 去抓官方資料建立 baseline
-    # if not status_is_new:
-    #     for d, c in date_counts.items():
-    #         if d not in status_cnt:
-    #             upsert_status(ws_status, key_to_row, d, c, now_str)
-    
-    # 重新載入一次
-    key_to_row, status_cnt = load_status_index(ws_status)
+    # 註解掉：不使用每日紀錄回填狀態表，由(D)負責
+    # if not status_is_new: ...
 
-    # 3) 取要檢查的日期集合
+    key_to_row, status_cnt = load_status_index(ws_status)
     window_dates = cal_dates[-MAX_BACKFILL_TRADING_DAYS:] if len(cal_dates) > MAX_BACKFILL_TRADING_DAYS else cal_dates[:]
     recent_dates = cal_dates[-VERIFY_RECENT_DAYS:] if len(cal_dates) >= VERIFY_RECENT_DAYS else cal_dates[:]
     dates_to_check = sorted(set(window_dates + recent_dates))
@@ -509,26 +472,17 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
 
     for d in dates_to_check:
         d_str = d.strftime("%Y-%m-%d")
-
-        # ✅ [Modified] 改用 SAFE_CRAWL_TIME (19:00) 判斷，避免今日太早抓到空值
-        if d == TARGET_DATE.date() and TARGET_DATE.time() < SAFE_CRAWL_TIME:
-            continue
+        
+        # ✅ 使用 SAFE_CRAWL_TIME (17:30) 判斷今日是否已過公告時間
+        if d == TARGET_DATE.date() and TARGET_DATE.time() < SAFE_CRAWL_TIME: continue
 
         log_cnt = int(date_counts.get(d_str, 0))
         st_cnt = status_cnt.get(d_str, None)
-
         need_fetch = False
 
-        # (A) 最近交易日每次都抓
         if d in recent_dates: need_fetch = True
-
-        # (B) 狀態表有紀錄但變少 (刪除過)
         if (st_cnt is not None) and (log_cnt < int(st_cnt)): need_fetch = True
-
-        # (C) 沒紀錄且沒資料 (沒抓過)
         if (st_cnt is None) and (log_cnt == 0): need_fetch = True
-
-        # ✅ (D) 狀態表沒有該日紀錄時：先抓一次建立基準 (Fix for missing status sheet)
         if (st_cnt is None) and (d in window_dates): need_fetch = True
 
         if not need_fetch: continue
@@ -551,18 +505,17 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     else:
         print("✅ 每日紀錄無需回補寫入")
 
-    # 更新狀態表 (含防呆)
     key_to_row, status_cnt = load_status_index(ws_status)
     for d_str, official_cnt, old_st_cnt in status_updates:
         write_cnt = official_cnt
-        # ✅ 若抓到0但原本有資料，保留舊資料，避免寫壞基準
         if official_cnt == 0:
-            if old_st_cnt is not None and int(old_st_cnt) > 0:
-                write_cnt = int(old_st_cnt)
-            elif int(date_counts.get(d_str, 0)) > 0:
-                write_cnt = int(date_counts[d_str])
-        
+            if old_st_cnt is not None and int(old_st_cnt) > 0: write_cnt = int(old_st_cnt)
+            elif int(date_counts.get(d_str, 0)) > 0: write_cnt = int(date_counts[d_str])
         upsert_status(ws_status, key_to_row, d_str, write_cnt, now_str)
+
+def is_market_open_by_finmind(date_str):
+    df = finmind_get("TaiwanStockPrice", data_id="2330", start_date=date_str, end_date=date_str)
+    return not df.empty
 
 def get_official_trading_calendar(days=60):
     end = TARGET_DATE.strftime("%Y-%m-%d")
@@ -580,27 +533,41 @@ def get_official_trading_calendar(days=60):
             curr -= timedelta(days=1)
         dates = sorted(dates)
     
-    today = TARGET_DATE.date()
-    if dates and today > dates[-1] and today.weekday()<5:
-        if TARGET_DATE.time() > SAFE_MARKET_OPEN_CHECK: dates.append(today)
+    today_date = TARGET_DATE.date()
+    today_str = today_date.strftime("%Y-%m-%d")
+    is_late_enough = TARGET_DATE.time() > SAFE_MARKET_OPEN_CHECK
+
+    if dates and today_date > dates[-1] and today_date.weekday() < 5:
+        if is_late_enough:
+            print(f"⚠️ 日曆缺漏今日 ({today_date})，驗證開市中...")
+            if is_market_open_by_finmind(today_str):
+                print(f"✅ 驗證成功 (2330有價)，補入今日。")
+                dates.append(today_date)
+            else:
+                print(f"⛔ 驗證失敗 (2330無價)，判斷為休市或資料未更新，不補入。")
+        else:
+            print(f"⏳ 時間尚早，暫不強制補入今日日曆。")
+
     return dates[-days:]
 
+# ✅ [修正] 抓不到資料時回傳 None (而非 0.0)，以便後續判斷為 Pending
 def get_daytrade_stats_finmind(stock_id, target_date_str):
     end = target_date_str
     start = (datetime.strptime(target_date_str, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
     df_dt = finmind_get("TaiwanStockDayTrading", stock_id, start_date=start, end_date=end)
     df_p = finmind_get("TaiwanStockPrice", stock_id, start_date=start, end_date=end)
-    if df_dt.empty or df_p.empty: return 0.0, 0.0
+    
+    if df_dt.empty or df_p.empty: return None, None
     try:
         m = pd.merge(df_p[['date', 'Trading_Volume']], df_dt[['date', 'Volume']], on='date', how='inner')
-        if m.empty: return 0.0, 0.0
+        if m.empty: return None, None
         m = m.sort_values('date')
         last = m.iloc[-1]
         td = (last['Volume']/last['Trading_Volume']*100) if last['Trading_Volume']>0 else 0
         avg = m.tail(6); sum_v = avg['Volume'].sum(); sum_t = avg['Trading_Volume'].sum()
         avg_td = (sum_v/sum_t*100) if sum_t>0 else 0
         return round(td, 2), round(avg_td, 2)
-    except: return 0.0, 0.0
+    except: return None, None
 
 def fetch_history_data(ticker_code):
     try:
@@ -610,7 +577,6 @@ def fetch_history_data(ticker_code):
         return df
     except: return pd.DataFrame()
 
-# ✅ [修正] 確保函式存在，防止 NameError
 def load_precise_db_from_sheet(sh):
     try:
         ws = sh.worksheet(PARAM_SHEET_NAME)
@@ -654,6 +620,7 @@ def fetch_stock_fundamental(stock_id, ticker_code, precise_db):
 def calc_pct(curr, ref):
     return ((curr - ref) / ref) * 100 if ref != 0 else 0
 
+# ✅ [修正] 若當沖率為 None，只標記 Pending，不觸發 triggers，且不視為高風險
 def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt_avg6_pct):
     res = {'risk_level': '低', 'trigger_msg': '', 'curr_price': 0, 'limit_price': 0, 'gap_pct': 999.0, 'curr_vol': 0, 'limit_vol': 0, 'turnover_val': 0, 'turnover_rate': 0, 'pe': fund_data.get('pe', 0), 'pb': fund_data.get('pb', 0), 'day_trade_pct': dt_today_pct, 'is_triggered': False}
     if hist_df.empty or len(hist_df) < 7:
@@ -708,9 +675,11 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
 
     if len(hist_df) >= 61:
         avg_vol_60 = hist_df['Volume'].iloc[-61:-1].mean()
-        if avg_vol_60 > 0:
-            r1 = (hist_df['Volume'].iloc[-6:].mean() / avg_vol_60)
-            r2 = (curr_vol_shares / avg_vol_60)
+        avg_vol_6 = hist_df['Volume'].iloc[-6:].mean()
+        is_exclude = (turnover < 0.1) or (curr_vol_lots < 500) or (turnover_val_money < 30000000)
+        if not is_exclude and avg_vol_60 > 0:
+            r1 = avg_vol_6 / avg_vol_60
+            r2 = curr_vol_shares / avg_vol_60
             if r1 > 5: triggers.append(f"【第九款】6日均量放大{r1:.1f}倍")
             if r2 > 5: triggers.append(f"【第九款】當日量放大{r2:.1f}倍")
 
@@ -723,17 +692,29 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
         threshold = 100 + (int((curr_close - 500)/500)+1)*25 if curr_close >= 500 else 100
         if gap >= threshold: triggers.append(f"【第十一款】6日價差{gap:.0f}元(>門檻{threshold})")
 
-    if dt_avg6_pct > 60 and dt_today_pct > 60:
-        dt_lots = (curr_vol_shares * dt_today_pct / 100) / 1000
-        if not (turnover < 5 or turnover_val_money < 500000000 or dt_lots < 5000):
-            triggers.append(f"【第十三款】當沖{dt_today_pct}%(6日{dt_avg6_pct}%)")
+    pending_msg = ""
+    # ✅ 當沖率判斷：未公布則只標記 pending，不算觸發
+    if dt_today_pct is None or dt_avg6_pct is None:
+        pending_msg = "(當沖率待公布)"
+    else:
+        dt_vol_est = curr_vol_shares * (dt_today_pct / 100.0)
+        dt_vol_lots = dt_vol_est / 1000
+        is_exclude = (turnover < 5) or (turnover_val_money < 500000000) or (dt_vol_lots < 5000)
+        if not is_exclude:
+            if dt_avg6_pct > 60 and dt_today_pct > 60:
+                triggers.append(f"【第十三款】當沖{dt_today_pct}%(6日{dt_avg6_pct}%)")
 
+    # ✅ 最後輸出訊息：有觸發就加上 pending 註記（若有）
     if triggers:
         res['is_triggered'] = True
         res['risk_level'] = '高'
-        res['trigger_msg'] = "且".join(triggers)
-    elif est_days <= 1: res['risk_level'] = '高'
-    elif est_days <= 2: res['risk_level'] = '中'
+        res['trigger_msg'] = "且".join(triggers) + (f" {pending_msg}" if pending_msg else "")
+    else:
+        # 沒觸發就不要因 pending 升級風險
+        res['trigger_msg'] = pending_msg
+        if est_days <= 1: res['risk_level'] = '高'
+        elif est_days <= 2: res['risk_level'] = '中'
+        elif est_days >= 3: res['risk_level'] = '低'
     
     return res
 
@@ -794,9 +775,31 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
     while days < 10:
         days += 1
         status_list.append(1); clause_list.append("第1款")
-        trig, _ = check_jail_trigger_now(status_list, clause_list)
-        if trig:
-            return days, f"再{days}天處置" 
+        
+        c1_streak = 0
+        for c in clause_list[-3:]:
+            if 1 in parse_clause_ids_strict(c): c1_streak += 1
+
+        v5 = 0; v10 = 0; v30 = 0
+        total = len(status_list)
+        for i in range(30):
+            idx = total - 1 - i
+            if idx < 0: break
+            if status_list[idx] == 1:
+                ids = parse_clause_ids_strict(clause_list[idx])
+                if is_valid_accumulation_day(ids):
+                    if i < 5: v5 += 1
+                    if i < 10: v10 += 1
+                    v30 += 1
+        
+        reasons = []
+        if c1_streak == 3: reasons.append(f"再{days}天處置")
+        if v5 == 5: reasons.append(f"再{days}天處置(連5)")
+        if v10 >= 6: reasons.append(f"再{days}天處置(10日{v10}次)")
+        if v30 >= 12: reasons.append(f"再{days}天處置(30日{v30}次)")
+
+        if reasons:
+            return days, " | ".join(reasons)
             
     return 99, ""
 
@@ -811,18 +814,24 @@ def main():
 
     cal_dates = get_official_trading_calendar(240)
     
-    # ✅ [修正] 移除原本只抓一天的舊邏輯，改用 backfill_daily_logs
+    # ✅ [修正] main() 修正 T-2 回朔 Bug
     target_trade_date_obj = cal_dates[-1]
+    is_today_trade = (target_trade_date_obj == TARGET_DATE.date())
+
+    # 只有「日曆已包含今天」且「現在 < 17:30」才退回 T-1
+    if is_today_trade and (not IS_AFTER_SAFE) and len(cal_dates) >= 2:
+        print(f"⏳ 現在時間 {TARGET_DATE.strftime('%H:%M')} 早於 {SAFE_CRAWL_TIME}，且日曆包含今日，切換為 T-1 模式。")
+        target_trade_date_obj = cal_dates[-2]
+
     target_date_str = target_trade_date_obj.strftime("%Y-%m-%d")
-    print(f"📅 鎖定日期: {target_date_str}")
+    print(f"📅 最終鎖定運算日期: {target_date_str}")
 
     ws_log = get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
     
-    # ✅ 自動檢查缺漏並往前回補（含今天/前一天/前40天）
+    # ✅ 執行回補 (包含檢查狀態表缺失)
     backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj)
 
     print("📊 讀取歷史 Log...")
-    # [Modified] 直接讀取已經回補完的每日紀錄
     log_data = ws_log.get_all_records()
     df_log = pd.DataFrame(log_data)
     if not df_log.empty:
@@ -864,8 +873,45 @@ def main():
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
 
-        est_days, reason = simulate_days_to_jail_strict(bits, clauses, stock_id=code, target_date=target_trade_date_obj, jail_map=jail_map)
+        est_days, reason = simulate_days_to_jail_strict(
+            bits, clauses, 
+            stock_id=code, 
+            target_date=target_trade_date_obj, 
+            jail_map=jail_map,
+            enable_safe_filter=False
+        )
         
+        latest_ids = parse_clause_ids_strict(clauses[-1] if clauses else "")
+        is_special_risk = is_special_risk_day(latest_ids)
+        is_clause_13 = False
+        for c in clauses:
+            if 13 in parse_clause_ids_strict(c):
+                is_clause_13 = True
+                break
+
+        est_days_int = 99
+        est_days_display = "X"
+        reason_display = ""
+
+        if reason == "X":
+            est_days_int = 99
+            est_days_display = "X"
+            if is_special_risk:
+                reason_display = "籌碼異常(人工審核風險)"
+                if is_clause_13: reason_display += " + 刑期可能延長"
+        elif est_days == 0:
+            est_days_int = 0
+            est_days_display = "0"
+            reason_display = reason
+        else:
+            est_days_int = int(est_days)
+            est_days_display = str(est_days_int)
+            reason_display = reason
+            if is_special_risk:
+                reason_display += " | ⚠️留意人工處置風險"
+            if is_clause_13:
+                reason_display += " (若進處置將關12天)"
+
         hist = fetch_history_data(ticker_code)
         if hist.empty:
             alt_s = '.TWO' if suffix=='.TW' else '.TW'
@@ -874,11 +920,12 @@ def main():
 
         fund = fetch_stock_fundamental(code, ticker_code, precise_db)
         
-        dt_today, dt_avg6 = 0.0, 0.0
-        if IS_NIGHT_RUN:
+        # ✅ 當沖率抓取判斷：只有過了 21:00 才抓，否則給 None
+        dt_today, dt_avg6 = None, None
+        if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
-        risk = calculate_full_risk(code, hist, fund, 99 if est_days==99 else int(est_days), dt_today, dt_avg6)
+        risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
 
         # streak
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
@@ -889,7 +936,6 @@ def main():
             
         status_30 = "".join(map(str, valid_bits)).zfill(30)
         
-        # ✅ [修正] 處理 None/NaN 轉空白，保留 0/-1/999，並修正 99 顯示為 X
         def safe(v):
             if v is None: return ""
             try: 
@@ -897,13 +943,10 @@ def main():
             except: pass
             return str(v)
 
-        # ✅ [修正] 顯示邏輯：若 est_days 為 99 則顯示 X
-        est_days_display = "X" if est_days == 99 else safe(est_days)
-
         row = [
             f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
             stock_calendar[-1].strftime("%Y-%m-%d") if stock_calendar else "",
-            f"'{status_30}", f"'{status_30[-10:]}", est_days_display, safe(reason),
+            f"'{status_30}", f"'{status_30[-10:]}", est_days_display, safe(reason_display),
             safe(risk['risk_level']), safe(risk['trigger_msg']),
             safe(risk['curr_price']), safe(risk['limit_price']), safe(risk['gap_pct']),
             safe(risk['curr_vol']), safe(risk['limit_vol']), safe(risk['turnover_val']),
