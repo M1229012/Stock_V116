@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - TPEx 失敗防呆修正)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 穩定性修正 Final)
 修正重點：
-1. [防呆] get_daily_data: 若 TPEx 抓取失敗且無其他資料，回傳 None (而非空串列)。
-2. [回補] backfill_daily_logs: 收到 None 時跳過該日處理，不寫入狀態表，確保下次能回補。
-3. [保留] 包含所有先前修正 (Warm-up, 17:30時序, 21:00當沖, T-2修復)。
+1. [Jail] get_jail_map: TWSE 改用動態欄位索引解析，避免證交所欄位順序變動導致抓錯。
+2. [Log] main: 讀取歷史 Log 時強制將日期標準化為 YYYY-MM-DD，解決 Google Sheets 格式混亂問題。
+3. [保留] 包含所有先前修正 (TPEx Warm-up/Retry, 17:30時序, 21:00當沖, T-2修復)。
 """
 
 import os
@@ -48,12 +48,12 @@ PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
 
-# ✅ [修正] 時間門檻與布林標記
+# 時間門檻
 SAFE_CRAWL_TIME = dt_time(17, 30)        # 其他資訊（注意股/統計）固定 17:30 後跑
 DAYTRADE_PUBLISH_TIME = dt_time(21, 0)   # 當沖率 21:00 後才抓
 SAFE_MARKET_OPEN_CHECK = dt_time(16, 30) # 用於判斷日曆是否該有今天
 
-IS_NIGHT_RUN = TARGET_DATE.hour >= 20 # 保留舊變數兼容，主要邏輯改用下方兩個
+IS_NIGHT_RUN = TARGET_DATE.hour >= 20
 IS_AFTER_SAFE = TARGET_DATE.time() >= SAFE_CRAWL_TIME
 IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
@@ -73,7 +73,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Fail-Safe Logic)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Stability & Date Format)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -329,25 +329,40 @@ def get_jail_map(start_date_obj, end_date_obj):
     s_str = start_date_obj.strftime("%Y%m%d")
     e_str = end_date_obj.strftime("%Y%m%d")
 
+    # ✅ TWSE 處置名單：改用動態欄位解析
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish", params={"startDate": s_str, "endDate": e_str, "response": "json"}, headers=headers, timeout=10)
         j = r.json()
         if isinstance(j.get("tables"), list) and j["tables"]:
-            data_rows = j["tables"][0].get("data", [])
+            t0 = j["tables"][0]
+            fields = t0.get("fields", []) or []
+            data_rows = t0.get("data", []) or []
+
+            def find_idx(keys):
+                for i, f in enumerate(fields):
+                    fs = str(f)
+                    if any(k in fs for k in keys): return i
+                return None
+
+            idx_code = find_idx(["證券代號", "代號"])
+            idx_period = find_idx(["處置起迄時間", "處置期間", "起迄", "起迄時間"])
+
             for row in data_rows:
                 try:
-                    c = str(row[2]).strip()
-                    s, e = parse_jail_period(str(row[6]))
+                    c = str(row[idx_code]).strip() if idx_code is not None else str(row[2]).strip()
+                    p = str(row[idx_period]).strip() if idx_period is not None else str(row[6]).strip()
+                    
+                    s, e = parse_jail_period(p)
                     if s and e: jail_map.setdefault(c, []).append((s, e))
                 except: continue
     except: pass
 
+    # TPEx 處置名單
     try:
         r = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information", timeout=10)
         for item in r.json():
             try:
-                # ✅ [修正] 增加四碼檢查
                 c = str(item.get("SecuritiesCompanyCode", "")).strip()
                 if not (c.isdigit() and len(c)==4): continue
 
@@ -399,14 +414,13 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
     if jail_map and stock_id in jail_map: last_jail_end = jail_map[stock_id][-1][1]
     picked = []
     for d in reversed(cal_dates):
-        if d <= last_jail_end: break
+        if d <= last_jail_end: break # 剛出關前全部不要
         if is_excluded(stock_id, d, exclude_map): continue
         if jail_map and is_in_jail(stock_id, d, jail_map): continue
         picked.append(d)
         if len(picked) >= n: break
     return list(reversed(picked))
 
-# ✅ [新增] 獨立 TWSE 爬蟲函式
 def fetch_twse_attention_rows(date_obj, date_str):
     date_str_nodash = date_obj.strftime("%Y%m%d")
     rows = []
@@ -427,7 +441,6 @@ def fetch_twse_attention_rows(date_obj, date_str):
     except: pass
     return rows
 
-# ✅ [新增] 獨立 TPEx 爬蟲函式 (Final 1223 強力版 + Warm-up + Debug Info + 回傳 None)
 def fetch_tpex_attention_rows(date_obj, date_str):
     roc_date = f"{date_obj.year - 1911}/{date_obj.month:02d}/{date_obj.day:02d}"
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/attention"
@@ -438,12 +451,11 @@ def fetch_tpex_attention_rows(date_obj, date_str):
         "Origin": "https://www.tpex.org.tw",
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest", # ✅ 新增
+        "X-Requested-With": "XMLHttpRequest",
     }
     payload = {"date": roc_date, "response": "json"}
 
     s = requests.Session()
-    # ✅ warm-up：先打一次首頁拿 cookie
     try:
         s.get("https://www.tpex.org.tw/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     except:
@@ -458,7 +470,6 @@ def fetch_tpex_attention_rows(date_obj, date_str):
                 time.sleep(0.6 + random.random())
                 continue
 
-            # ✅ 嘗試解析 JSON，失敗時印出 HTML 片段以便除錯
             try:
                 res = r.json()
             except Exception as e:
@@ -501,9 +512,8 @@ def fetch_tpex_attention_rows(date_obj, date_str):
             time.sleep(0.6 + random.random())
 
     print("❌ TPEx attention failed after retries.")
-    return None # ✅ 失敗回傳 None
+    return None
 
-# ✅ [修正] get_daily_data 改為整合呼叫 & 錯誤處理
 def get_daily_data(date_obj):
     date_str = date_obj.strftime("%Y-%m-%d")
     rows = []
@@ -519,7 +529,6 @@ def get_daily_data(date_obj):
     else:
         rows.extend(tpex_rows)
     
-    # ✅ 關鍵：兩邊都沒資料且 TPEx 失敗 → 回 None（不要當成 0 檔）
     if not rows and tpex_failed:
         return None
 
@@ -534,7 +543,6 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     key_to_row, status_cnt = load_status_index(ws_status)
     status_is_new = (len(status_cnt) == 0)
 
-    # 註解掉：不使用每日紀錄回填狀態表，由(D)負責
     # if not status_is_new: ...
 
     key_to_row, status_cnt = load_status_index(ws_status)
@@ -550,7 +558,6 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     for d in dates_to_check:
         d_str = d.strftime("%Y-%m-%d")
         
-        # ✅ 使用 SAFE_CRAWL_TIME (17:30) 判斷今日是否已過公告時間
         if d == TARGET_DATE.date() and TARGET_DATE.time() < SAFE_CRAWL_TIME: continue
 
         log_cnt = int(date_counts.get(d_str, 0))
@@ -566,7 +573,6 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
 
         data = get_daily_data(d)
         
-        # ✅ 修正：若回傳 None 代表抓取失敗，跳過不更新狀態
         if data is None:
             print(f"⚠️ {d_str} TPEx 抓取失敗(None)，本輪跳過狀態更新，留待下次回補")
             continue
@@ -633,7 +639,6 @@ def get_official_trading_calendar(days=60):
 
     return dates[-days:]
 
-# ✅ [修正] 抓不到資料時回傳 None (而非 0.0)，以便後續判斷為 Pending
 def get_daytrade_stats_finmind(stock_id, target_date_str):
     end = target_date_str
     start = (datetime.strptime(target_date_str, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
@@ -703,7 +708,6 @@ def fetch_stock_fundamental(stock_id, ticker_code, precise_db):
 def calc_pct(curr, ref):
     return ((curr - ref) / ref) * 100 if ref != 0 else 0
 
-# ✅ [修正] 若當沖率為 None，只標記 Pending，不觸發 triggers，且不視為高風險
 def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt_avg6_pct):
     res = {'risk_level': '低', 'trigger_msg': '', 'curr_price': 0, 'limit_price': 0, 'gap_pct': 999.0, 'curr_vol': 0, 'limit_vol': 0, 'turnover_val': 0, 'turnover_rate': 0, 'pe': fund_data.get('pe', 0), 'pb': fund_data.get('pb', 0), 'day_trade_pct': dt_today_pct, 'is_triggered': False}
     if hist_df.empty or len(hist_df) < 7:
@@ -919,13 +923,16 @@ def main():
     df_log = pd.DataFrame(log_data)
     if not df_log.empty:
         df_log['代號'] = df_log['代號'].astype(str).str.strip().str.replace("'", "")
-        df_log['日期'] = df_log['日期'].astype(str).str.strip()
+        # ✅ [修正] 強制日期標準化 (YYYY-MM-DD)，解決 Google Sheets 格式混亂問題
+        df_log['日期'] = pd.to_datetime(df_log['日期'], errors='coerce').dt.strftime("%Y-%m-%d")
+        df_log = df_log[df_log['日期'].notna()]
 
     clause_map = {}
     for _, r in df_log.iterrows():
         key = (str(r['代號']), str(r['日期']))
         clause_map[key] = merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
+    # ✅ [修正] 處置名單與掃描區間統一調整為 90 天
     jail_map = get_jail_map(target_trade_date_obj - timedelta(days=90), target_trade_date_obj)
     exclude_map = build_exclude_map(cal_dates, jail_map)
 
@@ -956,6 +963,7 @@ def main():
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
 
+        # ✅ [修正] 強制 enable_safe_filter=False (剛出關不被濾掉)
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses, 
             stock_id=code, 
