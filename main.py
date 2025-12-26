@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - T-2 回朔 Bug 修復)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - TPEx 失敗防呆修正)
 修正重點：
-1. main(): 修正回朔邏輯。只有當 cal_dates[-1] 確實為今日，且時間早於 17:30 時，才退回 T-1。
-   避免在早上 (日曆尚未包含今日) 執行時誤退至 T-2。
+1. [防呆] get_daily_data: 若 TPEx 抓取失敗且無其他資料，回傳 None (而非空串列)。
+2. [回補] backfill_daily_logs: 收到 None 時跳過該日處理，不寫入狀態表，確保下次能回補。
+3. [保留] 包含所有先前修正 (Warm-up, 17:30時序, 21:00當沖, T-2修復)。
 """
 
 import os
@@ -14,6 +15,7 @@ import numpy as np
 import requests
 import re
 import time
+import random
 import gspread
 import logging
 from google.oauth2.service_account import Credentials
@@ -71,7 +73,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Date Rollback Logic)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Fail-Safe Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -345,7 +347,10 @@ def get_jail_map(start_date_obj, end_date_obj):
         r = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information", timeout=10)
         for item in r.json():
             try:
+                # ✅ [修正] 增加四碼檢查
                 c = str(item.get("SecuritiesCompanyCode", "")).strip()
+                if not (c.isdigit() and len(c)==4): continue
+
                 s, e = parse_jail_period(str(item.get("DispositionPeriod", "")).strip())
                 if s and e and e >= start_date_obj and s <= end_date_obj:
                     jail_map.setdefault(c, []).append((s, e))
@@ -401,12 +406,10 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
         if len(picked) >= n: break
     return list(reversed(picked))
 
-def get_daily_data(date_obj):
+# ✅ [新增] 獨立 TWSE 爬蟲函式
+def fetch_twse_attention_rows(date_obj, date_str):
     date_str_nodash = date_obj.strftime("%Y%m%d")
-    date_str = date_obj.strftime("%Y-%m-%d")
     rows = []
-    print(f"📡 爬取公告 {date_str}...")
-
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/notice",
@@ -422,30 +425,104 @@ def get_daily_data(date_obj):
                         c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
                         rows.append({'日期': date_str, '市場': 'TWSE', '代號': code, '名稱': name, '觸犯條款': c_str})
     except: pass
+    return rows
 
-    try:
-        roc = f"{date_obj.year-1911}/{date_obj.month:02d}/{date_obj.day:02d}"
-        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.tpex.org.tw/'}
-        r = requests.post("https://www.tpex.org.tw/www/zh-tw/bulletin/attention", data={'date': roc, 'response': 'json'}, headers=headers, timeout=10)
-        if r.status_code == 200:
-            res = r.json()
-            target = []
-            if 'tables' in res and isinstance(res['tables'], list):
-                for t in res['tables']: target.extend(t.get('data', []))
-            elif 'data' in res: target = res['data']
-            
-            seen = set()
-            for i in target:
-                if len(i) > 5 and str(i[5]).strip() in [roc, date_str]:
-                    code = str(i[1]).strip(); name = str(i[2]).strip()
-                    if len(code)==4 and code.isdigit() and code not in seen:
-                        seen.add(code)
-                        raw = " ".join([str(x) for x in i])
-                        ids = parse_clause_ids_strict(raw)
-                        c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
-                        rows.append({'日期': date_str, '市場': 'TPEx', '代號': code, '名稱': name, '觸犯條款': c_str})
-    except: pass
+# ✅ [新增] 獨立 TPEx 爬蟲函式 (Final 1223 強力版 + Warm-up + Debug Info + 回傳 None)
+def fetch_tpex_attention_rows(date_obj, date_str):
+    roc_date = f"{date_obj.year - 1911}/{date_obj.month:02d}/{date_obj.day:02d}"
+    url = "https://www.tpex.org.tw/www/zh-tw/bulletin/attention"
     
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.tpex.org.tw/",
+        "Origin": "https://www.tpex.org.tw",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest", # ✅ 新增
+    }
+    payload = {"date": roc_date, "response": "json"}
+
+    s = requests.Session()
+    # ✅ warm-up：先打一次首頁拿 cookie
+    try:
+        s.get("https://www.tpex.org.tw/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+    except:
+        pass
+
+    for attempt in range(1, 4):
+        try:
+            r = s.post(url, data=payload, headers=headers, timeout=12)
+
+            if r.status_code != 200:
+                print(f"⚠️ TPEx attention HTTP {r.status_code} (attempt {attempt})")
+                time.sleep(0.6 + random.random())
+                continue
+
+            # ✅ 嘗試解析 JSON，失敗時印出 HTML 片段以便除錯
+            try:
+                res = r.json()
+            except Exception as e:
+                print(f"⚠️ TPEx decode JSON failed: {e}")
+                print(f"   Response excerpt: {r.text[:200]}")
+                time.sleep(0.6 + random.random())
+                continue
+
+            target = []
+            if "tables" in res:
+                for t in res["tables"]: target.extend(t.get("data", []))
+            elif "data" in res:
+                target = res["data"]
+
+            filtered_target = []
+            for row in target or []:
+                if len(row) > 5:
+                    row_date = str(row[5]).strip()
+                    if row_date == roc_date or row_date == date_str:
+                        filtered_target.append(row)
+
+            rows = []
+            for i in filtered_target:
+                code = str(i[1]).strip()
+                name = str(i[2]).strip()
+                if not (code.isdigit() and len(code) == 4): continue
+
+                raw_text = " ".join([str(x) for x in i])
+                ids = parse_clause_ids_strict(raw_text)
+                clause_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else raw_text
+
+                rows.append({
+                    "日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": clause_str
+                })
+            
+            return rows
+
+        except Exception as e:
+            print(f"⚠️ TPEx attention exception (attempt {attempt}): {e}")
+            time.sleep(0.6 + random.random())
+
+    print("❌ TPEx attention failed after retries.")
+    return None # ✅ 失敗回傳 None
+
+# ✅ [修正] get_daily_data 改為整合呼叫 & 錯誤處理
+def get_daily_data(date_obj):
+    date_str = date_obj.strftime("%Y-%m-%d")
+    rows = []
+    print(f"📡 爬取公告 {date_str}...")
+    
+    rows.extend(fetch_twse_attention_rows(date_obj, date_str))
+    
+    tpex_rows = fetch_tpex_attention_rows(date_obj, date_str)
+    tpex_failed = (tpex_rows is None)
+
+    if tpex_failed:
+        print("❌ TPEx 抓取失敗 (全部重試皆無回應)")
+    else:
+        rows.extend(tpex_rows)
+    
+    # ✅ 關鍵：兩邊都沒資料且 TPEx 失敗 → 回 None（不要當成 0 檔）
+    if not rows and tpex_failed:
+        return None
+
     if rows: print(f"✅ 抓到 {len(rows)} 檔")
     else: print(f"⚠️ 無資料")
     return rows
@@ -488,6 +565,12 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
         if not need_fetch: continue
 
         data = get_daily_data(d)
+        
+        # ✅ 修正：若回傳 None 代表抓取失敗，跳過不更新狀態
+        if data is None:
+            print(f"⚠️ {d_str} TPEx 抓取失敗(None)，本輪跳過狀態更新，留待下次回補")
+            continue
+
         official_cnt = len(data)
 
         for s in data:
