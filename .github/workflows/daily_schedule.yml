@@ -23,6 +23,10 @@ on:
     # 目的：補抓 21:00 公布的當沖數據，更新完整報表
     - cron: '15 13 * * 1-5'
 
+    # ✅ 第 3 跑 (保險)：台灣 22:15 (UTC 14:15)
+    # 目的：檢查前一次是否成功，若資料不全 (如 TPEx 延遲) 則自動補齊
+    - cron: '15 14 * * 1-5'
+
   workflow_dispatch: # 允許手動按按鈕測試
 
 jobs:
@@ -64,7 +68,7 @@ jobs:
         FinMind_2: ${{ secrets.FinMind_2 }}
         RUN_MODE: scheduled 
         TZ: Asia/Taipei
-        # ✅ 優化: 宣告標準 Google 憑證路徑 (讓 gspread/google-auth 自動抓取)
+        # ✅ 優化: 宣告標準 Google 憑證路徑
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
         python main.py
