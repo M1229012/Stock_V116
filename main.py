@@ -462,20 +462,13 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
     if jail_map and stock_id in jail_map and jail_map[stock_id]:
         last_jail_end = jail_map[stock_id][-1][1]
 
-    picked = []
-    for d in reversed(cal_dates):
-        # ✅ 剛出關前全部不要
-        if d <= last_jail_end:
-            break
-        if is_excluded(stock_id, d, exclude_map):
-            continue
-        if jail_map and is_in_jail(stock_id, d, jail_map):
-            continue
-        picked.append(d)
-        if len(picked) >= n:
-            break
+    # 修正邏輯：不應使用 continue 跳過處置日去湊滿 n 天。
+    # 正確做法是：取最後 n 天交易日的固定窗口，然後排除掉「最後一次處置結束日(含)」之前的日期。
+    # 窗口內若是處置日，則由 main 邏輯判斷 bit 為 0，而非往前遞補。
+    window = cal_dates[-n:] if len(cal_dates) >= n else cal_dates
+    picked = [d for d in window if d > last_jail_end]
 
-    return list(reversed(picked))
+    return picked
 
 # ============================
 # 🔥 每日公告爬蟲區 (TWSE / TPEx 分離 + Warm-up)
