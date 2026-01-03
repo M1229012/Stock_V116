@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度強化)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版)
 修正重點：
 1. [防呆] fetch_twse/tpex_attention_rows: 失敗時明確回傳 None (區分「無資料」與「抓失敗」)。
 2. [邏輯] get_daily_data: 任一市場抓取失敗即回傳 None，避免資料不全。
