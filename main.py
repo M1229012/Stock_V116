@@ -2,9 +2,9 @@
 """
 V116.18 台股注意股系統 (GitHub Action 部署優化版)
 修正重點：
-1. [代號] 修正 get_jail_map 的 Regex 提取邏輯，強制僅抓取 4 碼代號，防止匹配失效。
-2. [比對] 每日紀錄比對邏輯維持 .dt.date == d，確保日期匹配精準度。
-3. [防呆] update_disposition_database 維持 Upsert 與空表欄位補齊邏輯。
+1. [判定] 優化 last_jail_end 取得邏輯，排除未來才開始的處置區間，防止數據誤歸零。
+2. [歸零] 於 bits 產生階段落實歸零邏輯，處置結束日前的紀錄不計累積，但日期仍佔窗口。
+3. [窗口] get_last_n_non_jail_trade_dates 確保固定回傳最後 30 個交易日分母。
 """
 
 import os
@@ -184,7 +184,7 @@ def is_special_risk_day(ids):
     return any(9 <= x <= 14 for x in ids)
 
 # ============================
-# 🔥 處置資料庫更新模組 (具備 Upsert 歷史保留邏輯)
+# 🔥 處置資料庫更新模組 (Upsert 邏輯)
 # ============================
 def update_disposition_database(sh):
     print("🔒 正在執行處置(Jail)資料庫 Upsert 更新...")
@@ -192,7 +192,6 @@ def update_disposition_database(sh):
     new_stock_list = []
     now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 1. 抓取最新上市處置
     try:
         url_twse = "https://openapi.twse.com.tw/v1/announcement/punish"
         res = safe_get(url_twse, headers=headers)
@@ -210,7 +209,6 @@ def update_disposition_database(sh):
                     new_stock_list.append(['上市', code, name, format_roc_period(period_raw), measure, ds[0].strftime("%Y-%m-%d"), ds[-1].strftime("%Y-%m-%d"), now_str])
     except Exception as e: print(f"TWSE 抓取異常: {e}")
 
-    # 2. 抓取最新上櫃處置
     try:
         url_tpex = "https://www.tpex.org.tw/openapi/v1/tpex_disposal_information"
         res = safe_get(url_tpex, headers=headers)
@@ -229,40 +227,25 @@ def update_disposition_database(sh):
                     new_stock_list.append(['上櫃', code, clean_tpex_name(name), format_roc_period(period_raw), clean_tpex_measure(raw_content), ds[0].strftime("%Y-%m-%d"), ds[-1].strftime("%Y-%m-%d"), now_str])
     except Exception as e: print(f"TPEx 抓取異常: {e}")
 
-    # 3. 合併舊有歷史、去重並寫回
     try:
         ws = get_or_create_ws(sh, "處置有價證券紀錄", headers=JAIL_DB_HEADERS)
         existing_data = ws.get_all_records()
-        
         df_old = pd.DataFrame(existing_data)
-        if df_old.empty:
-            df_old = pd.DataFrame(columns=JAIL_DB_HEADERS)
-            
+        if df_old.empty: df_old = pd.DataFrame(columns=JAIL_DB_HEADERS)
         df_new = pd.DataFrame(new_stock_list, columns=JAIL_DB_HEADERS)
-        
-        # 合併與去重
         df_merged = pd.concat([df_old, df_new], ignore_index=True)
         df_merged = df_merged.drop_duplicates(subset=['市場', '代號', '西元起始', '西元結束'], keep='last')
-        
-        # 過濾歷史：保留結束日期在 90 個交易日內的資料 (轉 datetime 比較)
         temp_cal = get_official_trading_calendar(90)
         cutoff_date = temp_cal[0].strftime("%Y-%m-%d") if temp_cal else (get_today_date() - timedelta(days=130)).strftime("%Y-%m-%d")
-        
         df_merged["西元結束_dt"] = pd.to_datetime(df_merged["西元結束"], errors="coerce")
         cutoff_dt = pd.to_datetime(cutoff_date)
         df_merged = df_merged[df_merged["西元結束_dt"] >= cutoff_dt].drop(columns=["西元結束_dt"])
-        
-        # 排序
         df_merged = df_merged.sort_values(by=['西元結束', '代號'], ascending=[False, True])
         final_list = df_merged.values.tolist()
-
-        ws.clear()
-        ws.append_row(JAIL_DB_HEADERS, value_input_option='USER_ENTERED')
-        if final_list:
-            ws.append_rows(final_list, value_input_option='USER_ENTERED')
+        ws.clear(); ws.append_row(JAIL_DB_HEADERS, value_input_option='USER_ENTERED')
+        if final_list: ws.append_rows(final_list, value_input_option='USER_ENTERED')
         print(f"✅ 處置庫 Upsert 完成：共保留 {len(final_list)} 筆歷史紀錄")
-    except Exception as e:
-        print(f"❌ 處置庫更新失敗: {e}")
+    except Exception as e: print(f"❌ 處置庫更新失敗: {e}")
 
 # ============================
 # 🛠️ 核心分析功能
@@ -286,10 +269,8 @@ def connect_google_sheets():
         if not os.path.exists("service_key.json"):
             key_json = os.getenv('GOOGLE_SHEETS_KEY')
             if key_json:
-                with open("service_key.json", "w") as f:
-                    f.write(key_json)
-            else:
-                return None, None
+                with open("service_key.json", "w") as f: f.write(key_json)
+            else: return None, None
         gc = gspread.service_account(filename="service_key.json")
         sh = gc.open(SHEET_NAME)
         return sh, None
@@ -332,11 +313,9 @@ def load_jail_map_from_sheet(sh, sheet_name="處置有價證券紀錄"):
             s = str(r.get("西元起始", "")).strip()
             e = str(r.get("西元結束", "")).strip()
             if not (code.isdigit() and len(code) == 4 and s and e): continue
-            
             ts_s = pd.to_datetime(s, errors="coerce")
             ts_e = pd.to_datetime(e, errors="coerce")
             if pd.isna(ts_s) or pd.isna(ts_e): continue
-            
             sd, ed = ts_s.date(), ts_e.date()
             jail_map.setdefault(code, []).append((sd, ed))
         for k in list(jail_map.keys()):
@@ -355,11 +334,9 @@ def get_jail_map(start_date_obj, end_date_obj):
         j = safe_json(r)
         if j.get("tables"):
             for row in j["tables"][0].get("data", []):
-                # ✅ 修正：Regex 強制僅提取 4 碼代號，解決 is_in_jail 對不到的問題
                 code_match = re.search(r'(\d{4})', str(row[1]))
                 if not code_match: continue
                 code = code_match.group(1)
-                
                 ds = extract_dates_any(str(row[3]))
                 if len(ds) >= 2: jail_map.setdefault(code, []).append((ds[0], ds[-1]))
     except: pass
@@ -382,28 +359,10 @@ def is_in_jail(stock_id, target_date, jail_map):
         if s <= target_date <= e: return True
     return False
 
-def build_exclude_map(cal_dates, jail_map):
-    exclude_map = {}
-    if not jail_map: return exclude_map
-    for code, periods in jail_map.items():
-        s = set()
-        for start, end in periods:
-            idx = -1
-            try: idx = cal_dates.index(start)
-            except: pass
-            if idx > 0: s.add(cal_dates[idx-1]) 
-            for d in cal_dates:
-                if start <= d <= end: s.add(d)
-        exclude_map[code] = s
-    return exclude_map
-
 def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30):
-    last_jail_end = date(1900, 1, 1)
-    if jail_map and stock_id in jail_map:
-        last_jail_end = sorted([p[1] for p in jail_map[stock_id]])[-1]
+    # ✅ 窗口固定：最後 n 個交易日（包含處置期間）
     window = cal_dates[-n:] if len(cal_dates) >= n else cal_dates
-    picked = [d for d in window if d > last_jail_end]
-    return picked
+    return window
 
 def fetch_history_data(ticker_code):
     try:
@@ -442,13 +401,11 @@ def main():
         df_log['日期'] = pd.to_datetime(df_log['日期'], errors='coerce')
         df_log = df_log.dropna(subset=['日期'])
 
-    # 處置判定優先用 Sheet，沒資料才爬網
     jail_map = load_jail_map_from_sheet(sh)
     if not jail_map:
         start_obj = cal_dates[-90] if len(cal_dates) >= 90 else cal_dates[0]
         jail_map = get_jail_map(start_obj, target_trade_date_obj)
     
-    exclude_map = build_exclude_map(cal_dates, jail_map)
     cutoff = pd.Timestamp(cal_dates[-90])
     target_stocks = []
     if not df_log.empty:
@@ -458,17 +415,36 @@ def main():
     for code in target_stocks:
         code = str(code).strip()
         name = df_log[df_log['代號']==code]['名稱'].iloc[-1] if not df_log[df_log['代號']==code].empty else "未知"
-        stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, exclude_map, 30)
+        stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, n=30)
         
-        bits = []; clauses = []
+        # ✅ 修正：改進 last_jail_end 判定，防止未來處置區間干擾歸零邏輯
+        last_jail_end = None
+        if jail_map and code in jail_map:
+            ended = [e for (s, e) in jail_map[code] if s <= target_trade_date_obj]
+            last_jail_end = max(ended) if ended else None
+
+        bits = []
+        clauses = []
+
         for d in stock_calendar:
             c = ""
             if not df_log.empty:
-                matches = df_log[(df_log['代號']==code) & (df_log['日期'].dt.date==d)]
-                if not matches.empty: c = "、".join(matches['觸犯條款'].tolist())
-            if (code in exclude_map) and (d in exclude_map[code]): bits.append(0); clauses.append(c)
-            elif c: bits.append(1); clauses.append(c)
-            else: bits.append(0); clauses.append("")
+                matches = df_log[(df_log['代號'] == code) & (df_log['日期'].dt.date == d)]
+                if not matches.empty:
+                    c = "、".join(matches['觸犯條款'].tolist())
+
+            # ✅ 核心規則：處置期間與之前，一律歸零計數（日期仍佔窗口位置）
+            if last_jail_end and d <= last_jail_end:
+                bits.append(0)
+                clauses.append("")   
+                continue
+
+            if c:
+                bits.append(1)
+                clauses.append(c)
+            else:
+                bits.append(0)
+                clauses.append("")
 
         v_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         v30 = sum(v_bits)
