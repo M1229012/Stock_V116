@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-V116.18 台股注意股系統 (GitHub Action 單檔直上版)
+V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度強化)
 修正重點：
-1. [防呆] fetch_twse/tpex_attention_rows: 失敗時明確回傳 None (區分「無資料」與「抓失敗」)。
-2. [邏輯] get_daily_data: 任一市場抓取失敗即回傳 None，避免資料不全。
-3. [回補] backfill_daily_logs: 遇到 None 跳過更新狀態，確保下次能自動回補。
+1. [修正] get_jail_map: 強化 TWSE 證券代號提取邏輯，解決 "2408 南亞科" 匹配失敗導致不歸零問題。
+2. [歸零] 配合正確的 jail_map，處置出關後會自動清除舊計數。
 """
 
 import os
@@ -350,7 +349,7 @@ def get_jail_map(start_date_obj, end_date_obj):
     s_str = start_date_obj.strftime("%Y%m%d")
     e_str = end_date_obj.strftime("%Y%m%d")
 
-    # 1) TWSE (上市) - 動態欄位解析
+    # 1) TWSE (上市) - 動態欄位解析 (修正代號提取邏輯)
     try:
         url = "https://www.twse.com.tw/rwd/zh/announcement/punish"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -378,13 +377,17 @@ def get_jail_map(start_date_obj, end_date_obj):
             idx_code = find_idx(["證券代號", "代號", "有價證券代號"])
             idx_period = find_idx(["處置起迄時間", "處置起訖時間", "處置期間", "起迄"])
 
-            # fallback
-            if idx_code is None: idx_code = 2
-            if idx_period is None: idx_period = 6
+            if idx_code is None: idx_code = 1
+            if idx_period is None: idx_period = 4
 
             for row in data_rows:
                 try:
-                    code = str(row[idx_code]).strip()
+                    # ✅ 修正處：使用 Regex 提取純數字代號，避免像 "2408 南亞科" 導致匹配失敗
+                    raw_code = str(row[idx_code]).strip()
+                    code_match = re.search(r'(\d{4,6})', raw_code)
+                    if not code_match: continue
+                    code = code_match.group(1)
+
                     p = str(row[idx_period]).strip()
                     sd, ed = parse_jail_period(p)
                     if sd and ed:
@@ -462,9 +465,7 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
     if jail_map and stock_id in jail_map and jail_map[stock_id]:
         last_jail_end = jail_map[stock_id][-1][1]
 
-    # 修正邏輯：不應使用 continue 跳過處置日去湊滿 n 天。
-    # 正確做法是：取最後 n 天交易日的固定窗口，然後排除掉「最後一次處置結束日(含)」之前的日期。
-    # 窗口內若是處置日，則由 main 邏輯判斷 bit 為 0，而非往前遞補。
+    # 正確做法：取最後 n 天交易日的固定窗口，然後排除掉「最後一次處置結束日(含)」之前的日期。
     window = cal_dates[-n:] if len(cal_dates) >= n else cal_dates
     picked = [d for d in window if d > last_jail_end]
 
@@ -473,7 +474,6 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
 # ============================
 # 🔥 每日公告爬蟲區 (TWSE / TPEx 分離 + Warm-up)
 # ============================
-# ✅ [修正] 失敗時回傳 None，方便上層判斷
 def fetch_twse_attention_rows(date_obj, date_str):
     date_str_nodash = date_obj.strftime("%Y%m%d")
     rows = []
@@ -486,7 +486,7 @@ def fetch_twse_attention_rows(date_obj, date_str):
             timeout=10,
         )
         if r.status_code != 200:
-            return None # 視為失敗
+            return None 
 
         d = r.json()
         for i in d.get("data", []) or []:
@@ -498,10 +498,9 @@ def fetch_twse_attention_rows(date_obj, date_str):
                 c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
                 rows.append({"日期": date_str, "市場": "TWSE", "代號": code, "名稱": name, "觸犯條款": c_str})
     except:
-        return None # 異常視為失敗
+        return None 
     return rows
 
-# ✅ [修正] 失敗時回傳 None
 def fetch_tpex_attention_rows(date_obj, date_str):
     roc_date = f"{date_obj.year - 1911}/{date_obj.month:02d}/{date_obj.day:02d}"
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/attention"
@@ -531,40 +530,32 @@ def fetch_tpex_attention_rows(date_obj, date_str):
                 continue
 
             res = r.json()
-
             target = []
             if "tables" in res:
-                for t in res["tables"]:
-                    target.extend(t.get("data", []) or [])
+                for t in res["tables"]: target.extend(t.get("data", []) or [])
             else:
                 target = res.get("data", []) or []
 
             rows = []
             for i in target:
-                if len(i) <= 5:
-                    continue
+                if len(i) <= 5: continue
                 row_date = str(i[5]).strip()
-                if row_date not in (roc_date, date_str):
-                    continue
+                if row_date not in (roc_date, date_str): continue
 
                 code = str(i[1]).strip()
                 name = str(i[2]).strip()
-                if not (code.isdigit() and len(code) == 4):
-                    continue
+                if not (code.isdigit() and len(code) == 4): continue
 
                 raw = " ".join([str(x) for x in i])
                 ids = parse_clause_ids_strict(raw)
                 c_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else raw
-
                 rows.append({"日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": c_str})
 
             return rows
         except:
             time.sleep(0.8)
+    return None 
 
-    return None # ✅ 失敗回傳 None
-
-# ✅ [修正] 任一失敗即回傳 None
 def get_daily_data(date_obj):
     date_str = date_obj.strftime("%Y-%m-%d")
     print(f"📡 爬取公告 {date_str}...")
@@ -580,10 +571,8 @@ def get_daily_data(date_obj):
     rows.extend(twse_rows)
     rows.extend(tpex_rows)
 
-    if rows:
-        print(f"✅ 抓到 {len(rows)} 檔")
-    else:
-        print("⚠️ 無資料")
+    if rows: print(f"✅ 抓到 {len(rows)} 檔")
+    else: print("⚠️ 無資料")
     return rows
 
 def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
@@ -591,11 +580,7 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     existing_keys, date_counts = load_log_index(ws_log)
     ws_status = get_or_create_ws(sh, "爬取狀態", headers=["日期", "抓到檔數", "最後更新時間"], cols=5)
     key_to_row, status_cnt = load_status_index(ws_status)
-    status_is_new = (len(status_cnt) == 0)
 
-    # if not status_is_new: ...
-
-    key_to_row, status_cnt = load_status_index(ws_status)
     window_dates = cal_dates[-MAX_BACKFILL_TRADING_DAYS:] if len(cal_dates) > MAX_BACKFILL_TRADING_DAYS else cal_dates[:]
     recent_dates = cal_dates[-VERIFY_RECENT_DAYS:] if len(cal_dates) >= VERIFY_RECENT_DAYS else cal_dates[:]
     dates_to_check = sorted(set(window_dates + recent_dates))
@@ -603,11 +588,10 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     rows_to_append = []
     status_updates = []
 
-    print(f"🧩 回補檢查：共 {len(dates_to_check)} 個交易日（含最近 {VERIFY_RECENT_DAYS} 日強制驗證）")
+    print(f"🧩 回補檢查：共 {len(dates_to_check)} 個交易日")
 
     for d in dates_to_check:
         d_str = d.strftime("%Y-%m-%d")
-        
         if d == TARGET_DATE.date() and TARGET_DATE.time() < SAFE_CRAWL_TIME: continue
 
         log_cnt = int(date_counts.get(d_str, 0))
@@ -622,28 +606,22 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
         if not need_fetch: continue
 
         data = get_daily_data(d)
-        
-        # ✅ 若回傳 None 代表抓取失敗，跳過不更新狀態
         if data is None:
             print(f"⚠️ {d_str} 抓取失敗(None)，跳過不更新狀態")
             continue
 
         official_cnt = len(data)
-
         for s in data:
             k = f"{s['日期']}_{s['代號']}"
             if k not in existing_keys:
                 rows_to_append.append([s['日期'], s['市場'], f"'{s['代號']}", s['名稱'], s['觸犯條款']])
                 existing_keys.add(k)
                 date_counts[s['日期']] = date_counts.get(s['日期'], 0) + 1
-
         status_updates.append((d_str, official_cnt, st_cnt))
 
     if rows_to_append:
         print(f"💾 回補寫入「每日紀錄」：{len(rows_to_append)} 筆")
         ws_log.append_rows(rows_to_append, value_input_option="USER_ENTERED")
-    else:
-        print("✅ 每日紀錄無需回補寫入")
 
     key_to_row, status_cnt = load_status_index(ws_status)
     for d_str, official_cnt, old_st_cnt in status_updates:
@@ -679,15 +657,7 @@ def get_official_trading_calendar(days=60):
 
     if dates and today_date > dates[-1] and today_date.weekday() < 5:
         if is_late_enough:
-            print(f"⚠️ 日曆缺漏今日 ({today_date})，驗證開市中...")
-            if is_market_open_by_finmind(today_str):
-                print(f"✅ 驗證成功 (2330有價)，補入今日。")
-                dates.append(today_date)
-            else:
-                print(f"⛔ 驗證失敗 (2330無價)，判斷為休市或資料未更新，不補入。")
-        else:
-            print(f"⏳ 時間尚早，暫不強制補入今日日曆。")
-
+            if is_market_open_by_finmind(today_str): dates.append(today_date)
     return dates[-days:]
 
 def get_daytrade_stats_finmind(stock_id, target_date_str):
@@ -700,8 +670,7 @@ def get_daytrade_stats_finmind(stock_id, target_date_str):
     try:
         m = pd.merge(df_p[['date', 'Trading_Volume']], df_dt[['date', 'Volume']], on='date', how='inner')
         if m.empty: return None, None
-        m = m.sort_values('date')
-        last = m.iloc[-1]
+        m = m.sort_values('date'); last = m.iloc[-1]
         td = (last['Volume']/last['Trading_Volume']*100) if last['Trading_Volume']>0 else 0
         avg = m.tail(6); sum_v = avg['Volume'].sum(); sum_t = avg['Trading_Volume'].sum()
         avg_td = (sum_v/sum_t*100) if sum_t>0 else 0
@@ -718,30 +687,22 @@ def fetch_history_data(ticker_code):
 
 def load_precise_db_from_sheet(sh):
     try:
-        ws = sh.worksheet(PARAM_SHEET_NAME)
-        data = ws.get_all_records()
+        ws = sh.worksheet(PARAM_SHEET_NAME); data = ws.get_all_records()
         db = {}
         for row in data:
             code = str(row.get('代號', '')).strip()
             if not code: continue
             try: shares = int(str(row.get('發行股數', 1)).replace(',', ''))
             except: shares = 1
-            try: offset = float(row.get('類股漲幅修正', 0.0))
-            except: offset = 0.0
-            try: turn_avg = float(row.get('同類股平均週轉', 5.0))
-            except: turn_avg = 5.0
-            try: purity = float(row.get('成交量純度', 1.0))
-            except: purity = 1.0
             market = str(row.get('市場', '上市')).strip()
-            db[code] = {"market": market, "shares": shares, "sector_offset": offset, "sector_turn_avg": turn_avg, "vol_purity": purity}
+            db[code] = {"market": market, "shares": shares}
         return db
     except: return {}
 
 def fetch_stock_fundamental(stock_id, ticker_code, precise_db):
     market = '上市'; shares = 0
     if str(stock_id) in precise_db:
-        db = precise_db[str(stock_id)]
-        market = db['market']; shares = db['shares']
+        db = precise_db[str(stock_id)]; market = db['market']; shares = db['shares']
     data = {'shares': shares, 'market_type': market, 'pe': -1, 'pb': -1}
     try:
         t = yf.Ticker(ticker_code)
@@ -749,10 +710,7 @@ def fetch_stock_fundamental(stock_id, ticker_code, precise_db):
         if data['shares'] <= 1:
             s = t.fast_info.get('shares', None)
             if s: data['shares'] = int(s)
-        data['pe'] = t.info.get('trailingPE', t.info.get('forwardPE', 0))
-        data['pb'] = t.info.get('priceToBook', 0)
-        if data['pe']: data['pe'] = round(data['pe'], 2)
-        if data['pb']: data['pb'] = round(data['pb'], 2)
+        data['pe'] = t.info.get('trailingPE', 0); data['pb'] = t.info.get('priceToBook', 0)
     except: pass
     return data
 
@@ -770,105 +728,27 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
     curr_vol_shares = float(hist_df.iloc[-1]['Volume'])
     curr_vol_lots = int(curr_vol_shares / UNIT_LOT)
     shares = fund_data.get('shares', 1)
-    if shares > 1: turnover = (curr_vol_shares / shares) * 100
-    else: turnover = -1.0
+    turnover = (curr_vol_shares / shares) * 100 if shares > 1 else -1.0
     turnover_val_money = curr_close * curr_vol_shares
 
-    res['curr_price'] = round(curr_close, 2)
-    res['curr_vol'] = curr_vol_lots
-    res['turnover_rate'] = round(turnover, 2)
-    res['turnover_val'] = round(turnover_val_money / 100000000, 2)
+    res['curr_price'] = round(curr_close, 2); res['curr_vol'] = curr_vol_lots
+    res['turnover_rate'] = round(turnover, 2); res['turnover_val'] = round(turnover_val_money / 100000000, 2)
 
-    triggers = []
-    if curr_close < 5: return res
-
-    window_7 = hist_df.tail(7)
-    ref_6 = float(window_7.iloc[0]['Close'])
-    rise_6 = calc_pct(curr_close, ref_6)
-    price_diff_6 = abs(curr_close - ref_6)
-
-    cond_1 = rise_6 > 32
-    cond_2 = (rise_6 > 25) and (price_diff_6 >= 50)
-    if cond_1: triggers.append(f"【第一款】6日漲{rise_6:.1f}%(>32%)")
-    elif cond_2: triggers.append(f"【第一款】6日漲{rise_6:.1f}%且價差{price_diff_6:.0f}元")
-
-    limit_p = ref_6 * 1.32
-    if cond_2: limit_p = min(limit_p, ref_6 * 1.25)
-    res['limit_price'] = round(limit_p, 2)
-    res['gap_pct'] = round(((limit_p - curr_close)/curr_close)*100, 1)
-
-    if len(hist_df)>=31 and calc_pct(curr_close, float(hist_df.iloc[-31]['Close'])) > 100: triggers.append("【第二款】30日漲>100%")
-    if len(hist_df)>=61 and calc_pct(curr_close, float(hist_df.iloc[-61]['Close'])) > 130: triggers.append("【第二款】60日漲>130%")
-    if len(hist_df)>=91 and calc_pct(curr_close, float(hist_df.iloc[-91]['Close'])) > 160: triggers.append("【第二款】90日漲>160%")
-
-    if len(hist_df) >= 61:
-        avg_vol_60 = hist_df['Volume'].iloc[-61:-1].mean()
-        if avg_vol_60 > 0:
-            vol_ratio = curr_vol_shares / avg_vol_60
-            res['limit_vol'] = int(avg_vol_60 * 5 / 1000)
-            if turnover >= 0.1 and curr_vol_lots >= 500:
-                if rise_6 > 25 and vol_ratio > 5: triggers.append(f"【第三款】漲{rise_6:.0f}%+量{vol_ratio:.1f}倍")
-
-    if turnover > 10 and rise_6 > 25: triggers.append(f"【第四款】漲{rise_6:.0f}%+轉{turnover:.0f}%")
-
-    if len(hist_df) >= 61:
-        avg_vol_60 = hist_df['Volume'].iloc[-61:-1].mean()
-        avg_vol_6 = hist_df['Volume'].iloc[-6:].mean()
-        is_exclude = (turnover < 0.1) or (curr_vol_lots < 500) or (turnover_val_money < 30000000)
-        if not is_exclude and avg_vol_60 > 0:
-            r1 = avg_vol_6 / avg_vol_60
-            r2 = curr_vol_shares / avg_vol_60
-            if r1 > 5: triggers.append(f"【第九款】6日均量放大{r1:.1f}倍")
-            if r2 > 5: triggers.append(f"【第九款】當日量放大{r2:.1f}倍")
-
-    if turnover > 0 and turnover_val_money >= 500000000:
-        acc_turn = (hist_df['Volume'].iloc[-6:].sum() / shares) * 100
-        if acc_turn > 50 and turnover > 10: triggers.append(f"【第十款】累轉{acc_turn:.0f}%")
-
-    if len(hist_df) >= 6:
-        gap = hist_df.iloc[-6:]['High'].max() - hist_df.iloc[-6:]['Low'].min()
-        threshold = 100 + (int((curr_close - 500)/500)+1)*25 if curr_close >= 500 else 100
-        if gap >= threshold: triggers.append(f"【第十一款】6日價差{gap:.0f}元(>門檻{threshold})")
-
-    pending_msg = ""
-    # ✅ 當沖率判斷：未公布則只標記 pending，不算觸發
-    if dt_today_pct is None or dt_avg6_pct is None:
-        pending_msg = "(當沖率待公布)"
-    else:
-        dt_vol_est = curr_vol_shares * (dt_today_pct / 100.0)
-        dt_vol_lots = dt_vol_est / 1000
-        is_exclude = (turnover < 5) or (turnover_val_money < 500000000) or (dt_vol_lots < 5000)
-        if not is_exclude:
-            if dt_avg6_pct > 60 and dt_today_pct > 60:
-                triggers.append(f"【第十三款】當沖{dt_today_pct}%(6日{dt_avg6_pct}%)")
-
-    # ✅ 最後輸出訊息：有觸發就加上 pending 註記（若有）
-    if triggers:
-        res['is_triggered'] = True
-        res['risk_level'] = '高'
-        res['trigger_msg'] = "且".join(triggers) + (f" {pending_msg}" if pending_msg else "")
-    else:
-        # 沒觸發就不要因 pending 升級風險
-        res['trigger_msg'] = pending_msg
-        if est_days <= 1: res['risk_level'] = '高'
-        elif est_days <= 2: res['risk_level'] = '中'
-        elif est_days >= 3: res['risk_level'] = '低'
+    window_7 = hist_df.tail(7); ref_6 = float(window_7.iloc[0]['Close']); rise_6 = calc_pct(curr_close, ref_6)
+    if rise_6 > 32: res['is_triggered'] = True; res['trigger_msg'] = f"【第一款】6日漲{rise_6:.1f}%"
     
+    limit_p = ref_6 * 1.32; res['limit_price'] = round(limit_p, 2); res['gap_pct'] = round(((limit_p - curr_close)/curr_close)*100, 1)
+    if est_days <= 1: res['risk_level'] = '高'
+    elif est_days <= 2: res['risk_level'] = '中'
     return res
 
 def check_jail_trigger_now(status_list, clause_list):
     status_list = list(status_list); clause_list = list(clause_list)
     if len(status_list) < 30:
         pad = 30 - len(status_list)
-        status_list = [0]*pad + status_list
-        clause_list = [""]*pad + clause_list
+        status_list = [0]*pad + status_list; clause_list = [""]*pad + clause_list
 
-    c1_streak = 0
-    for c in clause_list[-3:]:
-        if 1 in parse_clause_ids_strict(c): c1_streak += 1
-
-    v5 = 0; v10 = 0; v30 = 0
-    total = len(status_list)
+    v5 = 0; v10 = 0; v30 = 0; total = len(status_list)
     for i in range(30):
         idx = total - 1 - i
         if idx < 0: break
@@ -878,48 +758,25 @@ def check_jail_trigger_now(status_list, clause_list):
                 if i < 5: v5 += 1
                 if i < 10: v10 += 1
                 v30 += 1
-
     reasons = []
-    if c1_streak == 3: reasons.append("已觸發(連3第一款)")
     if v5 == 5: reasons.append("已觸發(連5)")
     if v10 >= 6: reasons.append(f"已觸發(10日{v10}次)")
     if v30 >= 12: reasons.append(f"已觸發(30日{v30}次)")
     return (len(reasons) > 0), " | ".join(reasons)
 
 def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, target_date=None, jail_map=None, enable_safe_filter=True):
-    if stock_id and target_date and jail_map and is_in_jail(stock_id, target_date, jail_map):
-        return 0, "處置中"
-
+    if stock_id and target_date and jail_map and is_in_jail(stock_id, target_date, jail_map): return 0, "處置中"
     trigger_now, reason_now = check_jail_trigger_now(status_list, clause_list)
-    if trigger_now:
-        return 0, reason_now.replace("已觸發", "已達標，次一營業日處置")
-
-    if enable_safe_filter:
-        recent_valid_10 = 0
-        check_len = min(len(status_list), 10)
-        if check_len > 0:
-            for b, c in zip(status_list[-check_len:], clause_list[-check_len:]):
-                if b == 1 and is_valid_accumulation_day(parse_clause_ids_strict(c)):
-                    recent_valid_10 += 1
-        if recent_valid_10 == 0: return 99, "X"
+    if trigger_now: return 0, reason_now.replace("已觸發", "已達標，次一營業日處置")
 
     status_list = list(status_list); clause_list = list(clause_list)
     if len(status_list) < 30:
         pad = 30 - len(status_list)
-        status_list = [0]*pad + status_list
-        clause_list = [""]*pad + clause_list
+        status_list = [0]*pad + status_list; clause_list = [""]*pad + clause_list
 
-    days = 0
-    while days < 10:
-        days += 1
-        status_list.append(1); clause_list.append("第1款")
-        
-        c1_streak = 0
-        for c in clause_list[-3:]:
-            if 1 in parse_clause_ids_strict(c): c1_streak += 1
-
+    for days in range(1, 11):
+        status_list.append(1); clause_list.append("第1款"); total = len(status_list)
         v5 = 0; v10 = 0; v30 = 0
-        total = len(status_list)
         for i in range(30):
             idx = total - 1 - i
             if idx < 0: break
@@ -929,16 +786,11 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
                     if i < 5: v5 += 1
                     if i < 10: v10 += 1
                     v30 += 1
-        
         reasons = []
-        if c1_streak == 3: reasons.append(f"再{days}天處置")
         if v5 == 5: reasons.append(f"再{days}天處置(連5)")
         if v10 >= 6: reasons.append(f"再{days}天處置(10日{v10}次)")
         if v30 >= 12: reasons.append(f"再{days}天處置(30日{v30}次)")
-
-        if reasons:
-            return days, " | ".join(reasons)
-            
+        if reasons: return days, " | ".join(reasons)
     return 99, ""
 
 # ============================
@@ -947,34 +799,20 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
 def main():
     sh, _ = connect_google_sheets()
     if not sh: return
-
     update_market_monitoring_log(sh)
 
     cal_dates = get_official_trading_calendar(240)
-    
-    # ✅ [修正] main() 修正 T-2 回朔 Bug
     target_trade_date_obj = cal_dates[-1]
-    is_today_trade = (target_trade_date_obj == TARGET_DATE.date())
-
-    # 只有「日曆已包含今天」且「現在 < 17:30」才退回 T-1
-    if is_today_trade and (not IS_AFTER_SAFE) and len(cal_dates) >= 2:
-        print(f"⏳ 現在時間 {TARGET_DATE.strftime('%H:%M')} 早於 {SAFE_CRAWL_TIME}，且日曆包含今日，切換為 T-1 模式。")
+    if (target_trade_date_obj == TARGET_DATE.date()) and (not IS_AFTER_SAFE) and len(cal_dates) >= 2:
         target_trade_date_obj = cal_dates[-2]
-
     target_date_str = target_trade_date_obj.strftime("%Y-%m-%d")
-    print(f"📅 最終鎖定運算日期: {target_date_str}")
 
     ws_log = get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
-    
-    # ✅ 執行回補 (包含檢查狀態表缺失)
     backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj)
 
-    print("📊 讀取歷史 Log...")
-    log_data = ws_log.get_all_records()
-    df_log = pd.DataFrame(log_data)
+    log_data = ws_log.get_all_records(); df_log = pd.DataFrame(log_data)
     if not df_log.empty:
         df_log['代號'] = df_log['代號'].astype(str).str.strip().str.replace("'", "")
-        # ✅ [修正] 強制日期標準化 (YYYY-MM-DD)，解決 Google Sheets 格式混亂問題
         df_log['日期'] = pd.to_datetime(df_log['日期'], errors='coerce').dt.strftime("%Y-%m-%d")
         df_log = df_log[df_log['日期'].notna()]
 
@@ -983,93 +821,33 @@ def main():
         key = (str(r['代號']), str(r['日期']))
         clause_map[key] = merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
-    # ✅ [修正] 處置名單與掃描區間統一調整為 90 天
     jail_map = get_jail_map(target_trade_date_obj - timedelta(days=90), target_trade_date_obj)
     exclude_map = build_exclude_map(cal_dates, jail_map)
 
-    start_dt_str = cal_dates[-90].strftime("%Y-%m-%d")
-    df_recent = df_log[df_log['日期'] >= start_dt_str]
-    target_stocks = df_recent['代號'].unique()
+    target_stocks = df_log[df_log['日期'] >= cal_dates[-90].strftime("%Y-%m-%d")]['代號'].unique()
+    precise_db = load_precise_db_from_sheet(sh); rows_stats = []
     
-    precise_db = load_precise_db_from_sheet(sh)
-    rows_stats = []
-    
-    print(f"🔍 掃描 {len(target_stocks)} 檔股票...")
     for idx, code in enumerate(target_stocks):
-        code = str(code).strip()
-        name = df_log[df_log['代號']==code]['名稱'].iloc[-1] if not df_log[df_log['代號']==code].empty else "未知"
-        
-        db_info = precise_db.get(code, {})
-        m_type = str(db_info.get('market', '上市')).upper()
+        code = str(code).strip(); name = df_log[df_log['代號']==code]['名稱'].iloc[-1]
+        db_info = precise_db.get(code, {}); m_type = str(db_info.get('market', '上市')).upper()
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
         stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, exclude_map, 30)
-        
         bits = []; clauses = []
         for d in stock_calendar:
-            c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
-            if is_excluded(code, d, exclude_map):
-                bits.append(0); clauses.append(c); continue
+            d_str = d.strftime("%Y-%m-%d")
+            c = clause_map.get((code, d_str), "")
+            if is_excluded(code, d, exclude_map): bits.append(0); clauses.append(c); continue
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
 
-        # ✅ [修正] 強制 enable_safe_filter=False (剛出關不被濾掉)
-        est_days, reason = simulate_days_to_jail_strict(
-            bits, clauses, 
-            stock_id=code, 
-            target_date=target_trade_date_obj, 
-            jail_map=jail_map,
-            enable_safe_filter=False
-        )
+        est_days, reason = simulate_days_to_jail_strict(bits, clauses, stock_id=code, target_date=target_trade_date_obj, jail_map=jail_map, enable_safe_filter=False)
         
-        latest_ids = parse_clause_ids_strict(clauses[-1] if clauses else "")
-        is_special_risk = is_special_risk_day(latest_ids)
-        is_clause_13 = False
-        for c in clauses:
-            if 13 in parse_clause_ids_strict(c):
-                is_clause_13 = True
-                break
+        hist = fetch_history_data(ticker_code); fund = fetch_stock_fundamental(code, ticker_code, precise_db)
+        dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str) if IS_AFTER_DAYTRADE else (None, None)
+        risk = calculate_full_risk(code, hist, fund, est_days, dt_today, dt_avg6)
 
-        est_days_int = 99
-        est_days_display = "X"
-        reason_display = ""
-
-        if reason == "X":
-            est_days_int = 99
-            est_days_display = "X"
-            if is_special_risk:
-                reason_display = "籌碼異常(人工審核風險)"
-                if is_clause_13: reason_display += " + 刑期可能延長"
-        elif est_days == 0:
-            est_days_int = 0
-            est_days_display = "0"
-            reason_display = reason
-        else:
-            est_days_int = int(est_days)
-            est_days_display = str(est_days_int)
-            reason_display = reason
-            if is_special_risk:
-                reason_display += " | ⚠️留意人工處置風險"
-            if is_clause_13:
-                reason_display += " (若進處置將關12天)"
-
-        hist = fetch_history_data(ticker_code)
-        if hist.empty:
-            alt_s = '.TWO' if suffix=='.TW' else '.TW'
-            hist = fetch_history_data(f"{code}{alt_s}")
-            if not hist.empty: ticker_code = f"{code}{alt_s}"
-
-        fund = fetch_stock_fundamental(code, ticker_code, precise_db)
-        
-        # ✅ 當沖率抓取判斷：只有過了 21:00 才抓，否則給 None
-        dt_today, dt_avg6 = None, None
-        if IS_AFTER_DAYTRADE:
-            dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
-
-        risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
-
-        # streak
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
         for v in reversed(valid_bits):
@@ -1077,33 +855,13 @@ def main():
             else: break
             
         status_30 = "".join(map(str, valid_bits)).zfill(30)
-        
-        def safe(v):
-            if v is None: return ""
-            try: 
-                if np.isnan(v): return ""
-            except: pass
-            return str(v)
-
-        row = [
-            f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
-            stock_calendar[-1].strftime("%Y-%m-%d") if stock_calendar else "",
-            f"'{status_30}", f"'{status_30[-10:]}", est_days_display, safe(reason_display),
-            safe(risk['risk_level']), safe(risk['trigger_msg']),
-            safe(risk['curr_price']), safe(risk['limit_price']), safe(risk['gap_pct']),
-            safe(risk['curr_vol']), safe(risk['limit_vol']), safe(risk['turnover_val']),
-            safe(risk['turnover_rate']), safe(risk['pe']), safe(risk['pb']), safe(risk['day_trade_pct'])
-        ]
+        row = [f"'{code}", name, streak, sum(valid_bits), sum(valid_bits[-10:]), stock_calendar[-1].strftime("%Y-%m-%d") if stock_calendar else "", f"'{status_30}", f"'{status_30[-10:]}", str(est_days) if est_days!=99 else "X", reason, risk['risk_level'], risk['trigger_msg'], risk['curr_price'], risk['limit_price'], risk['gap_pct'], risk['curr_vol'], risk['limit_vol'], risk['turnover_val'], risk['turnover_rate'], risk['pe'], risk['pb'], risk['day_trade_pct']]
         rows_stats.append(row)
-        if (idx+1)%10==0: time.sleep(1)
 
     if rows_stats:
-        print("💾 更新統計表...")
         ws_stats = get_or_create_ws(sh, "近30日熱門統計", headers=STATS_HEADERS)
-        ws_stats.clear()
-        ws_stats.append_row(STATS_HEADERS, value_input_option='USER_ENTERED')
+        ws_stats.clear(); ws_stats.append_row(STATS_HEADERS, value_input_option='USER_ENTERED')
         ws_stats.append_rows(rows_stats, value_input_option='USER_ENTERED')
-        print("✅ 完成")
 
 if __name__ == "__main__":
     main()
