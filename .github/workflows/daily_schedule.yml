@@ -10,6 +10,9 @@ permissions:
   contents: read
 
 on:
+  push:                  # ✅ 新增這段：只要推送到 main 分支就立即執行
+    branches: [ "main" ] # (如果你的分支叫 master，請改成 master)
+    
   schedule:
     # ---------------------------------------------------------
     # GitHub Actions 使用 UTC 時間 (台灣時間 -8 小時)
