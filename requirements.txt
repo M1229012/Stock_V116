@@ -8,3 +8,4 @@ lxml
 urllib3
 python-dateutil
 playwright
+nest_asyncio
