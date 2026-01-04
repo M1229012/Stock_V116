@@ -6,3 +6,5 @@ yfinance
 twstock
 lxml
 urllib3
+python-dateutil
+playwright
