@@ -5,7 +5,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [排版] 欄位全面中文化、修正上櫃資料、清洗上市代號空白問題、移除 SortDate。
+4. [排版] 欄位全面中文化、修正上櫃資料索引、清洗上市代號空白問題、移除 SortDate。
 """
 
 import os
@@ -1046,7 +1046,7 @@ async def run_jail_crawler_pipeline():
             # 提取代號 (取空格前)
             final_df.loc[mask_empty_code, "Code"] = final_df.loc[mask_empty_code, "Name"].str.split().str[0]
             # 提取名稱 (取空格後)
-            final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.split().str[1]
+            final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.split(n=1).str[1]
 
         # ✅ 修正需求 1: 嚴格篩選只有 4 位數字的股票代號
         # 過濾掉權證(6碼)、可轉債(5碼)或其他非個股
