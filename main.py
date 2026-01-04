@@ -2,9 +2,9 @@
 """
 V116.18 台股注意股系統 (GitHub Action 部署優化版)
 修正重點：
-1. [判定] 優化 last_jail_end 取得邏輯，排除未來才開始的處置區間，防止數據誤歸零。
-2. [歸零] 於 bits 產生階段落實歸零邏輯，處置結束日前的紀錄不計累積，但日期仍佔窗口。
-3. [窗口] get_last_n_non_jail_trade_dates 確保固定回傳最後 30 個交易日分母。
+1. [資料庫] update_disposition_database 改採 TWSE 歷史接口，確保能回溯抓取 90 交易日內的處置紀錄。
+2. [歸零] 補齊歷史處置後，2408 等出關股票將能精準執行歸零邏輯，排除 12/19 前的舊紀錄。
+3. [穩定] 維持固定 30 日窗口計算與 Upsert 去重機制。
 """
 
 import os
@@ -184,31 +184,40 @@ def is_special_risk_day(ids):
     return any(9 <= x <= 14 for x in ids)
 
 # ============================
-# 🔥 處置資料庫更新模組 (Upsert 邏輯)
+# 🔥 處置資料庫更新模組 (強化歷史回溯)
 # ============================
 def update_disposition_database(sh):
-    print("🔒 正在執行處置(Jail)資料庫 Upsert 更新...")
+    print("🔒 正在同步處置(Jail)資料庫紀錄...")
     headers = {'User-Agent': 'Mozilla/5.0'}
     new_stock_list = []
     now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
 
+    # 取得門檻日期 (90交易日前)
+    temp_cal = get_official_trading_calendar(90)
+    if not temp_cal: return
+    s_str = temp_cal[0].strftime("%Y%m%d")
+    e_str = TARGET_DATE.strftime("%Y%m%d")
+
+    # 1. 上市 (TWSE 歷史接口)
     try:
-        url_twse = "https://openapi.twse.com.tw/v1/announcement/punish"
-        res = safe_get(url_twse, headers=headers)
+        url_twse = "https://www.twse.com.tw/rwd/zh/announcement/punish"
+        res = safe_get(url_twse, params={"startDate": s_str, "endDate": e_str, "response": "json"}, headers=headers)
         payload = safe_json(res)
-        if isinstance(payload, list):
-            for item in payload:
-                code = item.get('Code', '').strip()
-                if not (code.isdigit() and len(code) == 4): continue
-                name = item.get('Name', '').strip()
-                period_raw = item.get('DispositionPeriod', '').strip()
-                raw_measure = item.get('DispositionMeasures', '').strip()
+        if payload.get("tables"):
+            for row in payload["tables"][0].get("data", []):
+                code_match = re.search(r'(\d{4})', str(row[1]))
+                if not code_match: continue
+                code = code_match.group(1)
+                name = str(row[1]).replace(code, "").strip()
+                period_raw = str(row[3]).strip()
+                raw_measure = str(row[4]).strip()
                 measure = "20分鐘盤" if any(k in raw_measure for k in ["第二次","再次"]) else "5分鐘盤"
                 ds = extract_dates_any(period_raw)
                 if len(ds) >= 2:
                     new_stock_list.append(['上市', code, name, format_roc_period(period_raw), measure, ds[0].strftime("%Y-%m-%d"), ds[-1].strftime("%Y-%m-%d"), now_str])
     except Exception as e: print(f"TWSE 抓取異常: {e}")
 
+    # 2. 上櫃 (TPEx OpenAPI)
     try:
         url_tpex = "https://www.tpex.org.tw/openapi/v1/tpex_disposal_information"
         res = safe_get(url_tpex, headers=headers)
@@ -227,24 +236,26 @@ def update_disposition_database(sh):
                     new_stock_list.append(['上櫃', code, clean_tpex_name(name), format_roc_period(period_raw), clean_tpex_measure(raw_content), ds[0].strftime("%Y-%m-%d"), ds[-1].strftime("%Y-%m-%d"), now_str])
     except Exception as e: print(f"TPEx 抓取異常: {e}")
 
+    # 3. 合併、去重、過濾並寫回
     try:
         ws = get_or_create_ws(sh, "處置有價證券紀錄", headers=JAIL_DB_HEADERS)
         existing_data = ws.get_all_records()
         df_old = pd.DataFrame(existing_data)
         if df_old.empty: df_old = pd.DataFrame(columns=JAIL_DB_HEADERS)
         df_new = pd.DataFrame(new_stock_list, columns=JAIL_DB_HEADERS)
+        
         df_merged = pd.concat([df_old, df_new], ignore_index=True)
         df_merged = df_merged.drop_duplicates(subset=['市場', '代號', '西元起始', '西元結束'], keep='last')
-        temp_cal = get_official_trading_calendar(90)
-        cutoff_date = temp_cal[0].strftime("%Y-%m-%d") if temp_cal else (get_today_date() - timedelta(days=130)).strftime("%Y-%m-%d")
+        
+        cutoff_dt = pd.to_datetime(temp_cal[0])
         df_merged["西元結束_dt"] = pd.to_datetime(df_merged["西元結束"], errors="coerce")
-        cutoff_dt = pd.to_datetime(cutoff_date)
         df_merged = df_merged[df_merged["西元結束_dt"] >= cutoff_dt].drop(columns=["西元結束_dt"])
+        
         df_merged = df_merged.sort_values(by=['西元結束', '代號'], ascending=[False, True])
         final_list = df_merged.values.tolist()
         ws.clear(); ws.append_row(JAIL_DB_HEADERS, value_input_option='USER_ENTERED')
         if final_list: ws.append_rows(final_list, value_input_option='USER_ENTERED')
-        print(f"✅ 處置庫 Upsert 完成：共保留 {len(final_list)} 筆歷史紀錄")
+        print(f"✅ 處置庫更新完成：共保留 {len(final_list)} 筆紀錄")
     except Exception as e: print(f"❌ 處置庫更新失敗: {e}")
 
 # ============================
@@ -360,7 +371,6 @@ def is_in_jail(stock_id, target_date, jail_map):
     return False
 
 def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30):
-    # ✅ 窗口固定：最後 n 個交易日（包含處置期間）
     window = cal_dates[-n:] if len(cal_dates) >= n else cal_dates
     return window
 
@@ -417,34 +427,23 @@ def main():
         name = df_log[df_log['代號']==code]['名稱'].iloc[-1] if not df_log[df_log['代號']==code].empty else "未知"
         stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, n=30)
         
-        # ✅ 修正：改進 last_jail_end 判定，防止未來處置區間干擾歸零邏輯
         last_jail_end = None
         if jail_map and code in jail_map:
             ended = [e for (s, e) in jail_map[code] if s <= target_trade_date_obj]
             last_jail_end = max(ended) if ended else None
 
-        bits = []
-        clauses = []
-
+        bits = []; clauses = []
         for d in stock_calendar:
             c = ""
             if not df_log.empty:
                 matches = df_log[(df_log['代號'] == code) & (df_log['日期'].dt.date == d)]
-                if not matches.empty:
-                    c = "、".join(matches['觸犯條款'].tolist())
-
-            # ✅ 核心規則：處置期間與之前，一律歸零計數（日期仍佔窗口位置）
+                if not matches.empty: c = "、".join(matches['觸犯條款'].tolist())
+            
             if last_jail_end and d <= last_jail_end:
-                bits.append(0)
-                clauses.append("")   
-                continue
+                bits.append(0); clauses.append(""); continue
 
-            if c:
-                bits.append(1)
-                clauses.append(c)
-            else:
-                bits.append(0)
-                clauses.append("")
+            if c: bits.append(1); clauses.append(c)
+            else: bits.append(0); clauses.append("")
 
         v_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         v30 = sum(v_bits)
