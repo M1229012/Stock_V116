@@ -6,6 +6,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
 4. [排版] 修正上櫃欄位對齊、限制4碼代號、日期由舊到新排序。
+5. [修正] 恢復上櫃爬蟲邏輯，並移除 SortDate 輸出欄位。
 """
 
 import os
@@ -79,7 +80,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Jail from Sheet Cache + TPEx Fix)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Restore & No SortDate)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -1058,6 +1059,9 @@ async def run_jail_crawler_pipeline():
         # ascending=[True, True] 代表日期由小(舊)到大(新)，每日更新就會在最下面
         final_df.sort_values(by=["SortDate", "Code"], ascending=[True, True], inplace=True)
         final_df.drop_duplicates(subset=["Code", "Period", "Reason"], inplace=True)
+
+        # ✅ 修正需求 4: 刪除 SortDate 欄位
+        final_df.drop(columns=["SortDate"], inplace=True)
         
         return final_df
     else:
@@ -1250,8 +1254,8 @@ def main():
             sheet_title = "處置股90日明細"
             print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
             
-            # 定義需要的欄位順序
-            export_cols = ["Market", "Code", "Name", "Period", "Reason", "SortDate"]
+            # 定義需要的欄位順序 (已移除 SortDate)
+            export_cols = ["Market", "Code", "Name", "Period", "Reason"]
             
             # 準備寫入資料
             final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
