@@ -5,7 +5,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [排版] 欄位全面中文化、修正上櫃資料索引、清洗上市代號空白問題、移除 SortDate。
+4. [修正] 修正上櫃索引 [1,2,3,4] 避免被過濾，並統一中文欄位與舊->新排序。
 """
 
 import os
@@ -79,7 +79,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Chinese Headers & TWSE Code Cleaning)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Index & Sort Order)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -931,16 +931,21 @@ def fetch_tpex_jail_90d(s_date, e_date):
             
             if rows:
                 df = pd.DataFrame(rows)
-                # TPEx 原始欄位通常為: [Index, Code, Name, Period, Reason, Date]
-                # 修正：選取 Index 1, 2, 3, 4 對應 [Code, Name, Period, Reason]
+                # ✅ [修正] TPEx 原始欄位對應:
+                # Index 1: Code (代號)
+                # Index 2: Name (名稱)
+                # Index 3: Period (處置期間)
+                # Index 4: Reason (處置原因)
                 if df.shape[1] >= 5:
                     df = df.iloc[:, [1, 2, 3, 4]]
-                    # 暫時用英文 Key 處理資料
                     df.columns = ["Code", "Name", "Period", "Reason"]
                     df["Market"] = "上櫃"
                     
                     # 清理名稱：移除括號與網址
                     df["Name"] = df["Name"].astype(str).apply(lambda x: x.split("(")[0].strip())
+                    
+                    # 強制轉為字串並去除空白，確保後續 regex 篩選正常
+                    df["Code"] = df["Code"].astype(str).str.strip()
                     
                     print(f"✅ 成功 ({len(df)} 筆)")
                     return df
@@ -1047,6 +1052,9 @@ async def run_jail_crawler_pipeline():
             final_df.loc[mask_empty_code, "Code"] = final_df.loc[mask_empty_code, "Name"].str.split().str[0]
             # 提取名稱 (取空格後)
             final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.split(n=1).str[1]
+
+        # ✅ [關鍵優化] 在 regex 篩選前再次強制清除空白，確保 TPEx 資料不會被濾掉
+        final_df["Code"] = final_df["Code"].astype(str).str.strip()
 
         # ✅ 修正需求 1: 嚴格篩選只有 4 位數字的股票代號
         # 過濾掉權證(6碼)、可轉債(5碼)或其他非個股
