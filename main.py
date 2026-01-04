@@ -5,7 +5,8 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [修正] 修正上櫃索引 [1,2,3,4] 避免被過濾，並統一中文欄位與舊->新排序。
+4. [修正] TPEx 欄位自動偵測 (Index 0 or 1)，解決資料錯位被濾掉的問題。
+5. [修正] 上市代號補全邏輯強化，確保資料完整性。
 """
 
 import os
@@ -79,7 +80,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Index & Sort Order)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Auto-Detect & TWSE Patch)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -913,7 +914,7 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
 # 🔥 處置股 90 日明細爬蟲邏輯 (Playwright + API)
 # ==========================================
 
-# 1. 上櫃 (TPEx) - API 直攻 + 名稱清理 (修正欄位索引)
+# 1. 上櫃 (TPEx) - API 直攻 + 名稱清理
 def fetch_tpex_jail_90d(s_date, e_date):
     sd = s_date.strftime("%Y/%m/%d")
     ed = e_date.strftime("%Y/%m/%d")
@@ -931,23 +932,34 @@ def fetch_tpex_jail_90d(s_date, e_date):
             
             if rows:
                 df = pd.DataFrame(rows)
-                # ✅ [修正] TPEx 原始欄位對應:
-                # Index 1: Code (代號)
-                # Index 2: Name (名稱)
-                # Index 3: Period (處置期間)
-                # Index 4: Reason (處置原因)
-                if df.shape[1] >= 5:
-                    df = df.iloc[:, [1, 2, 3, 4]]
+                
+                # ✅ [關鍵修正] TPEx 欄位自動偵測
+                # 有些時候 API 回傳 [Seq, Code, Name...] (6 cols)，有些時候 [Code, Name...] (5 cols)
+                # 我們檢查第 0 欄是否為 4 碼數字，若是則為 Code，否則檢查第 1 欄
+                
+                code_idx = 1 # 預設假設 Index 1 是代號 (常見: [Seq, Code, Name...])
+                
+                # 測試第一筆資料的第 0 欄是否為 4 位數字
+                first_row = df.iloc[0]
+                if str(first_row[0]).strip().isdigit() and len(str(first_row[0]).strip()) == 4:
+                    code_idx = 0 # 修正為 Index 0
+                
+                # 根據偵測結果選取欄位
+                # Code, Name, Period, Reason
+                target_indices = [code_idx, code_idx+1, code_idx+2, code_idx+3]
+                
+                if df.shape[1] > target_indices[-1]:
+                    df = df.iloc[:, target_indices]
                     df.columns = ["Code", "Name", "Period", "Reason"]
                     df["Market"] = "上櫃"
                     
                     # 清理名稱：移除括號與網址
                     df["Name"] = df["Name"].astype(str).apply(lambda x: x.split("(")[0].strip())
                     
-                    # 強制轉為字串並去除空白，確保後續 regex 篩選正常
+                    # 強制轉為字串並去除空白
                     df["Code"] = df["Code"].astype(str).str.strip()
                     
-                    print(f"✅ 成功 ({len(df)} 筆)")
+                    print(f"✅ 成功 ({len(df)} 筆, Code在第{code_idx}欄)")
                     return df
             print("⚠️ 無資料")
     except Exception as e:
@@ -968,7 +980,6 @@ async def fetch_twse_playwright_90d(s_date, e_date):
         page = await browser.new_page()
         
         async def handle_response(response):
-            # ✅ [修正] 移除 "json" in response.url 檢查，增加攔截成功率
             if "announcement/punish" in response.url:
                 try:
                     data = await response.json()
@@ -1045,15 +1056,20 @@ async def run_jail_crawler_pipeline():
         final_df["Period"] = final_df["Period"].astype(str).str.strip()
 
         # ✅ [新增] 上市資料清洗：若代號空白，嘗試從名稱提取 (如 "1519 華城")
-        mask_empty_code = (final_df["Code"] == "") & (final_df["Name"].str.match(r'^\d{4}\s+'))
+        # 使用 regex 提取開頭的數字 (相容全形/半形空白)
+        mask_empty_code = (final_df["Code"] == "")
         if mask_empty_code.any():
-            print(f"⚠️ 發現 {mask_empty_code.sum()} 筆代號空白資料，嘗試從名稱修復...")
-            # 提取代號 (取空格前)
-            final_df.loc[mask_empty_code, "Code"] = final_df.loc[mask_empty_code, "Name"].str.split().str[0]
-            # 提取名稱 (取空格後)
-            final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.split(n=1).str[1]
+            print(f"⚠️ 發現 {mask_empty_code.sum()} 筆代號空白資料，嘗試修復...")
+            # 提取名稱欄位中的數字部分 (例如 "1519" from "1519 華城")
+            extracted = final_df.loc[mask_empty_code, "Name"].str.extract(r'^(\d{4})')
+            
+            # 若提取成功，填入 Code
+            final_df.loc[mask_empty_code, "Code"] = extracted[0].fillna("")
+            
+            # 修正 Name (移除前面的代號與空白)
+            final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.replace(r'^\d{4}\s+', '', regex=True)
 
-        # ✅ [關鍵優化] 在 regex 篩選前再次強制清除空白，確保 TPEx 資料不會被濾掉
+        # ✅ [關鍵優化] 在 regex 篩選前再次強制清除空白
         final_df["Code"] = final_df["Code"].astype(str).str.strip()
 
         # ✅ 修正需求 1: 嚴格篩選只有 4 位數字的股票代號
