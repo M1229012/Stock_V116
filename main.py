@@ -2,11 +2,10 @@
 """
 V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度強化) + 近90日處置股專區整合版
 修正重點：
-1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取，不再於主流程重複爬蟲。
+1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [排版] 修正上櫃欄位對齊、限制4碼代號、日期由舊到新排序。
-5. [修正] 恢復上櫃爬蟲邏輯，並移除 SortDate 輸出欄位。
+4. [排版] 欄位全面中文化、修正上櫃資料、清洗上市代號空白問題、移除 SortDate。
 """
 
 import os
@@ -80,7 +79,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Restore & No SortDate)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Chinese Headers & TWSE Code Cleaning)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -350,7 +349,7 @@ def parse_jail_period(period_str):
             return sd, ed
     return None, None
 
-# ✅ [新增] 從 Google Sheet 讀取處置股快取，取代原有的 get_jail_map 爬蟲
+# ✅ [修正] 從 Google Sheet 讀取處置股快取 (使用中文欄位)
 def get_jail_map_from_sheet(sh):
     print("📂 從 Google Sheet 讀取處置名單快取 (處置股90日明細)...")
     jail_map = {}
@@ -358,16 +357,24 @@ def get_jail_map_from_sheet(sh):
         ws = sh.worksheet("處置股90日明細")
         rows = ws.get_all_records()
         for r in rows:
-            code = str(r.get('Code', '')).strip()
+            # ✅ 改用中文 Key
+            code = str(r.get('代號', '')).strip()
+            if not code: 
+                # 兼容舊版英文 Key
+                code = str(r.get('Code', '')).strip()
+            
             if not code: continue
-            period = str(r.get('Period', '')).strip()
+            
+            period = str(r.get('處置期間', '')).strip()
+            if not period:
+                period = str(r.get('Period', '')).strip()
+
             sd, ed = parse_jail_period(period)
             if sd and ed:
                 jail_map.setdefault(code, []).append((sd, ed))
         print(f"✅ 快取讀取完成，共 {len(jail_map)} 檔處置股資料。")
     except Exception as e:
         print(f"⚠️ 讀取處置快取失敗 (可能是初次執行或工作表不存在): {e}")
-        # 若讀取失敗，回傳空 map，交由後續流程或由最後的爬蟲補上
     return jail_map
 
 def is_in_jail(stock_id, target_date, jail_map):
@@ -432,7 +439,6 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
     window = cal_dates[-n:] if len(cal_dates) >= n else cal_dates
     picked = [d for d in window if d > last_jail_end]
 
-    # ✅ [修正] 移除多餘的 return
     return list(reversed(picked))
 
 # ============================
@@ -929,6 +935,7 @@ def fetch_tpex_jail_90d(s_date, e_date):
                 # 修正：選取 Index 1, 2, 3, 4 對應 [Code, Name, Period, Reason]
                 if df.shape[1] >= 5:
                     df = df.iloc[:, [1, 2, 3, 4]]
+                    # 暫時用英文 Key 處理資料
                     df.columns = ["Code", "Name", "Period", "Reason"]
                     df["Market"] = "上櫃"
                     
@@ -1032,6 +1039,15 @@ async def run_jail_crawler_pipeline():
         final_df["Name"] = final_df["Name"].astype(str).str.strip()
         final_df["Period"] = final_df["Period"].astype(str).str.strip()
 
+        # ✅ [新增] 上市資料清洗：若代號空白，嘗試從名稱提取 (如 "1519 華城")
+        mask_empty_code = (final_df["Code"] == "") & (final_df["Name"].str.match(r'^\d{4}\s+'))
+        if mask_empty_code.any():
+            print(f"⚠️ 發現 {mask_empty_code.sum()} 筆代號空白資料，嘗試從名稱修復...")
+            # 提取代號 (取空格前)
+            final_df.loc[mask_empty_code, "Code"] = final_df.loc[mask_empty_code, "Name"].str.split().str[0]
+            # 提取名稱 (取空格後)
+            final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.split().str[1]
+
         # ✅ 修正需求 1: 嚴格篩選只有 4 位數字的股票代號
         # 過濾掉權證(6碼)、可轉債(5碼)或其他非個股
         final_df = final_df[final_df["Code"].str.match(r'^\d{4}$')]
@@ -1062,6 +1078,15 @@ async def run_jail_crawler_pipeline():
 
         # ✅ 修正需求 4: 刪除 SortDate 欄位
         final_df.drop(columns=["SortDate"], inplace=True)
+
+        # ✅ 修正需求 5: 欄位中文化
+        final_df.rename(columns={
+            "Market": "市場",
+            "Code": "代號",
+            "Name": "名稱",
+            "Period": "處置期間",
+            "Reason": "處置原因"
+        }, inplace=True)
         
         return final_df
     else:
@@ -1254,8 +1279,8 @@ def main():
             sheet_title = "處置股90日明細"
             print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
             
-            # 定義需要的欄位順序 (已移除 SortDate)
-            export_cols = ["Market", "Code", "Name", "Period", "Reason"]
+            # 定義需要的欄位順序 (中文欄位)
+            export_cols = ["市場", "代號", "名稱", "處置期間", "處置原因"]
             
             # 準備寫入資料
             final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
