@@ -6,7 +6,8 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
 4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
-5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」，解決出關顯示錯誤。
+5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」。
+6. [修正] 補上處置邏輯缺口：排除日清空文字、連3檢核位元、出關後重置累積。
 """
 
 import os
@@ -80,7 +81,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Jail Status Logic)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Logic Gaps - Reset Accumulation)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -441,6 +442,15 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
     picked = [d for d in window if d > last_jail_end]
 
     return list(reversed(picked))
+
+# ✅ [新增] Helper: 取得最後一次處置結束日
+def get_last_jail_end(stock_id, target_date, jail_map):
+    last_end = None
+    if not jail_map or stock_id not in jail_map: return None
+    for s, e in jail_map[stock_id]:
+        if e < target_date:
+            last_end = e if (last_end is None or e > last_end) else last_end
+    return last_end
 
 # ============================
 # 🔥 每日公告爬蟲區 (TWSE / TPEx)
@@ -825,6 +835,7 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
 
     return res
 
+# ✅ [修正] B) 計算 c1_streak 時，增加 b==1 的判斷 (排除日不計)
 def check_jail_trigger_now(status_list, clause_list):
     status_list = list(status_list); clause_list = list(clause_list)
     if len(status_list) < 30:
@@ -833,8 +844,10 @@ def check_jail_trigger_now(status_list, clause_list):
         clause_list = [""]*pad + clause_list
 
     c1_streak = 0
-    for c in clause_list[-3:]:
-        if 1 in parse_clause_ids_strict(c): c1_streak += 1
+    # ✅ Fix: zip bits/clauses, check bit==1
+    for b, c in zip(status_list[-3:], clause_list[-3:]):
+        if b == 1 and (1 in parse_clause_ids_strict(c)): 
+            c1_streak += 1
 
     v5 = 0; v10 = 0; v30 = 0
     total = len(status_list)
@@ -884,8 +897,10 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
         status_list.append(1); clause_list.append("第1款")
 
         c1_streak = 0
-        for c in clause_list[-3:]:
-            if 1 in parse_clause_ids_strict(c): c1_streak += 1
+        # ✅ Fix: Same logic here
+        for b, c in zip(status_list[-3:], clause_list[-3:]):
+            if b == 1 and (1 in parse_clause_ids_strict(c)): 
+                c1_streak += 1
 
         v5 = 0; v10 = 0; v30 = 0
         total = len(status_list)
@@ -1221,11 +1236,23 @@ def main():
 
         stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, exclude_map, 30)
 
+        # ✅ [新增] C) 取得最近一次處置結束日，作為累積重置點
+        cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
+
         bits = []; clauses = []
         for d in stock_calendar:
+            d0 = d # stock_calendar 元素本身就是 date object
+            
+            # ✅ C) 出關後：cutoff(含)以前全部不納入任何累積/連3判斷
+            if cutoff and d0 <= cutoff:
+                bits.append(0); clauses.append("")
+                continue
+
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
             if is_excluded(code, d, exclude_map):
-                bits.append(0); clauses.append(c); continue
+                # ✅ A) 排除日清空 clause
+                bits.append(0); clauses.append(""); continue
+            
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
 
