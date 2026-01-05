@@ -8,7 +8,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
 5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」。
 6. [修正] get_last_n_non_jail_trade_dates 改用 max() 取最新結束日。
-7. [修正] 日曆產生邏輯加入 MANUAL_HOLIDAYS 強制排除 1/1 等假日，修復連3中斷問題。
+7. [修正] 日曆備援邏輯改用 workalendar 套件，自動排除台灣所有國定假日。
 """
 
 import os
@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, time as dt_time, date
 from dateutil.relativedelta import relativedelta
 from zoneinfo import ZoneInfo
 from playwright.async_api import async_playwright
+from workalendar.asia import Taiwan  # ✅ [新增] 引入台灣行事曆套件
 
 nest_asyncio.apply()
 
@@ -82,7 +83,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Holiday Calendar Exclusion)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Workalendar Integration)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -635,7 +636,7 @@ def is_market_open_by_finmind(date_str):
     df = finmind_get("TaiwanStockPrice", data_id="2330", start_date=date_str, end_date=date_str)
     return not df.empty
 
-# ✅ [修正] 增加 MANUAL_HOLIDAYS 強制排除 2026/01/01
+# ✅ [修正] 增加 Workalendar 自動判斷假日
 def get_official_trading_calendar(days=60):
     end = TARGET_DATE.strftime("%Y-%m-%d")
     start = (TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
@@ -643,32 +644,31 @@ def get_official_trading_calendar(days=60):
     df = finmind_get("TaiwanStockTradingDate", start_date=start, end_date=end)
     dates = []
     
-    # 這裡定義已知假日 (FinMind 備援邏輯可能會誤判的日期)
-    MANUAL_HOLIDAYS = {'2025-01-01', '2026-01-01'}
-
     if not df.empty:
         df['date'] = pd.to_datetime(df['date']).dt.date
         dates = sorted(df['date'].tolist())
     else:
+        # ✅ 使用 workalendar 自動判斷平日假日 (包含國定假日)
+        cal = Taiwan()
         curr = TARGET_DATE.date()
         while len(dates) < days:
-            # 備援邏輯：排除週末 + 排除手動定義的假日
-            if curr.weekday() < 5 and curr.strftime('%Y-%m-%d') not in MANUAL_HOLIDAYS:
+            if cal.is_working_day(curr):
                 dates.append(curr)
             curr -= timedelta(days=1)
         dates = sorted(dates)
 
-    # 再次確保 dates 裡沒有 MANUAL_HOLIDAYS (雙重保險)
-    dates = [d for d in dates if d.strftime('%Y-%m-%d') not in MANUAL_HOLIDAYS]
-
     today_date = TARGET_DATE.date()
-    today_str = today_date.strftime("%Y-%m-%d")
+    # today_str = today_date.strftime("%Y-%m-%d") # 未使用，可註解
     is_late_enough = TARGET_DATE.time() > SAFE_MARKET_OPEN_CHECK
+    
+    # 再次確認今日是否為工作日 (避免誤判)
+    cal = Taiwan()
+    is_today_work = cal.is_working_day(today_date)
 
-    if dates and today_date > dates[-1] and today_date.weekday() < 5 and today_str not in MANUAL_HOLIDAYS:
+    if dates and today_date > dates[-1] and is_today_work:
         if is_late_enough:
             print(f"⚠️ 日曆缺漏今日 ({today_date})，驗證開市中...")
-            if is_market_open_by_finmind(today_str):
+            if is_market_open_by_finmind(today_date.strftime("%Y-%m-%d")):
                 print(f"✅ 驗證成功 (2330有價)，補入今日。")
                 dates.append(today_date)
             else:
