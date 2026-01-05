@@ -7,7 +7,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
 4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
 5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」。
-6. [修正] 補上處置邏輯缺口：排除日清空文字、連3檢核位元、出關後重置累積。
+6. [修正] get_last_n_non_jail_trade_dates 改用 max() 取最新結束日，並強制阻斷舊累積。
 """
 
 import os
@@ -81,7 +81,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Logic Gaps - Reset Accumulation)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Strict Jail Cutoff)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -419,27 +419,25 @@ def build_exclude_map(cal_dates, jail_map):
 def is_excluded(code, d, exclude_map):
     return bool(exclude_map) and (code in exclude_map) and (d in exclude_map[code])
 
+# ✅ [修正] 使用 max() 找最新結束日，徹底解決出關前日期被誤算的問題
 def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30):
-    # 🔥 剛出關歸零：只看最近一次處置結束日
+    # ✅ 取「最近一次處置結束日」（不依賴 list 順序）
     last_jail_end = date(1900, 1, 1)
     if jail_map and stock_id in jail_map and jail_map[stock_id]:
-        last_jail_end = jail_map[stock_id][-1][1]
+        last_jail_end = max(e for (s, e) in jail_map[stock_id])
 
     picked = []
     for d in reversed(cal_dates):
-        # ✅ 剛出關前全部不要
+        # ✅ 出關前全部不要（確保不會把 12/15、12/16 算進來）
         if d <= last_jail_end:
             break
-        if is_excluded(stock_id, d, exclude_map):
+        if exclude_map and is_excluded(stock_id, d, exclude_map):
             continue
         if jail_map and is_in_jail(stock_id, d, jail_map):
             continue
         picked.append(d)
         if len(picked) >= n:
             break
-            
-    window = cal_dates[-n:] if len(cal_dates) >= n else cal_dates
-    picked = [d for d in window if d > last_jail_end]
 
     return list(reversed(picked))
 
@@ -1237,6 +1235,7 @@ def main():
         stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, exclude_map, 30)
 
         # ✅ [新增] C) 取得最近一次處置結束日，作為累積重置點
+        # ✅ [修正] 這裡也使用 TARGET_DATE.date() 確保與爬蟲邏輯一致
         cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
 
         bits = []; clauses = []
