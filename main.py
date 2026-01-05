@@ -7,8 +7,8 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
 4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
 5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」。
-6. [修正] get_last_n_non_jail_trade_dates 改用 max() 取最新結束日。
-7. [修正] 日曆備援邏輯改用 workalendar 套件，自動排除台灣所有國定假日。
+6. [修正] 日曆備援邏輯改用 workalendar 套件，自動排除台灣所有國定假日。
+7. [修正] 歷史資料切斷邏輯修正：處置中保留狀態，出關後才歸零。
 """
 
 import os
@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, time as dt_time, date
 from dateutil.relativedelta import relativedelta
 from zoneinfo import ZoneInfo
 from playwright.async_api import async_playwright
-from workalendar.asia import Taiwan  # ✅ [新增] 引入台灣行事曆套件
+from workalendar.asia import Taiwan
 
 nest_asyncio.apply()
 
@@ -83,7 +83,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Workalendar Integration)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Jail Cutoff Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -407,10 +407,11 @@ def build_exclude_map(cal_dates, jail_map):
     for code, periods in jail_map.items():
         s = set()
         for start, end in periods:
-            # 2) 處置前一日
-            pd = prev_trade_date(start, cal_dates)
-            if pd:
-                s.add(pd)
+            # ❌ [修正] 移除「處置前一日」的排除邏輯
+            # pd = prev_trade_date(start, cal_dates)
+            # if pd:
+            #     s.add(pd)
+            
             # 1) 處置期間（只放交易日）
             for d in cal_dates:
                 if start <= d <= end:
@@ -421,16 +422,23 @@ def build_exclude_map(cal_dates, jail_map):
 def is_excluded(code, d, exclude_map):
     return bool(exclude_map) and (code in exclude_map) and (d in exclude_map[code])
 
-# ✅ [修正] 使用 max() 找最新結束日，徹底解決出關前日期被誤算的問題
-def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30):
-    # ✅ 取「最近一次處置結束日」（不依賴 list 順序）
+# ✅ [修正] 增加 target_date 參數，僅在「處置已過期」時才執行切斷
+def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30, target_date=None):
+    # 預設：沒有處置紀錄時，使用很舊的日期
     last_jail_end = date(1900, 1, 1)
-    if jail_map and stock_id in jail_map and jail_map[stock_id]:
-        last_jail_end = max(e for (s, e) in jail_map[stock_id])
+
+    if jail_map and stock_id in jail_map:
+        # 找出該股票所有「已經結束」的處置 (end_date < target_date)
+        # target_date 應傳入 TARGET_DATE.date() (程式執行當日)
+        # 這樣如果是「處置中」，該次處置結束日就不會被算進來，歷史資料就不會被切斷
+        past_jail_ends = [e for (s, e) in jail_map[stock_id] if e < target_date]
+        
+        if past_jail_ends:
+            last_jail_end = max(past_jail_ends)
 
     picked = []
     for d in reversed(cal_dates):
-        # ✅ 出關前全部不要（確保不會把 12/15、12/16 算進來）
+        # ✅ 僅過濾掉「已結束處置」之前的歷史
         if d <= last_jail_end:
             break
         if exclude_map and is_excluded(stock_id, d, exclude_map):
@@ -1243,7 +1251,10 @@ def main():
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
-        stock_calendar = get_last_n_non_jail_trade_dates(code, cal_dates, jail_map, exclude_map, 30)
+        # ✅ [修正] 傳入 target_date，確保只切斷已過期的處置
+        stock_calendar = get_last_n_non_jail_trade_dates(
+            code, cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
+        )
 
         # ✅ [新增] C) 取得最近一次處置結束日，作為累積重置點
         # ✅ [修正] 這裡也使用 TARGET_DATE.date() 確保與爬蟲邏輯一致
