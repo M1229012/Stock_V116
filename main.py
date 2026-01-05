@@ -2,10 +2,9 @@
 """
 V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度強化) + 近90日處置股專區整合版
 修正重點：
-1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
-2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
-3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
+1. [流程] 優先執行處置股爬蟲並更新 Sheet，確保後續計算讀取到最新狀態。
+2. [格式] 移除「處置原因」欄位，排序維持最新置頂。
+3. [快取] jail_map 由 Sheet 讀取，確保與爬蟲結果一致。
 """
 
 import os
@@ -79,7 +78,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Remove Reason & Sort Descending)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Priority Update & No Reason)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -1127,6 +1126,39 @@ def main():
     sh, _ = connect_google_sheets()
     if not sh: return
 
+    # ✅ [修正] 優先執行爬蟲，確保處置名單是最新的
+    print("\n" + "="*50)
+    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (Playwright)...")
+    print("="*50)
+    
+    try:
+        # 使用 asyncio.run 執行非同步的 Playwright 爬蟲流程
+        df_jail_90 = asyncio.run(run_jail_crawler_pipeline())
+        
+        if not df_jail_90.empty:
+            sheet_title = "處置股90日明細"
+            print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
+            
+            # 定義需要的欄位順序 (中文欄位)
+            export_cols = ["市場", "代號", "名稱", "處置期間"]
+            
+            # 準備寫入資料
+            final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
+            
+            # 寫入工作表
+            ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
+            ws_jail.clear()
+            ws_jail.append_rows(final_rows, value_input_option='USER_ENTERED')
+            print(f"✅ {sheet_title} 更新完成！")
+        else:
+            print("⚠️ 查無處置股資料，跳過寫入。")
+            
+    except Exception as e:
+        print(f"❌ 處置股爬蟲任務失敗: {e}")
+
+    # ============================
+    # 後續執行風險計算與監控
+    # ============================
     update_market_monitoring_log(sh)
 
     cal_dates = get_official_trading_calendar(240)
@@ -1290,38 +1322,6 @@ def main():
         ws_stats.append_row(STATS_HEADERS, value_input_option='USER_ENTERED')
         ws_stats.append_rows(rows_stats, value_input_option='USER_ENTERED')
         print("✅ 完成")
-    
-    # ==========================================
-    # 🔥 新增任務：執行近 90 日處置股抓取並寫入新工作表
-    # ==========================================
-    print("\n" + "="*50)
-    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (Playwright)...")
-    print("="*50)
-    
-    try:
-        # 使用 asyncio.run 執行非同步的 Playwright 爬蟲流程
-        df_jail_90 = asyncio.run(run_jail_crawler_pipeline())
-        
-        if not df_jail_90.empty:
-            sheet_title = "處置股90日明細"
-            print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
-            
-            # 定義需要的欄位順序 (中文欄位)
-            export_cols = ["市場", "代號", "名稱", "處置期間"]
-            
-            # 準備寫入資料
-            final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
-            
-            # 寫入工作表
-            ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
-            ws_jail.clear()
-            ws_jail.append_rows(final_rows, value_input_option='USER_ENTERED')
-            print(f"✅ {sheet_title} 更新完成！")
-        else:
-            print("⚠️ 查無處置股資料，跳過寫入。")
-            
-    except Exception as e:
-        print(f"❌ 處置股爬蟲任務失敗: {e}")
 
 if __name__ == "__main__":
     main()
