@@ -5,8 +5,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [修正] TPEx 欄位自動偵測 (Index 0 or 1)，解決資料錯位被濾掉的問題。
-5. [修正] 上市代號補全邏輯強化，確保資料完整性。
+4. [重構] 上櫃爬蟲改為動態掃描，直接搜尋4碼代號，無視欄位位移問題。
 """
 
 import os
@@ -80,7 +79,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Auto-Detect & TWSE Patch)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Dynamic Scan)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -914,7 +913,7 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
 # 🔥 處置股 90 日明細爬蟲邏輯 (Playwright + API)
 # ==========================================
 
-# 1. 上櫃 (TPEx) - API 直攻 + 名稱清理
+# 1. 上櫃 (TPEx) - API 直攻 + 名稱清理 (改用動態掃描)
 def fetch_tpex_jail_90d(s_date, e_date):
     sd = s_date.strftime("%Y/%m/%d")
     ed = e_date.strftime("%Y/%m/%d")
@@ -931,36 +930,57 @@ def fetch_tpex_jail_90d(s_date, e_date):
             rows = data.get("tables", [{}])[0].get("data", []) or data.get("data", [])
             
             if rows:
-                df = pd.DataFrame(rows)
-                
-                # ✅ [關鍵修正] TPEx 欄位自動偵測
-                # 有些時候 API 回傳 [Seq, Code, Name...] (6 cols)，有些時候 [Code, Name...] (5 cols)
-                # 我們檢查第 0 欄是否為 4 碼數字，若是則為 Code，否則檢查第 1 欄
-                
-                code_idx = 1 # 預設假設 Index 1 是代號 (常見: [Seq, Code, Name...])
-                
-                # 測試第一筆資料的第 0 欄是否為 4 位數字
-                first_row = df.iloc[0]
-                if str(first_row[0]).strip().isdigit() and len(str(first_row[0]).strip()) == 4:
-                    code_idx = 0 # 修正為 Index 0
-                
-                # 根據偵測結果選取欄位
-                # Code, Name, Period, Reason
-                target_indices = [code_idx, code_idx+1, code_idx+2, code_idx+3]
-                
-                if df.shape[1] > target_indices[-1]:
-                    df = df.iloc[:, target_indices]
-                    df.columns = ["Code", "Name", "Period", "Reason"]
-                    df["Market"] = "上櫃"
+                clean_data = []
+                for row in rows:
+                    # ✅ [關鍵修正] 放棄固定索引，改用掃描法
+                    # 邏輯：在該行中尋找 4 碼數字 -> 視為 Code
+                    c_code = ""
+                    c_name = ""
+                    c_period = ""
+                    c_reason = ""
                     
-                    # 清理名稱：移除括號與網址
-                    df["Name"] = df["Name"].astype(str).apply(lambda x: x.split("(")[0].strip())
+                    found_code_idx = -1
                     
-                    # 強制轉為字串並去除空白
-                    df["Code"] = df["Code"].astype(str).str.strip()
+                    # 1. 找代號 (通常在前3欄)
+                    for i in range(min(len(row), 4)):
+                        val = str(row[i]).strip()
+                        if val.isdigit() and len(val) == 4:
+                            c_code = val
+                            found_code_idx = i
+                            break
                     
-                    print(f"✅ 成功 ({len(df)} 筆, Code在第{code_idx}欄)")
+                    # 如果沒找到 4 碼代號，此行視為無效 (符合用戶「永遠只能抓4碼」要求)
+                    if not c_code:
+                        continue
+                        
+                    # 2. 名稱 (通常在代號後面)
+                    if found_code_idx + 1 < len(row):
+                        c_name = str(row[found_code_idx+1]).split("(")[0].strip()
+                        
+                    # 3. 期間 (包含 "~" 或 "/" 的欄位)
+                    for item in row:
+                        s_item = str(item).strip()
+                        if "~" in s_item or ("/" in s_item and len(s_item) > 9):
+                            c_period = s_item
+                            break
+                    
+                    # 4. 原因 (簡單取最後一欄，或自行定義邏輯)
+                    if len(row) > 0:
+                        c_reason = str(row[-1]).strip()
+
+                    clean_data.append({
+                        "Code": c_code,
+                        "Name": c_name,
+                        "Period": c_period,
+                        "Reason": c_reason,
+                        "Market": "上櫃"
+                    })
+                
+                if clean_data:
+                    df = pd.DataFrame(clean_data)
+                    print(f"✅ 成功 ({len(df)} 筆)")
                     return df
+                    
             print("⚠️ 無資料")
     except Exception as e:
         print(f"❌ 錯誤: {e}")
@@ -1056,47 +1076,38 @@ async def run_jail_crawler_pipeline():
         final_df["Period"] = final_df["Period"].astype(str).str.strip()
 
         # ✅ [新增] 上市資料清洗：若代號空白，嘗試從名稱提取 (如 "1519 華城")
-        # 使用 regex 提取開頭的數字 (相容全形/半形空白)
         mask_empty_code = (final_df["Code"] == "")
         if mask_empty_code.any():
             print(f"⚠️ 發現 {mask_empty_code.sum()} 筆代號空白資料，嘗試修復...")
-            # 提取名稱欄位中的數字部分 (例如 "1519" from "1519 華城")
             extracted = final_df.loc[mask_empty_code, "Name"].str.extract(r'^(\d{4})')
-            
-            # 若提取成功，填入 Code
             final_df.loc[mask_empty_code, "Code"] = extracted[0].fillna("")
-            
-            # 修正 Name (移除前面的代號與空白)
             final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.replace(r'^\d{4}\s+', '', regex=True)
 
-        # ✅ [關鍵優化] 在 regex 篩選前再次強制清除空白
-        final_df["Code"] = final_df["Code"].astype(str).str.strip()
+        # ✅ [關鍵優化] 在 regex 篩選前再次強制清除所有非數字字元
+        final_df["Code"] = final_df["Code"].astype(str).str.replace(r'\D', '', regex=True)
 
         # ✅ 修正需求 1: 嚴格篩選只有 4 位數字的股票代號
-        # 過濾掉權證(6碼)、可轉債(5碼)或其他非個股
         final_df = final_df[final_df["Code"].str.match(r'^\d{4}$')]
         
         # ✅ 修正需求 2: 建立正確的排序日期 (解析民國年 114/xx/xx -> 2025xx)
         def parse_sort_date(period_str):
             try:
-                # 取區間的起始日 (例如 "114/08/19~..." 取 "114/08/19")
+                # 取區間的起始日
                 start_part = period_str.replace("~", "-").split("-")[0].strip()
-                # 處理民國年格式
                 if "/" in start_part:
                     parts = start_part.split("/")
                     if len(parts) == 3:
                         y = int(parts[0]) + 1911
                         m = int(parts[1])
                         d = int(parts[2])
-                        return f"{y}{m:02d}{d:02d}" # 回傳 YYYYMMDD 字串
-                return "99999999" # 解析失敗放最後
+                        return f"{y}{m:02d}{d:02d}"
+                return "99999999"
             except:
                 return "99999999"
 
         final_df["SortDate"] = final_df["Period"].apply(parse_sort_date)
         
         # ✅ 修正需求 3: 排序 (Oldest -> Newest)
-        # ascending=[True, True] 代表日期由小(舊)到大(新)，每日更新就會在最下面
         final_df.sort_values(by=["SortDate", "Code"], ascending=[True, True], inplace=True)
         final_df.drop_duplicates(subset=["Code", "Period", "Reason"], inplace=True)
 
