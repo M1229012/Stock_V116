@@ -5,7 +5,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [修正] 重寫上櫃欄位掃描邏輯：利用 '~' 符號定位日期，修正欄位錯位與名稱亂碼。
+4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
 """
 
 import os
@@ -79,7 +79,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Column Shift Logic)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Remove Reason & Sort Descending)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -936,7 +936,6 @@ def fetch_tpex_jail_90d(s_date, e_date):
                     c_code = ""
                     c_name = ""
                     c_period = ""
-                    c_reason = ""
                     
                     found_code_idx = -1
                     
@@ -956,23 +955,16 @@ def fetch_tpex_jail_90d(s_date, e_date):
                         c_name = str(row[found_code_idx+1]).split("(")[0].strip()
                         
                     # 3. 期間 (往後找含 '~' 的欄位)
-                    found_period_idx = -1
                     for k in range(found_code_idx + 2, len(row)):
                         s_item = str(row[k]).strip()
                         if "~" in s_item:
                             c_period = s_item
-                            found_period_idx = k
                             break
                     
-                    # 4. 原因 (期間下一欄)
-                    if found_period_idx != -1 and found_period_idx + 1 < len(row):
-                        c_reason = str(row[found_period_idx+1]).strip()
-
                     clean_data.append({
                         "Code": c_code,
                         "Name": c_name,
                         "Period": c_period,
-                        "Reason": c_reason,
                         "Market": "上櫃"
                     })
                 
@@ -1031,11 +1023,11 @@ async def fetch_twse_playwright_90d(s_date, e_date):
         # Index 2: Code (代號)
         # Index 3: Name (名稱)
         # Index 6: Period (處置期間)  <-- td[7]
-        # Index 7: Reason (處置措施)
+        # ✅ [修正] 移除 Index 7 (Reason)
         
         if df.shape[1] >= 8:
-            df = df.iloc[:, [2, 3, 6, 7]]
-            df.columns = ["Code", "Name", "Period", "Reason"]
+            df = df.iloc[:, [2, 3, 6]]
+            df.columns = ["Code", "Name", "Period"]
             df["Market"] = "上市"
             print(f"    ✅ 整理完成 ({len(df)} 筆)")
             return df
@@ -1107,20 +1099,20 @@ async def run_jail_crawler_pipeline():
 
         final_df["SortDate"] = final_df["Period"].apply(parse_sort_date)
         
-        # ✅ 修正需求 3: 排序 (Oldest -> Newest)
-        final_df.sort_values(by=["SortDate", "Code"], ascending=[True, True], inplace=True)
-        final_df.drop_duplicates(subset=["Code", "Period", "Reason"], inplace=True)
+        # ✅ 修正需求 3: 排序 (Newest -> Oldest)
+        # ascending=[False, True] -> SortDate Descending (Newest first), Code Ascending
+        final_df.sort_values(by=["SortDate", "Code"], ascending=[False, True], inplace=True)
+        final_df.drop_duplicates(subset=["Code", "Period"], inplace=True)
 
         # ✅ 修正需求 4: 刪除 SortDate 欄位
         final_df.drop(columns=["SortDate"], inplace=True)
 
-        # ✅ 修正需求 5: 欄位中文化
+        # ✅ 修正需求 5: 欄位中文化 (移除處置原因)
         final_df.rename(columns={
             "Market": "市場",
             "Code": "代號",
             "Name": "名稱",
-            "Period": "處置期間",
-            "Reason": "處置原因"
+            "Period": "處置期間"
         }, inplace=True)
         
         return final_df
@@ -1315,7 +1307,7 @@ def main():
             print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
             
             # 定義需要的欄位順序 (中文欄位)
-            export_cols = ["市場", "代號", "名稱", "處置期間", "處置原因"]
+            export_cols = ["市場", "代號", "名稱", "處置期間"]
             
             # 準備寫入資料
             final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
