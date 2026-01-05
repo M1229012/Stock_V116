@@ -6,7 +6,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
 4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
-5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期 (T-1)」，解決出關誤判。
+5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」，解決出關顯示錯誤。
 """
 
 import os
@@ -80,7 +80,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Jail Status Check Logic)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Jail Status Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
