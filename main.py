@@ -2,9 +2,11 @@
 """
 V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度強化) + 近90日處置股專區整合版
 修正重點：
-1. [流程] 優先執行處置股爬蟲並更新 Sheet，確保後續計算讀取到最新狀態。
-2. [格式] 移除「處置原因」欄位，排序維持最新置頂。
-3. [快取] jail_map 由 Sheet 讀取，確保與爬蟲結果一致。
+1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
+2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
+3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
+4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
+5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期 (T-1)」，解決出關誤判。
 """
 
 import os
@@ -78,7 +80,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Priority Update & No Reason)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Jail Status Check Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -1228,10 +1230,11 @@ def main():
             else: bits.append(0); clauses.append("")
 
         # ✅ [修正] 強制 enable_safe_filter=False (剛出關不被濾掉)
+        # ✅ [修正] target_date 使用 TARGET_DATE.date() (程式執行當下日期) 判斷處置狀態
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses, 
             stock_id=code, 
-            target_date=target_trade_date_obj, 
+            target_date=TARGET_DATE.date(), 
             jail_map=jail_map,
             enable_safe_filter=False
         )
