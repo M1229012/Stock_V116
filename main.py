@@ -7,7 +7,8 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
 4. [修正] 移除「處置原因」欄位，並將排序改為「最新日期排最上面 (Descending)」。
 5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」。
-6. [修正] get_last_n_non_jail_trade_dates 改用 max() 取最新結束日，並強制阻斷舊累積。
+6. [修正] get_last_n_non_jail_trade_dates 改用 max() 取最新結束日。
+7. [修正] 日曆產生邏輯加入 MANUAL_HOLIDAYS 強制排除 1/1 等假日，修復連3中斷問題。
 """
 
 import os
@@ -81,7 +82,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Strict Jail Cutoff)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: Holiday Calendar Exclusion)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -634,27 +635,37 @@ def is_market_open_by_finmind(date_str):
     df = finmind_get("TaiwanStockPrice", data_id="2330", start_date=date_str, end_date=date_str)
     return not df.empty
 
+# ✅ [修正] 增加 MANUAL_HOLIDAYS 強制排除 2026/01/01
 def get_official_trading_calendar(days=60):
     end = TARGET_DATE.strftime("%Y-%m-%d")
     start = (TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
     print("📅 下載日曆...")
     df = finmind_get("TaiwanStockTradingDate", start_date=start, end_date=end)
     dates = []
+    
+    # 這裡定義已知假日 (FinMind 備援邏輯可能會誤判的日期)
+    MANUAL_HOLIDAYS = {'2025-01-01', '2026-01-01'}
+
     if not df.empty:
         df['date'] = pd.to_datetime(df['date']).dt.date
         dates = sorted(df['date'].tolist())
     else:
         curr = TARGET_DATE.date()
         while len(dates) < days:
-            if curr.weekday() < 5: dates.append(curr)
+            # 備援邏輯：排除週末 + 排除手動定義的假日
+            if curr.weekday() < 5 and curr.strftime('%Y-%m-%d') not in MANUAL_HOLIDAYS:
+                dates.append(curr)
             curr -= timedelta(days=1)
         dates = sorted(dates)
+
+    # 再次確保 dates 裡沒有 MANUAL_HOLIDAYS (雙重保險)
+    dates = [d for d in dates if d.strftime('%Y-%m-%d') not in MANUAL_HOLIDAYS]
 
     today_date = TARGET_DATE.date()
     today_str = today_date.strftime("%Y-%m-%d")
     is_late_enough = TARGET_DATE.time() > SAFE_MARKET_OPEN_CHECK
 
-    if dates and today_date > dates[-1] and today_date.weekday() < 5:
+    if dates and today_date > dates[-1] and today_date.weekday() < 5 and today_str not in MANUAL_HOLIDAYS:
         if is_late_enough:
             print(f"⚠️ 日曆缺漏今日 ({today_date})，驗證開市中...")
             if is_market_open_by_finmind(today_str):
