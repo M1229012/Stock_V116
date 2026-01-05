@@ -5,7 +5,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 1. [快取] jail_map 改由 Google Sheet「處置股90日明細」讀取 (適應中文欄位)。
 2. [優化] Playwright 攔截條件放寬，移除 json 字串檢查。
 3. [除錯] 移除多餘的 return 與增加 stock_calendar 空值保護。
-4. [重構] 上櫃爬蟲改為動態掃描，直接搜尋4碼代號，無視欄位位移問題。
+4. [修正] 重寫上櫃欄位掃描邏輯：利用 '~' 符號定位日期，修正欄位錯位與名稱亂碼。
 """
 
 import os
@@ -79,7 +79,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Dynamic Scan)")
+print(f"🚀 啟動 V116.18 台股注意股系統 (Fix: TPEx Column Shift Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
@@ -933,7 +933,6 @@ def fetch_tpex_jail_90d(s_date, e_date):
                 clean_data = []
                 for row in rows:
                     # ✅ [關鍵修正] 放棄固定索引，改用掃描法
-                    # 邏輯：在該行中尋找 4 碼數字 -> 視為 Code
                     c_code = ""
                     c_name = ""
                     c_period = ""
@@ -941,7 +940,7 @@ def fetch_tpex_jail_90d(s_date, e_date):
                     
                     found_code_idx = -1
                     
-                    # 1. 找代號 (通常在前3欄)
+                    # 1. 找代號 (前4欄找 4碼數字)
                     for i in range(min(len(row), 4)):
                         val = str(row[i]).strip()
                         if val.isdigit() and len(val) == 4:
@@ -949,24 +948,25 @@ def fetch_tpex_jail_90d(s_date, e_date):
                             found_code_idx = i
                             break
                     
-                    # 如果沒找到 4 碼代號，此行視為無效 (符合用戶「永遠只能抓4碼」要求)
-                    if not c_code:
-                        continue
+                    if not c_code: continue # 嚴格篩選 4 碼
                         
-                    # 2. 名稱 (通常在代號後面)
+                    # 2. 名稱 (代號下一欄)
                     if found_code_idx + 1 < len(row):
+                        # ✅ [修正] 移除括號與連結
                         c_name = str(row[found_code_idx+1]).split("(")[0].strip()
                         
-                    # 3. 期間 (包含 "~" 或 "/" 的欄位)
-                    for item in row:
-                        s_item = str(item).strip()
-                        if "~" in s_item or ("/" in s_item and len(s_item) > 9):
+                    # 3. 期間 (往後找含 '~' 的欄位)
+                    found_period_idx = -1
+                    for k in range(found_code_idx + 2, len(row)):
+                        s_item = str(row[k]).strip()
+                        if "~" in s_item:
                             c_period = s_item
+                            found_period_idx = k
                             break
                     
-                    # 4. 原因 (簡單取最後一欄，或自行定義邏輯)
-                    if len(row) > 0:
-                        c_reason = str(row[-1]).strip()
+                    # 4. 原因 (期間下一欄)
+                    if found_period_idx != -1 and found_period_idx + 1 < len(row):
+                        c_reason = str(row[found_period_idx+1]).strip()
 
                     clean_data.append({
                         "Code": c_code,
