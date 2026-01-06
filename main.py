@@ -69,7 +69,7 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   
-VERIFY_RECENT_DAYS = 2           
+VERIFY_RECENT_DAYS = 2            
 
 # ==========================================
 # 🔑 FinMind 金鑰設定
@@ -948,8 +948,9 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
 
 # 1. 上櫃 (TPEx) - API 直攻 + 名稱清理 (改用動態掃描)
 def fetch_tpex_jail_90d(s_date, e_date):
-    sd = s_date.strftime("%Y/%m/%d")
-    ed = e_date.strftime("%Y/%m/%d")
+    # ✅ [修正] 改用民國年 (ROC) 格式，避免 API 對西元日期支援不穩導致漏抓當日
+    sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
+    ed = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
     print(f"  [上櫃] 請求: {sd} ~ {ed} ... ", end="")
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
@@ -1072,7 +1073,8 @@ async def fetch_twse_playwright_90d(s_date, e_date):
 
 async def run_jail_crawler_pipeline():
     """ 整合上市櫃近 90 日處置股爬蟲流程 """
-    end_date = date.today()
+    # ✅ [修正] 改用 TARGET_DATE (台灣時間)，避免雲端主機 UTC 時間造成日期落差
+    end_date = TARGET_DATE.date()
     start_date = end_date - timedelta(days=150) # 寬鬆一點抓 150 天，篩選後取 90
     print(f"🎯 啟動全市場處置股抓取: {start_date} ~ {end_date}")
 
@@ -1080,7 +1082,8 @@ async def run_jail_crawler_pipeline():
 
     # 1. 抓上櫃 (分批)
     curr = start_date
-    while curr < end_date:
+    # ✅ [修正] 迴圈條件由 < 改為 <=，確保若日期剛好切到今天 (end_date) 仍會執行最後一輪
+    while curr <= end_date:
         next_date = min(curr + timedelta(days=45), end_date)
         df_tpex = fetch_tpex_jail_90d(curr, next_date)
         if not df_tpex.empty: all_dfs.append(df_tpex)
