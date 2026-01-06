@@ -1080,15 +1080,10 @@ async def run_jail_crawler_pipeline():
 
     all_dfs = []
 
-    # 1. 抓上櫃 (分批)
-    curr = start_date
-    # ✅ [修正] 迴圈條件由 < 改為 <=，確保若日期剛好切到今天 (end_date) 仍會執行最後一輪
-    while curr <= end_date:
-        next_date = min(curr + timedelta(days=45), end_date)
-        df_tpex = fetch_tpex_jail_90d(curr, next_date)
-        if not df_tpex.empty: all_dfs.append(df_tpex)
-        curr = next_date + timedelta(days=1)
-        time.sleep(0.5)
+    # 1. 抓上櫃 (改為一次抓取，避免分批時最後一天(當日)變成單日查詢導致查無資料)
+    # ✅ [修正] 移除 while 迴圈，改為一次性請求
+    df_tpex = fetch_tpex_jail_90d(start_date, end_date)
+    if not df_tpex.empty: all_dfs.append(df_tpex)
 
     # 2. 抓上市 (一次)
     df_twse = await fetch_twse_playwright_90d(start_date, end_date)
