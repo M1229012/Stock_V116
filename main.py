@@ -9,6 +9,7 @@ V116.18 台股注意股系統 (GitHub Action 單檔直上版 - 回補可靠度�
 5. [修正] 處置狀態判斷改依據「執行當日 (TARGET_DATE)」而非「資料日期」。
 6. [修正] 日曆備援邏輯改用 workalendar 套件，自動排除台灣所有國定假日。
 7. [修正] 歷史資料切斷邏輯修正：處置中保留狀態，出關後才歸零。
+8. [修正] TPEx 爬蟲：修正日期邊界 (+1天) 與 WAF 繞過機制 (Headers/Session)。
 """
 
 import os
@@ -948,15 +949,19 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
 
 # 1. 上櫃 (TPEx) - API 直攻 + 名稱清理 (改用動態掃描)
 def fetch_tpex_jail_90d(s_date, e_date):
-    # ✅ [修正] 改用民國年 (ROC) 格式，避免 API 對西元日期支援不穩導致漏抓當日
+    # ✅ [修正] 設定 Headers 與 Session 以繞過 WAF
+    # ✅ [修正] 結束日期往後推 1 天，確保包含「今日」數據 (櫃買 API 特性)
+    real_end_date = e_date + timedelta(days=1)
+    
     sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
-    ed = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
+    ed = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
+    
     print(f"  [上櫃] 請求: {sd} ~ {ed} ... ", end="")
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
     payload = {"startDate": sd, "endDate": ed, "response": "json", "length": "5000", "start": "0"}
     
-    # ✅ [二次修正] 補上 Referer, Origin 並改用 Session，防止被 WAF 擋下
+    # 完整 Headers
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "X-Requested-With": "XMLHttpRequest",
@@ -965,32 +970,36 @@ def fetch_tpex_jail_90d(s_date, e_date):
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
     }
-    
-    # 建立 Session 以維持 Cookies
+
     s = requests.Session()
 
     try:
-        # 先訪問一次頁面取得 Cookies (防呆)
+        # 1. GET 首頁 (取得 Cookies)
         try:
             s.get("https://www.tpex.org.tw/www/zh-tw/bulletin/disposal", headers=headers, timeout=10)
         except: pass
 
+        # 2. POST 資料
         r = s.post(url, data=payload, headers=headers, timeout=15)
         if r.status_code == 200:
             data = r.json()
-            rows = data.get("tables", [{}])[0].get("data", []) or data.get("data", [])
+            # 兼容兩種格式
+            rows = []
+            if "tables" in data and len(data["tables"]) > 0:
+                rows = data["tables"][0].get("data", [])
+            elif "data" in data:
+                rows = data["data"]
             
             if rows:
                 clean_data = []
                 for row in rows:
-                    # ✅ [關鍵修正] 放棄固定索引，改用掃描法
                     c_code = ""
                     c_name = ""
                     c_period = ""
                     
                     found_code_idx = -1
                     
-                    # 1. 找代號 (前4欄找 4碼數字)
+                    # 1. 找代號
                     for i in range(min(len(row), 4)):
                         val = str(row[i]).strip()
                         if val.isdigit() and len(val) == 4:
@@ -998,14 +1007,13 @@ def fetch_tpex_jail_90d(s_date, e_date):
                             found_code_idx = i
                             break
                     
-                    if not c_code: continue # 嚴格篩選 4 碼
+                    if not c_code: continue
                         
-                    # 2. 名稱 (代號下一欄)
+                    # 2. 名稱
                     if found_code_idx + 1 < len(row):
-                        # ✅ [修正] 移除括號與連結
                         c_name = str(row[found_code_idx+1]).split("(")[0].strip()
                         
-                    # 3. 期間 (往後找含 '~' 的欄位)
+                    # 3. 期間
                     for k in range(found_code_idx + 2, len(row)):
                         s_item = str(row[k]).strip()
                         if "~" in s_item:
