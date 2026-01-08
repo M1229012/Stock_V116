@@ -69,7 +69,7 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   
-VERIFY_RECENT_DAYS = 2            
+VERIFY_RECENT_DAYS = 2             
 
 # ==========================================
 # 🔑 FinMind 金鑰設定
@@ -955,7 +955,14 @@ def fetch_tpex_jail_90d(s_date, e_date):
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
     payload = {"startDate": sd, "endDate": ed, "response": "json", "length": "5000", "start": "0"}
-    headers = {"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"}
+    
+    # ✅ [FIX] 補上 Referer 與 Origin，避免被 TPEx 拒絕存取
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html",
+        "Origin": "https://www.tpex.org.tw"
+    }
     
     try:
         s = requests.Session()
