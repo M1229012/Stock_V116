@@ -69,7 +69,7 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   
-VERIFY_RECENT_DAYS = 2            
+VERIFY_RECENT_DAYS = 2             
 
 # ==========================================
 # 🔑 FinMind 金鑰設定
@@ -407,6 +407,11 @@ def build_exclude_map(cal_dates, jail_map):
     for code, periods in jail_map.items():
         s = set()
         for start, end in periods:
+            # ❌ [修正] 移除「處置前一日」的排除邏輯
+            # pd = prev_trade_date(start, cal_dates)
+            # if pd:
+            #     s.add(pd)
+            
             # 1) 處置期間（只放交易日）
             for d in cal_dates:
                 if start <= d <= end:
@@ -423,12 +428,17 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
     last_jail_end = date(1900, 1, 1)
 
     if jail_map and stock_id in jail_map:
+        # 找出該股票所有「已經結束」的處置 (end_date < target_date)
+        # target_date 應傳入 TARGET_DATE.date() (程式執行當日)
+        # 這樣如果是「處置中」，該次處置結束日就不會被算進來，歷史資料就不會被切斷
         past_jail_ends = [e for (s, e) in jail_map[stock_id] if e < target_date]
+        
         if past_jail_ends:
             last_jail_end = max(past_jail_ends)
 
     picked = []
     for d in reversed(cal_dates):
+        # ✅ 僅過濾掉「已結束處置」之前的歷史
         if d <= last_jail_end:
             break
         if exclude_map and is_excluded(stock_id, d, exclude_map):
@@ -570,6 +580,8 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     key_to_row, status_cnt = load_status_index(ws_status)
     status_is_new = (len(status_cnt) == 0)
 
+    # if not status_is_new: ...
+
     key_to_row, status_cnt = load_status_index(ws_status)
     window_dates = cal_dates[-MAX_BACKFILL_TRADING_DAYS:] if len(cal_dates) > MAX_BACKFILL_TRADING_DAYS else cal_dates[:]
     recent_dates = cal_dates[-VERIFY_RECENT_DAYS:] if len(cal_dates) >= VERIFY_RECENT_DAYS else cal_dates[:]
@@ -598,6 +610,7 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
 
         data = get_daily_data(d)
 
+        # ✅ 若回傳 None 代表抓取失敗，跳過不更新狀態
         if data is None:
             print(f"⚠️ {d_str} 抓取失敗(None)，跳過不更新狀態")
             continue
@@ -631,6 +644,7 @@ def is_market_open_by_finmind(date_str):
     df = finmind_get("TaiwanStockPrice", data_id="2330", start_date=date_str, end_date=date_str)
     return not df.empty
 
+# ✅ [修正] 增加 Workalendar 自動判斷假日
 def get_official_trading_calendar(days=60):
     end = TARGET_DATE.strftime("%Y-%m-%d")
     start = (TARGET_DATE - timedelta(days=days*2)).strftime("%Y-%m-%d")
@@ -642,6 +656,7 @@ def get_official_trading_calendar(days=60):
         df['date'] = pd.to_datetime(df['date']).dt.date
         dates = sorted(df['date'].tolist())
     else:
+        # ✅ 使用 workalendar 自動判斷平日假日 (包含國定假日)
         cal = Taiwan()
         curr = TARGET_DATE.date()
         while len(dates) < days:
@@ -651,8 +666,10 @@ def get_official_trading_calendar(days=60):
         dates = sorted(dates)
 
     today_date = TARGET_DATE.date()
+    # today_str = today_date.strftime("%Y-%m-%d") # 未使用，可註解
     is_late_enough = TARGET_DATE.time() > SAFE_MARKET_OPEN_CHECK
     
+    # 再次確認今日是否為工作日 (避免誤判)
     cal = Taiwan()
     is_today_work = cal.is_working_day(today_date)
 
@@ -810,6 +827,7 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
         if gap >= threshold: triggers.append(f"【第十一款】6日價差{gap:.0f}元(>門檻{threshold})")
 
     pending_msg = ""
+    # ✅ 當沖率判斷：未公布則只標記 pending，不算觸發
     if dt_today_pct is None or dt_avg6_pct is None:
         pending_msg = "(當沖率待公布)"
     else:
@@ -820,11 +838,13 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
             if dt_avg6_pct > 60 and dt_today_pct > 60:
                 triggers.append(f"【第十三款】當沖{dt_today_pct}%(6日{dt_avg6_pct}%)")
 
+    # ✅ 最後輸出訊息：有觸發就加上 pending 註記（若有）
     if triggers:
         res['is_triggered'] = True
         res['risk_level'] = '高'
         res['trigger_msg'] = "且".join(triggers) + (f" {pending_msg}" if pending_msg else "")
     else:
+        # 沒觸發就不要因 pending 升級風險
         res['trigger_msg'] = pending_msg
         if est_days <= 1: res['risk_level'] = '高'
         elif est_days <= 2: res['risk_level'] = '中'
@@ -832,6 +852,7 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
 
     return res
 
+# ✅ [修正] B) 計算 c1_streak 時，增加 b==1 的判斷 (排除日不計)
 def check_jail_trigger_now(status_list, clause_list):
     status_list = list(status_list); clause_list = list(clause_list)
     if len(status_list) < 30:
@@ -840,6 +861,7 @@ def check_jail_trigger_now(status_list, clause_list):
         clause_list = [""]*pad + clause_list
 
     c1_streak = 0
+    # ✅ Fix: zip bits/clauses, check bit==1
     for b, c in zip(status_list[-3:], clause_list[-3:]):
         if b == 1 and (1 in parse_clause_ids_strict(c)): 
             c1_streak += 1
@@ -892,6 +914,7 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
         status_list.append(1); clause_list.append("第1款")
 
         c1_streak = 0
+        # ✅ Fix: Same logic here
         for b, c in zip(status_list[-3:], clause_list[-3:]):
             if b == 1 and (1 in parse_clause_ids_strict(c)): 
                 c1_streak += 1
@@ -929,128 +952,78 @@ def fetch_tpex_jail_90d(s_date, e_date):
     sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
     ed = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
     print(f"  [上櫃] 請求: {sd} ~ {ed} ... ", end="")
-
+    
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
     payload = {"startDate": sd, "endDate": ed, "response": "json", "length": "5000", "start": "0"}
-
-    # ✅ [修正] 比照 attention 的 headers，避免當日資料被判定非 AJAX / 被擋
+    
+    # ✅ [二次修正] 補上 Referer, Origin 並改用 Session，防止被 WAF 擋下
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.tpex.org.tw/",
-        "Origin": "https://www.tpex.org.tw",
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "X-Requested-With": "XMLHttpRequest",
-        "Connection": "close",
+        "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal",
+        "Origin": "https://www.tpex.org.tw",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
     }
+    
+    # 建立 Session 以維持 Cookies
+    s = requests.Session()
 
     try:
-        s = requests.Session()
+        # 先訪問一次頁面取得 Cookies (防呆)
         try:
-            s.get("https://www.tpex.org.tw/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        except:
-            pass
+            s.get("https://www.tpex.org.tw/www/zh-tw/bulletin/disposal", headers=headers, timeout=10)
+        except: pass
 
         r = s.post(url, data=payload, headers=headers, timeout=15)
         if r.status_code == 200:
-            try:
-                data = r.json()
-            except:
-                print("❌ JSON 解析失敗")
-                return pd.DataFrame()
-
-            # tables / data 兼容
-            rows = []
-            if isinstance(data, dict) and "tables" in data:
-                for t in data.get("tables", []):
-                    rows.extend(t.get("data", []) or [])
-            else:
-                rows = data.get("data", []) or []
-
+            data = r.json()
+            rows = data.get("tables", [{}])[0].get("data", []) or data.get("data", [])
+            
             if rows:
                 clean_data = []
-
-                # ✅ [修正] 支援今日官網常見格式：欄位可能帶 HTML / 連結 / 非純數字
-                # - 代號：允許 4~5 碼數字（先抓出來，後面主流程仍保留你原本「只留 4 碼」的規則）
-                # - 期間：支援 ~ / ～ / - / － / – 等分隔符，並統一轉成 "~"
-                # - 名稱：去除 HTML tag / 括號內容
-                date_range_re = re.compile(r"\d{2,3}/\d{2}/\d{2}\s*[~～\-－–]\s*\d{2,3}/\d{2}/\d{2}")
-                code_re = re.compile(r"(\d{4,5})")
-
-                def strip_html(x: str) -> str:
-                    x = str(x)
-                    x = re.sub(r"<[^>]+>", "", x)
-                    x = x.replace("\u3000", " ").strip()
-                    return x
-
-                def norm_period(x: str) -> str:
-                    x = strip_html(x)
-                    x = re.sub(r"[～\-－–]", "~", x)
-                    x = x.replace(" ", "")
-                    return x
-
                 for row in rows:
-                    if not isinstance(row, (list, tuple)) or len(row) < 3:
-                        continue
-
-                    row_cells = [strip_html(c) for c in row]
-
+                    # ✅ [關鍵修正] 放棄固定索引，改用掃描法
                     c_code = ""
                     c_name = ""
                     c_period = ""
+                    
                     found_code_idx = -1
-
-                    # 1) 找代號：優先找 4 碼，其次 5 碼（因為有些欄位是 <a>2337</a> / 23372）
-                    for i in range(min(len(row_cells), 12)):
-                        m = code_re.search(row_cells[i])
-                        if m:
-                            cand = m.group(1)
-                            if cand.isdigit():
-                                # 優先 4 碼
-                                if len(cand) == 4:
-                                    c_code = cand
-                                    found_code_idx = i
-                                    break
-                                # 先暫存 5 碼，若後面都沒有 4 碼再用
-                                if len(c_code) == 0 and len(cand) == 5:
-                                    c_code = cand
-                                    found_code_idx = i
-
-                    if not c_code:
-                        continue
-
-                    # 2) 名稱：從代號後面開始找第一個非空、且不是日期/區間的欄位
-                    for j in range(found_code_idx + 1, min(len(row_cells), found_code_idx + 6)):
-                        txt = row_cells[j].strip()
-                        if not txt:
-                            continue
-                        if date_range_re.search(txt):
-                            continue
-                        # 去括號
-                        txt = txt.split("(")[0].split("（")[0].strip()
-                        if txt:
-                            c_name = txt
+                    
+                    # 1. 找代號 (前4欄找 4碼數字)
+                    for i in range(min(len(row), 4)):
+                        val = str(row[i]).strip()
+                        if val.isdigit() and len(val) == 4:
+                            c_code = val
+                            found_code_idx = i
                             break
-
-                    # 3) 期間：掃描整列找符合日期區間的欄位
-                    for k in range(min(len(row_cells), 20)):
-                        txt = row_cells[k]
-                        if date_range_re.search(txt):
-                            c_period = norm_period(txt)
+                    
+                    if not c_code: continue # 嚴格篩選 4 碼
+                        
+                    # 2. 名稱 (代號下一欄)
+                    if found_code_idx + 1 < len(row):
+                        # ✅ [修正] 移除括號與連結
+                        c_name = str(row[found_code_idx+1]).split("(")[0].strip()
+                        
+                    # 3. 期間 (往後找含 '~' 的欄位)
+                    for k in range(found_code_idx + 2, len(row)):
+                        s_item = str(row[k]).strip()
+                        if "~" in s_item:
+                            c_period = s_item
                             break
-
+                    
                     clean_data.append({
                         "Code": c_code,
                         "Name": c_name,
                         "Period": c_period,
                         "Market": "上櫃"
                     })
-
+                
                 if clean_data:
                     df = pd.DataFrame(clean_data)
                     print(f"✅ 成功 ({len(df)} 筆)")
                     return df
-
+                    
             print("⚠️ 無資料")
     except Exception as e:
         print(f"❌ 錯誤: {e}")
@@ -1098,6 +1071,11 @@ async def fetch_twse_playwright_90d(s_date, e_date):
     if captured_data:
         df = pd.DataFrame(captured_data)
         
+        # Index 2: Code (代號)
+        # Index 3: Name (名稱)
+        # Index 6: Period (處置期間)  <-- td[7]
+        # ✅ [修正] 移除 Index 7 (Reason)
+        
         if df.shape[1] >= 8:
             df = df.iloc[:, [2, 3, 6]]
             df.columns = ["Code", "Name", "Period"]
@@ -1112,15 +1090,19 @@ async def fetch_twse_playwright_90d(s_date, e_date):
 
 async def run_jail_crawler_pipeline():
     """ 整合上市櫃近 90 日處置股爬蟲流程 """
+    # ✅ [修正] 改用 TARGET_DATE (台灣時間)，避免雲端主機 UTC 時間造成日期落差
     end_date = TARGET_DATE.date()
-    start_date = end_date - timedelta(days=150)
+    start_date = end_date - timedelta(days=150) # 寬鬆一點抓 150 天，篩選後取 90
     print(f"🎯 啟動全市場處置股抓取: {start_date} ~ {end_date}")
 
     all_dfs = []
 
+    # 1. 抓上櫃 (改為一次抓取，避免分批時最後一天(當日)變成單日查詢導致查無資料)
+    # ✅ [修正] 移除 while 迴圈，改為一次性請求
     df_tpex = fetch_tpex_jail_90d(start_date, end_date)
     if not df_tpex.empty: all_dfs.append(df_tpex)
 
+    # 2. 抓上市 (一次)
     df_twse = await fetch_twse_playwright_90d(start_date, end_date)
     if not df_twse.empty: all_dfs.append(df_twse)
 
@@ -1128,10 +1110,12 @@ async def run_jail_crawler_pipeline():
         print("\n🔄 合併處置股資料中...")
         final_df = pd.concat(all_dfs, ignore_index=True)
         
+        # 轉字串並去空白
         final_df["Code"] = final_df["Code"].astype(str).str.strip()
         final_df["Name"] = final_df["Name"].astype(str).str.strip()
         final_df["Period"] = final_df["Period"].astype(str).str.strip()
 
+        # ✅ [新增] 上市資料清洗：若代號空白，嘗試從名稱提取 (如 "1519 華城")
         mask_empty_code = (final_df["Code"] == "")
         if mask_empty_code.any():
             print(f"⚠️ 發現 {mask_empty_code.sum()} 筆代號空白資料，嘗試修復...")
@@ -1139,12 +1123,16 @@ async def run_jail_crawler_pipeline():
             final_df.loc[mask_empty_code, "Code"] = extracted[0].fillna("")
             final_df.loc[mask_empty_code, "Name"] = final_df.loc[mask_empty_code, "Name"].str.replace(r'^\d{4}\s+', '', regex=True)
 
+        # ✅ [關鍵優化] 在 regex 篩選前再次強制清除所有非數字字元
         final_df["Code"] = final_df["Code"].astype(str).str.replace(r'\D', '', regex=True)
 
+        # ✅ 修正需求 1: 嚴格篩選只有 4 位數字的股票代號
         final_df = final_df[final_df["Code"].str.match(r'^\d{4}$')]
         
+        # ✅ 修正需求 2: 建立正確的排序日期 (解析民國年 114/xx/xx -> 2025xx)
         def parse_sort_date(period_str):
             try:
+                # 取區間的起始日
                 start_part = period_str.replace("~", "-").split("-")[0].strip()
                 if "/" in start_part:
                     parts = start_part.split("/")
@@ -1159,11 +1147,15 @@ async def run_jail_crawler_pipeline():
 
         final_df["SortDate"] = final_df["Period"].apply(parse_sort_date)
         
+        # ✅ 修正需求 3: 排序 (Newest -> Oldest)
+        # ascending=[False, True] -> SortDate Descending (Newest first), Code Ascending
         final_df.sort_values(by=["SortDate", "Code"], ascending=[False, True], inplace=True)
         final_df.drop_duplicates(subset=["Code", "Period"], inplace=True)
 
+        # ✅ 修正需求 4: 刪除 SortDate 欄位
         final_df.drop(columns=["SortDate"], inplace=True)
 
+        # ✅ 修正需求 5: 欄位中文化 (移除處置原因)
         final_df.rename(columns={
             "Market": "市場",
             "Code": "代號",
@@ -1183,21 +1175,26 @@ def main():
     sh, _ = connect_google_sheets()
     if not sh: return
 
+    # ✅ [修正] 優先執行爬蟲，確保處置名單是最新的
     print("\n" + "="*50)
     print("🚀 啟動額外任務：抓取近 90 日處置股清單 (Playwright)...")
     print("="*50)
     
     try:
+        # 使用 asyncio.run 執行非同步的 Playwright 爬蟲流程
         df_jail_90 = asyncio.run(run_jail_crawler_pipeline())
         
         if not df_jail_90.empty:
             sheet_title = "處置股90日明細"
             print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
             
+            # 定義需要的欄位順序 (中文欄位)
             export_cols = ["市場", "代號", "名稱", "處置期間"]
             
+            # 準備寫入資料
             final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
             
+            # 寫入工作表
             ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
             ws_jail.clear()
             ws_jail.append_rows(final_rows, value_input_option='USER_ENTERED')
@@ -1208,13 +1205,18 @@ def main():
     except Exception as e:
         print(f"❌ 處置股爬蟲任務失敗: {e}")
 
+    # ============================
+    # 後續執行風險計算與監控
+    # ============================
     update_market_monitoring_log(sh)
 
     cal_dates = get_official_trading_calendar(240)
 
+    # ✅ [修正] main() 修正 T-2 回朔 Bug
     target_trade_date_obj = cal_dates[-1]
     is_today_trade = (target_trade_date_obj == TARGET_DATE.date())
 
+    # 只有「日曆已包含今天」且「現在 < 17:30」才退回 T-1
     if is_today_trade and (not IS_AFTER_SAFE) and len(cal_dates) >= 2:
         print(f"⏳ 現在時間 {TARGET_DATE.strftime('%H:%M')} 早於 {SAFE_CRAWL_TIME}，且日曆包含今日，切換為 T-1 模式。")
         target_trade_date_obj = cal_dates[-2]
@@ -1224,6 +1226,7 @@ def main():
 
     ws_log = get_or_create_ws(sh, "每日紀錄", headers=['日期','市場','代號','名稱','觸犯條款'])
 
+    # ✅ 執行回補 (包含檢查狀態表缺失)
     backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj)
 
     print("📊 讀取歷史 Log...")
@@ -1231,6 +1234,7 @@ def main():
     df_log = pd.DataFrame(log_data)
     if not df_log.empty:
         df_log['代號'] = df_log['代號'].astype(str).str.strip().str.replace("'", "")
+        # ✅ [修正] 強制日期標準化 (YYYY-MM-DD)，解決 Google Sheets 格式混亂問題
         df_log['日期'] = pd.to_datetime(df_log['日期'], errors='coerce').dt.strftime("%Y-%m-%d")
         df_log = df_log[df_log['日期'].notna()]
 
@@ -1239,6 +1243,8 @@ def main():
         key = (str(r['代號']), str(r['日期']))
         clause_map[key] = merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
+    # ✅ [修正] jail_map 改為從 Sheet 快取讀取，不再爬蟲
+    # jail_map = get_jail_map(target_trade_date_obj - timedelta(days=90), target_trade_date_obj) # (移除舊邏輯)
     jail_map = get_jail_map_from_sheet(sh)
     
     exclude_map = build_exclude_map(cal_dates, jail_map)
@@ -1260,27 +1266,34 @@ def main():
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
+        # ✅ [修正] 傳入 target_date，確保只切斷已過期的處置
         stock_calendar = get_last_n_non_jail_trade_dates(
             code, cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
+        # ✅ [新增] C) 取得最近一次處置結束日，作為累積重置點
+        # ✅ [修正] 這裡也使用 TARGET_DATE.date() 確保與爬蟲邏輯一致
         cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
 
         bits = []; clauses = []
         for d in stock_calendar:
-            d0 = d
+            d0 = d # stock_calendar 元素本身就是 date object
             
+            # ✅ C) 出關後：cutoff(含)以前全部不納入任何累積/連3判斷
             if cutoff and d0 <= cutoff:
                 bits.append(0); clauses.append("")
                 continue
 
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
             if is_excluded(code, d, exclude_map):
+                # ✅ A) 排除日清空 clause
                 bits.append(0); clauses.append(""); continue
             
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
 
+        # ✅ [修正] 強制 enable_safe_filter=False (剛出關不被濾掉)
+        # ✅ [修正] target_date 使用 TARGET_DATE.date() (程式執行當下日期) 判斷處置狀態
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses, 
             stock_id=code, 
@@ -1328,12 +1341,14 @@ def main():
 
         fund = fetch_stock_fundamental(code, ticker_code, precise_db)
 
+        # ✅ 當沖率抓取判斷：只有過了 21:00 才抓，否則給 None
         dt_today, dt_avg6 = None, None
         if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
         risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
 
+        # streak
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
         for v in reversed(valid_bits):
@@ -1349,13 +1364,14 @@ def main():
             except: pass
             return str(v)
 
+        # ✅ [修正] 增加保護，避免 stock_calendar 空值取 [-1] 錯誤
         last_date_val = ""
         if stock_calendar:
             last_date_val = stock_calendar[-1].strftime("%Y-%m-%d")
 
         row = [
             f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
-            last_date_val,
+            last_date_val, # 使用保護後的變數
             f"'{status_30}", f"'{status_30[-10:]}", est_days_display, safe(reason_display),
             safe(risk['risk_level']), safe(risk['trigger_msg']),
             safe(risk['curr_price']), safe(risk['limit_price']), safe(risk['gap_pct']),
