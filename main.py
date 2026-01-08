@@ -953,12 +953,24 @@ def fetch_tpex_jail_90d(s_date, e_date):
     ed = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
     print(f"  [上櫃] 請求: {sd} ~ {ed} ... ", end="")
     
-    url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
-    payload = {"startDate": sd, "endDate": ed, "response": "json", "length": "5000", "start": "0"}
-    headers = {"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"}
+    url_api = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
+    
+    # ✅ [修正] 改用 Session 並先訪問頁面，避免被擋
+    s = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0", 
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal",
+        "Origin": "https://www.tpex.org.tw"
+    }
     
     try:
-        r = requests.post(url, data=payload, headers=headers, timeout=15)
+        # 先訪問首頁/佈告欄頁面取得 Cookies
+        s.get("https://www.tpex.org.tw/www/zh-tw/bulletin/disposal", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        
+        payload = {"startDate": sd, "endDate": ed, "response": "json", "length": "5000", "start": "0"}
+        
+        r = s.post(url_api, data=payload, headers=headers, timeout=15)
         if r.status_code == 200:
             data = r.json()
             rows = data.get("tables", [{}])[0].get("data", []) or data.get("data", [])
@@ -966,11 +978,9 @@ def fetch_tpex_jail_90d(s_date, e_date):
             if rows:
                 clean_data = []
                 for row in rows:
-                    # ✅ [關鍵修正] 放棄固定索引，改用掃描法
                     c_code = ""
                     c_name = ""
                     c_period = ""
-                    
                     found_code_idx = -1
                     
                     # 1. 找代號 (前4欄找 4碼數字)
@@ -981,26 +991,28 @@ def fetch_tpex_jail_90d(s_date, e_date):
                             found_code_idx = i
                             break
                     
-                    if not c_code: continue # 嚴格篩選 4 碼
+                    if not c_code: continue
                         
                     # 2. 名稱 (代號下一欄)
                     if found_code_idx + 1 < len(row):
-                        # ✅ [修正] 移除括號與連結
                         c_name = str(row[found_code_idx+1]).split("(")[0].strip()
                         
-                    # 3. 期間 (往後找含 '~' 的欄位)
+                    # 3. 期間 (往後找含 '~' 或 '～' 的欄位)
                     for k in range(found_code_idx + 2, len(row)):
                         s_item = str(row[k]).strip()
-                        if "~" in s_item:
+                        # ✅ [修正] 增加全形波浪號判斷
+                        if "~" in s_item or "～" in s_item:
                             c_period = s_item
                             break
                     
-                    clean_data.append({
-                        "Code": c_code,
-                        "Name": c_name,
-                        "Period": c_period,
-                        "Market": "上櫃"
-                    })
+                    # 必須要有期間才算有效資料
+                    if c_code and c_period:
+                        clean_data.append({
+                            "Code": c_code,
+                            "Name": c_name,
+                            "Period": c_period,
+                            "Market": "上櫃"
+                        })
                 
                 if clean_data:
                     df = pd.DataFrame(clean_data)
