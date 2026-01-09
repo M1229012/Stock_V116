@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.22 台股注意股系統 (TPEx 日期邏輯修正版)
+V116.23 台股注意股系統 (TPEx Requests API 修正版)
 修正重點：
-1. [修正] fetch_tpex_selenium_90d 增加查詢結束日自動展延 (+30天)，
-   解決「當日公布但下週才開始處置」之股票被過濾的問題。
-2. [保留] Selenium XPath 定位與其他所有邏輯。
+1. [替換] 上櫃 (TPEx) 爬蟲改用 Requests 直接呼叫 API (依照使用者提供的驗證代碼)。
+2. [邏輯] 應用「結束日期 +30天」規則，確保抓到未來生效的處置股。
+3. [保留] 上市 (TWSE) 維持 Selenium 爬蟲。
+4. [保留] 完整風險計算、Google Sheet 串接與即將出關監控。
 """
 
 import os
@@ -25,7 +26,7 @@ from dateutil.relativedelta import relativedelta
 from zoneinfo import ZoneInfo
 from workalendar.asia import Taiwan
 
-# ✅ Selenium 模組
+# ✅ Selenium 模組 (保留給 TWSE 使用)
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -86,7 +87,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.21 台股注意股系統 (Selenium 版)")
+print(f"🚀 啟動 V116.23 台股注意股系統 (TPEx API Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -917,7 +918,7 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
     return 99, ""
 
 # ==========================================
-# 🔥 處置股 90 日明細爬蟲邏輯 (Selenium)
+# 🔥 處置股 90 日明細爬蟲邏輯 (Requests + Selenium)
 # ==========================================
 def get_driver():
     """ 取得 Selenium Chrome Driver (Headless) """
@@ -933,82 +934,70 @@ def get_driver():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
-def fetch_tpex_selenium_90d(s_date, e_date):
+def fetch_tpex_jail_90d_requests(s_date, e_date):
     """
-    [重寫] 上櫃 (TPEx) 處置股爬蟲 - Selenium 版 (依指定 XPath)
+    [替換] 上櫃 (TPEx) 處置股爬蟲 - Requests API 版 (參照使用者提供的邏輯)
     """
-    print(f"  [上櫃] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
+    print(f"  [上櫃] 啟動 Requests 爬蟲 (新版官網 API)... {s_date} ~ {e_date}")
     
-    # 修正：TPEx 若只查到「今日」，會漏掉「今日公布但下週才執行」的股票
-    # 因此查詢結束日強制往後推 30 天
+    # 依照使用者的邏輯修正：結束日期強制往後推 30 天
+    # 確保抓到「今日公布、下週才開始處置」的股票
     real_end_date = e_date + timedelta(days=30)
-
-    sd_roc = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
-    ed_roc = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
+    
+    sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
+    ed = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
-    driver = get_driver()
-    clean_data = []
-
-    try:
-        driver.get(url)
-        wait = WebDriverWait(driver, 20)
-        
-        # 1. 填寫日期
-        # 使用 JS 強制填入以避開 Datepicker 干擾
-        driver.execute_script(f"""
-            document.querySelector('input[name="startDate"]').value = "{sd_roc}";
-            document.querySelector('input[name="endDate"]').value = "{ed_roc}";
-        """)
-        
-        # 2. 點擊查詢
-        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
-        search_btn.click()
-        
-        # 3. 等待表格載入 (使用您提供的基底 XPath)
-        table_base_xpath = "/html/body/div[2]/section[2]/div[2]/div[2]/div/div[2]/div[2]/table/tbody"
-        wait.until(EC.presence_of_element_located((By.XPATH, table_base_xpath)))
-        
-        # 稍作緩衝確保資料渲染完成
-        time.sleep(3)
-        
-        # 4. 抓取所有列
-        rows = driver.find_elements(By.XPATH, f"{table_base_xpath}/tr")
-        print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
-
-        for row in rows:
-            try:
-                # 依照使用者指定 XPath 相對路徑解析
-                # 日期: td[2]
-                c_date = row.find_element(By.XPATH, "./td[2]").text.strip()
-                # 代號: td[3]
-                c_code = row.find_element(By.XPATH, "./td[3]").text.strip()
-                # 名稱: td[4] (含連結)
-                c_name = row.find_element(By.XPATH, "./td[4]").text.strip()
-                # 處置期間: td[6]
-                c_period = row.find_element(By.XPATH, "./td[6]").text.strip()
-                
-                if c_code and c_code.isdigit() and len(c_code) == 4:
-                    clean_data.append({
-                        "Code": c_code,
-                        "Name": c_name,
-                        "Period": c_period,
-                        "Market": "上櫃"
-                    })
-            except Exception as e:
-                # 可能是分頁列或標題列，略過
-                continue
-
-    except Exception as e:
-        print(f"    ❌ TPEx Selenium 操作失敗: {e}")
-    finally:
-        driver.quit()
-
-    if clean_data:
-        print(f"    ✅ 成功解析 {len(clean_data)} 筆資料")
-        return pd.DataFrame(clean_data)
     
-    print("    ⚠️ TPEx 無資料")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
+    }
+    
+    payload = {
+        "startDate": sd,
+        "endDate": ed,
+        "response": "json"
+    }
+    
+    sess = requests.Session()
+    clean_data = []
+    
+    try:
+        # 1. Get Cookie
+        sess.get(url, headers=headers) 
+        
+        # 2. Post
+        r = sess.post(url, data=payload, headers=headers, timeout=10)
+        
+        if r.status_code == 200:
+            data = r.json()
+            if "tables" in data and len(data["tables"]) > 0:
+                rows = data["tables"][0].get("data", [])
+                print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料...")
+                
+                for row in rows:
+                    # 1: Date, 2: Code, 3: Name(HTML), 5: Period
+                    if len(row) < 6: continue
+                    c_code = str(row[2]).strip()
+                    c_name_raw = str(row[3]).strip()
+                    c_name = c_name_raw.split("(")[0] if "(" in c_name_raw else c_name_raw
+                    c_period = str(row[5]).strip()
+                    
+                    if c_code.isdigit() and len(c_code) == 4:
+                        clean_data.append({
+                            "Code": c_code,
+                            "Name": c_name,
+                            "Period": c_period,
+                            "Market": "上櫃"
+                        })
+    except Exception as e:
+        print(f"    ❌ TPEx Requests 失敗: {e}")
+        
+    if clean_data:
+        return pd.DataFrame(clean_data)
     return pd.DataFrame()
 
 def fetch_twse_selenium_90d(s_date, e_date):
@@ -1084,11 +1073,11 @@ def run_jail_crawler_pipeline_sync():
     """ 整合上市櫃近 90 日處置股爬蟲流程 (同步版) """
     end_date = TARGET_DATE.date()
     start_date = end_date - timedelta(days=150)
-    print(f"🎯 啟動全市場處置股抓取 (Selenium): {start_date} ~ {end_date}")
+    print(f"🎯 啟動全市場處置股抓取 (TWSE: Selenium / TPEx: Requests): {start_date} ~ {end_date}")
 
     # 依序執行
-    df_tpex = fetch_tpex_selenium_90d(start_date, end_date)
-    df_twse = fetch_twse_selenium_90d(start_date, end_date)
+    df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date) # 改用 Requests
+    df_twse = fetch_twse_selenium_90d(start_date, end_date) # 維持 Selenium
     
     all_dfs = []
     if not df_tpex.empty: all_dfs.append(df_tpex)
@@ -1151,7 +1140,7 @@ def main():
     if not sh: return
 
     print("\n" + "="*50)
-    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (Selenium)...")
+    print("🚀 啟動額外任務：抓取近 90 日處置股清單...")
     print("="*50)
     
     try:
