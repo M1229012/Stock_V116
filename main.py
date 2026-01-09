@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.21 台股注意股系統 (Selenium XPath 指定版)
+V116.22 台股注意股系統 (TPEx 日期邏輯修正版)
 修正重點：
-1. [重寫] 棄用 Playwright，改用 Selenium + WebDriverManager。
-2. [指定] 上櫃爬蟲依照使用者提供的 XPath 進行精準定位。
-3. [架構] 移除 Asyncio，改為同步執行以提高穩定性。
-4. [保留] 包含「即將出關監控」與完整風險計算邏輯。
+1. [修正] fetch_tpex_selenium_90d 增加查詢結束日自動展延 (+30天)，
+   解決「當日公布但下週才開始處置」之股票被過濾的問題。
+2. [保留] Selenium XPath 定位與其他所有邏輯。
 """
 
 import os
@@ -940,8 +939,12 @@ def fetch_tpex_selenium_90d(s_date, e_date):
     """
     print(f"  [上櫃] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
     
+    # 修正：TPEx 若只查到「今日」，會漏掉「今日公布但下週才執行」的股票
+    # 因此查詢結束日強制往後推 30 天
+    real_end_date = e_date + timedelta(days=30)
+
     sd_roc = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
-    ed_roc = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
+    ed_roc = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
     driver = get_driver()
