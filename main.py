@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.20 台股注意股系統 (TPEx 強制重試版)
+V116.21 台股注意股系統 (Selenium XPath 指定版)
 修正重點：
-1. [上櫃爬蟲強化] 針對 fetch_tpex_playwright_90d 增加 3 次重試機制。
-2. [上櫃爬蟲強化] 延長等待時間至 10 秒，並加入 wait_for_load_state('networkidle') 確保資料載入。
-3. [輸入優化] 確保日期欄位確實填寫後才點擊搜尋。
+1. [重寫] 棄用 Playwright，改用 Selenium + WebDriverManager。
+2. [指定] 上櫃爬蟲依照使用者提供的 XPath 進行精準定位。
+3. [架構] 移除 Asyncio，改為同步執行以提高穩定性。
+4. [保留] 包含「即將出關監控」與完整風險計算邏輯。
 """
 
 import os
@@ -18,14 +19,21 @@ import time
 import random
 import gspread
 import logging
-import asyncio
 import nest_asyncio
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, time as dt_time, date
 from dateutil.relativedelta import relativedelta
 from zoneinfo import ZoneInfo
-from playwright.async_api import async_playwright
 from workalendar.asia import Taiwan
+
+# ✅ Selenium 模組
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 nest_asyncio.apply()
 
@@ -79,9 +87,8 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.20 台股注意股系統 (TPEx 重試強化版)")
+print(f"🚀 啟動 V116.21 台股注意股系統 (Selenium 版)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
-print(f"⏰ 時序狀態: After 17:30? {IS_AFTER_SAFE} | After 21:00? {IS_AFTER_DAYTRADE}")
 
 try: twstock.__update_codes()
 except: pass
@@ -911,188 +918,178 @@ def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, tar
     return 99, ""
 
 # ==========================================
-# 🔥 處置股 90 日明細爬蟲邏輯 (Playwright Only)
+# 🔥 處置股 90 日明細爬蟲邏輯 (Selenium)
 # ==========================================
+def get_driver():
+    """ 取得 Selenium Chrome Driver (Headless) """
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    return driver
 
-async def fetch_tpex_playwright_90d(s_date, e_date):
+def fetch_tpex_selenium_90d(s_date, e_date):
     """
-    [重寫] 上櫃 (TPEx) 處置股爬蟲 - Playwright 攔截版 (強制重試+延長等待)
+    [重寫] 上櫃 (TPEx) 處置股爬蟲 - Selenium 版 (依指定 XPath)
     """
-    print(f"  [上櫃] 啟動瀏覽器攔截 (Playwright)... {s_date} ~ {e_date}")
+    print(f"  [上櫃] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
     
     sd_roc = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
     ed_roc = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
-    captured_data = []
+    driver = get_driver()
+    clean_data = []
 
-    async with async_playwright() as p:
-        # 增加 3 次重試機制
-        for attempt in range(1, 4):
-            if attempt > 1:
-                print(f"    ⚠️ TPEx 重試第 {attempt} 次...")
-                time.sleep(3)
+    try:
+        driver.get(url)
+        wait = WebDriverWait(driver, 20)
+        
+        # 1. 填寫日期
+        # 使用 JS 強制填入以避開 Datepicker 干擾
+        driver.execute_script(f"""
+            document.querySelector('input[name="startDate"]').value = "{sd_roc}";
+            document.querySelector('input[name="endDate"]').value = "{ed_roc}";
+        """)
+        
+        # 2. 點擊查詢
+        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
+        search_btn.click()
+        
+        # 3. 等待表格載入 (使用您提供的基底 XPath)
+        table_base_xpath = "/html/body/div[2]/section[2]/div[2]/div[2]/div/div[2]/div[2]/table/tbody"
+        wait.until(EC.presence_of_element_located((By.XPATH, table_base_xpath)))
+        
+        # 稍作緩衝確保資料渲染完成
+        time.sleep(3)
+        
+        # 4. 抓取所有列
+        rows = driver.find_elements(By.XPATH, f"{table_base_xpath}/tr")
+        print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
 
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
-
-            # 定義攔截器 (每次 retry 都要重新綁定)
-            async def handle_response(response):
-                if "bulletin/disposal" in response.url and response.request.method == "POST":
-                    try:
-                        data = await response.json()
-                        if "tables" in data and len(data["tables"]) > 0:
-                            captured_data.extend(data["tables"][0].get("data", []))
-                        elif "data" in data:
-                            captured_data.extend(data["data"])
-                        
-                        if captured_data:
-                            print(f"    └── ⚡ 成功攔截 TPEx 資料: {len(captured_data)} 筆")
-                    except: pass
-
-            page.on("response", handle_response)
-
+        for row in rows:
             try:
-                # 1. 前往頁面
-                await page.goto(url, wait_until="domcontentloaded")
+                # 依照使用者指定 XPath 相對路徑解析
+                # 日期: td[2]
+                c_date = row.find_element(By.XPATH, "./td[2]").text.strip()
+                # 代號: td[3]
+                c_code = row.find_element(By.XPATH, "./td[3]").text.strip()
+                # 名稱: td[4] (含連結)
+                c_name = row.find_element(By.XPATH, "./td[4]").text.strip()
+                # 處置期間: td[6]
+                c_period = row.find_element(By.XPATH, "./td[6]").text.strip()
                 
-                # 2. 填寫日期 (輸入檢查)
-                await page.evaluate(f"""
-                    () => {{
-                        let s = document.querySelector('input[name="startDate"]');
-                        let e = document.querySelector('input[name="endDate"]');
-                        if (s) {{ s.value = "{sd_roc}"; s.dispatchEvent(new Event('change')); }}
-                        if (e) {{ e.value = "{ed_roc}"; e.dispatchEvent(new Event('change')); }}
-                    }}
-                """)
-                
-                # 3. 點擊查詢
-                await page.click("button.search")
-                
-                # 4. 強力等待 (Network Idle + Buffer)
-                # 等待網路靜止 (最長 15秒)
-                try: await page.wait_for_load_state("networkidle", timeout=15000)
-                except: pass
-                
-                # 強制多等 10 秒，避免資料還沒吐完就關閉
-                await page.wait_for_timeout(10000)
-                
+                if c_code and c_code.isdigit() and len(c_code) == 4:
+                    clean_data.append({
+                        "Code": c_code,
+                        "Name": c_name,
+                        "Period": c_period,
+                        "Market": "上櫃"
+                    })
             except Exception as e:
-                print(f"    ❌ TPEx 操作失敗 ({attempt}): {e}")
-            
-            await browser.close()
-            
-            if captured_data:
-                break  # 抓到就跳出重試迴圈
+                # 可能是分頁列或標題列，略過
+                continue
 
-    # 資料整理
-    if captured_data:
-        clean_data = []
-        for row in captured_data:
-            c_code = ""
-            c_name = ""
-            c_period = ""
-            found_code_idx = -1
-            
-            # 找代號
-            for i in range(min(len(row), 4)):
-                val = str(row[i]).strip()
-                if val.isdigit() and len(val) == 4:
-                    c_code = val
-                    found_code_idx = i
-                    break
-            
-            if not c_code: continue
+    except Exception as e:
+        print(f"    ❌ TPEx Selenium 操作失敗: {e}")
+    finally:
+        driver.quit()
 
-            # 找名稱
-            if found_code_idx + 1 < len(row):
-                c_name = str(row[found_code_idx+1]).split("(")[0].strip()
-
-            # 找期間 (有 ~ 的欄位)
-            for k in range(found_code_idx + 2, len(row)):
-                s_item = str(row[k]).strip()
-                if "~" in s_item:
-                    c_period = s_item
-                    break
-            
-            clean_data.append({
-                "Code": c_code,
-                "Name": c_name,
-                "Period": c_period,
-                "Market": "上櫃"
-            })
-            
+    if clean_data:
+        print(f"    ✅ 成功解析 {len(clean_data)} 筆資料")
         return pd.DataFrame(clean_data)
-
-    print("    ⚠️ TPEx 無資料 (經 3 次重試)")
+    
+    print("    ⚠️ TPEx 無資料")
     return pd.DataFrame()
 
-async def fetch_twse_playwright_90d(s_date, e_date):
-    print(f"  [上市] 啟動瀏覽器模擬 (修正索引 [2,3,6,7])...")
+def fetch_twse_selenium_90d(s_date, e_date):
+    """
+    [重寫] 上市 (TWSE) 處置股爬蟲 - Selenium 版
+    """
+    print(f"  [上市] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
+    
     sd_str = s_date.strftime("%Y%m%d")
     ed_str = e_date.strftime("%Y%m%d")
     
     url = "https://www.twse.com.tw/zh/announcement/punish.html"
-    captured_data = []
+    driver = get_driver()
+    clean_data = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-        page = await browser.new_page()
+    try:
+        driver.get(url)
+        wait = WebDriverWait(driver, 20)
         
-        async def handle_response(response):
-            if "announcement/punish" in response.url:
-                try:
-                    data = await response.json()
-                    if "data" in data:
-                        captured_data.extend(data["data"])
-                        print(f"    └── ⚡ 攔截資料: {len(data['data'])} 筆")
-                except: pass
-
-        page.on("response", handle_response)
-
-        try:
-            await page.goto(url, wait_until="networkidle")
-            await page.evaluate(f"""
-                () => {{
-                    document.querySelector('input[name="startDate"]').value = "{sd_str}";
-                    document.querySelector('input[name="endDate"]').value = "{ed_str}";
-                }}
-            """)
-            await page.locator("button.search").click()
-            await page.wait_for_timeout(5000)
-        except Exception as e:
-            print(f"    ❌ 操作失敗: {e}")
+        # 1. 填寫日期
+        driver.execute_script(f"""
+            document.querySelector('input[name="startDate"]').value = "{sd_str}";
+            document.querySelector('input[name="endDate"]').value = "{ed_str}";
+        """)
         
-        await browser.close()
-
-    if captured_data:
-        df = pd.DataFrame(captured_data)
-        if df.shape[1] >= 8:
-            df = df.iloc[:, [2, 3, 6]]
-            df.columns = ["Code", "Name", "Period"]
-            df["Market"] = "上市"
-            print(f"    ✅ 整理完成 ({len(df)} 筆)")
-            return df
-        else:
-            print(f"    ⚠️ 欄位數量不足 ({df.shape[1]})，無法對應")
+        # 2. 點擊查詢
+        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
+        search_btn.click()
+        
+        # 3. 等待表格出現
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
+        time.sleep(3)
+        
+        # 4. 解析表格
+        # 上市表格結構通常比較標準，直接抓取
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
+        
+        for row in rows:
+            try:
+                cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) >= 7:
+                    # Index 2: Code
+                    # Index 3: Name
+                    # Index 6: Period
+                    c_code = cols[2].text.strip()
+                    c_name = cols[3].text.strip()
+                    c_period = cols[6].text.strip()
+                    
+                    if c_code and c_code.isdigit() and len(c_code) == 4:
+                         clean_data.append({
+                            "Code": c_code,
+                            "Name": c_name,
+                            "Period": c_period,
+                            "Market": "上市"
+                        })
+            except: continue
             
-    print("    ⚠️ 無資料")
+    except Exception as e:
+        print(f"    ❌ TWSE Selenium 操作失敗: {e}")
+    finally:
+        driver.quit()
+
+    if clean_data:
+        print(f"    ✅ 成功解析 {len(clean_data)} 筆資料")
+        return pd.DataFrame(clean_data)
+
+    print("    ⚠️ TWSE 無資料")
     return pd.DataFrame()
 
-async def run_jail_crawler_pipeline():
-    """ 整合上市櫃近 90 日處置股爬蟲流程 """
+
+def run_jail_crawler_pipeline_sync():
+    """ 整合上市櫃近 90 日處置股爬蟲流程 (同步版) """
     end_date = TARGET_DATE.date()
     start_date = end_date - timedelta(days=150)
-    print(f"🎯 啟動全市場處置股抓取: {start_date} ~ {end_date}")
+    print(f"🎯 啟動全市場處置股抓取 (Selenium): {start_date} ~ {end_date}")
 
-    t1 = fetch_tpex_playwright_90d(start_date, end_date)
-    t2 = fetch_twse_playwright_90d(start_date, end_date)
+    # 依序執行
+    df_tpex = fetch_tpex_selenium_90d(start_date, end_date)
+    df_twse = fetch_twse_selenium_90d(start_date, end_date)
     
-    results = await asyncio.gather(t1, t2)
-    all_dfs = [df for df in results if not df.empty]
+    all_dfs = []
+    if not df_tpex.empty: all_dfs.append(df_tpex)
+    if not df_twse.empty: all_dfs.append(df_twse)
 
     if all_dfs:
         print("\n🔄 合併處置股資料中...")
@@ -1151,11 +1148,12 @@ def main():
     if not sh: return
 
     print("\n" + "="*50)
-    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (全 Playwright)...")
+    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (Selenium)...")
     print("="*50)
     
     try:
-        df_jail_90 = asyncio.run(run_jail_crawler_pipeline())
+        # 改為呼叫同步版 Pipeline
+        df_jail_90 = run_jail_crawler_pipeline_sync()
         
         if not df_jail_90.empty:
             # 1. 寫入總表
