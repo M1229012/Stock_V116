@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.23 台股注意股系統 (TPEx Requests API 修正版)
+V116.24 台股注意股系統 (修正即將出關邏輯)
 修正重點：
-1. [替換] 上櫃 (TPEx) 爬蟲改用 Requests 直接呼叫 API (依照使用者提供的驗證代碼)。
-2. [邏輯] 應用「結束日期 +30天」規則，確保抓到未來生效的處置股。
-3. [保留] 上市 (TWSE) 維持 Selenium 爬蟲。
-4. [保留] 完整風險計算、Google Sheet 串接與即將出關監控。
+1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄（如延長處置、二次處置）的情況，
+   改為取「最晚結束日期」來計算剩餘天數。
+   - 避免「舊案快結束，但新案剛開始」的股票誤判為即將出關。
+2. [保留] 上櫃 Requests API 爬蟲、上市 Selenium 爬蟲與風險計算邏輯。
 """
 
 import os
@@ -87,7 +87,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.23 台股注意股系統 (TPEx API Fix)")
+print(f"🚀 啟動 V116.24 台股注意股系統 (Jail Release Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1117,7 +1117,7 @@ def run_jail_crawler_pipeline_sync():
 
         final_df["SortDate"] = final_df["Period"].apply(parse_sort_date)
         final_df.sort_values(by=["SortDate", "Code"], ascending=[False, True], inplace=True)
-        final_df.drop_duplicates(subset=["Code", "Period"], inplace=True)
+        # final_df.drop_duplicates(subset=["Code", "Period"], inplace=True) # 移除這行，保留所有紀錄以供後續比對
         final_df.drop(columns=["SortDate"], inplace=True)
 
         final_df.rename(columns={
@@ -1148,34 +1148,56 @@ def main():
         df_jail_90 = run_jail_crawler_pipeline_sync()
         
         if not df_jail_90.empty:
-            # 1. 寫入總表
+            # 1. 寫入總表 (去重後寫入)
+            df_jail_unique = df_jail_90.drop_duplicates(subset=["代號", "處置期間"])
             sheet_title = "處置股90日明細"
             print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
             export_cols = ["市場", "代號", "名稱", "處置期間"]
-            final_rows = [export_cols] + df_jail_90[export_cols].values.tolist()
+            final_rows = [export_cols] + df_jail_unique[export_cols].values.tolist()
             ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
             ws_jail.clear()
             ws_jail.append_rows(final_rows, value_input_option='USER_ENTERED')
             print(f"✅ {sheet_title} 更新完成！")
 
             # 2. [新增] 篩選「即將出關」 (剩餘 0~5 天)
+            # 邏輯優化：若有二次處置，需取「最晚」的結束日期
             print("🔍 篩選即將出關股票 (5日內)...")
             releasing_rows = []
             today_date = TARGET_DATE.date()
+            
+            # (A) 建立每檔股票的「最晚結束日期」對應表
+            stock_latest_end = {} # {code: {'date': max_end_date, 'row': row_data}}
 
             for idx, row in df_jail_90.iterrows():
                 try:
                     p = str(row["處置期間"]).strip()
                     sd_date, ed_date = parse_jail_period(p)
                     if ed_date:
-                        days_left = (ed_date - today_date).days
-                        # 邏輯：今天(0) ~ 5天後(5) 且 尚未過期
-                        if 0 <= days_left <= 5:
-                            r_list = row[export_cols].tolist()
-                            r_list.append(str(days_left)) # 增加「剩餘天數」
-                            r_list.append(ed_date.strftime("%Y-%m-%d")) # 增加「出關日」
-                            releasing_rows.append(r_list)
+                        code = str(row["代號"]).strip()
+                        # 若尚未記錄 或 當前紀錄比記錄中的晚 -> 更新
+                        if code not in stock_latest_end or ed_date > stock_latest_end[code]['date']:
+                            stock_latest_end[code] = {
+                                'date': ed_date,
+                                'row': row
+                            }
                 except: pass
+
+            # (B) 檢查每檔股票的「最終結束日」是否在 5 天內
+            # 排序：按結束日期
+            sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
+
+            for code, data in sorted_stocks:
+                final_end_date = data['date']
+                row_data = data['row']
+                
+                days_left = (final_end_date - today_date).days
+                
+                # 只有當「最終結束日」真的快到了，才算即將出關
+                if 0 <= days_left <= 5:
+                    r_list = row_data[export_cols].tolist()
+                    r_list.append(str(days_left)) # 增加「剩餘天數」
+                    r_list.append(final_end_date.strftime("%Y-%m-%d")) # 增加「出關日」
+                    releasing_rows.append(r_list)
 
             sheet_title_release = "即將出關監控"
             cols_release = export_cols + ["剩餘天數", "出關日期"]
