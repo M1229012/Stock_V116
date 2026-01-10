@@ -87,7 +87,6 @@ def get_merged_jail_periods(sh):
             if not code or not period:
                 continue
                 
-            # 解析期間字串，例如 "2025/01/01-2025/01/12" 或 "2025/01/01~2025/01/12"
             dates = re.split(r'[~-]', period)
             if len(dates) >= 2:
                 s_date = parse_date_str(dates[0])
@@ -97,7 +96,6 @@ def get_merged_jail_periods(sh):
                     if code not in jail_map:
                         jail_map[code] = {'start': s_date, 'end': e_date}
                     else:
-                        # 合併邏輯：取最早開始，最晚結束
                         if s_date < jail_map[code]['start']:
                             jail_map[code]['start'] = s_date
                         if e_date > jail_map[code]['end']:
@@ -107,7 +105,6 @@ def get_merged_jail_periods(sh):
         print(f"⚠️ 讀取處置明細失敗 (可能該工作表不存在): {e}")
         return {}
 
-    # 轉回字串格式
     final_map = {}
     for code, dates in jail_map.items():
         fmt_str = f"{dates['start'].strftime('%Y/%m/%d')}-{dates['end'].strftime('%Y/%m/%d')}"
@@ -118,67 +115,66 @@ def get_merged_jail_periods(sh):
 # ============================
 # 🔍 核心邏輯
 # ============================
-def check_danger_stocks(sh, releasing_codes):
+def check_status_split(sh, releasing_codes):
     """
-    檢查即將進入處置 + 正在處置中的股票
-    releasing_codes: 已經在「即將出關」名單的股票代號集合 (用來排除)
+    檢查並分類股票：
+    1. 即將進處置 (entering)
+    2. 正在處置中 (in_jail)
     """
-    print("🔍 檢查「即將進處置/處置中」名單...")
+    print("🔍 檢查「即將進處置/處置中」名單並分類...")
     try:
         ws = sh.worksheet("近30日熱門統計")
         records = ws.get_all_records()
     except Exception as e:
         print(f"⚠️ 讀取「近30日熱門統計」失敗: {e}")
-        return None
+        return {'entering': [], 'in_jail': []}
 
-    # 取得處置期間對應表
     jail_period_map = get_merged_jail_periods(sh)
 
-    danger_list = []
-    seen_codes = set() # 用來防止同一支股票被推播兩次
+    entering_list = []
+    in_jail_list = []
+    seen_codes = set()
     
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
         
-        # 1. 如果這支股票已經在「即將出關」名單，這裡就不要顯示 (優先權給出關名單)
+        # 排除已在出關名單的股票
         if code in releasing_codes:
             continue
 
-        # 2. 防止重複添加
         if code in seen_codes:
             continue
 
         name = row.get('名稱', '')
         days_str = str(row.get('最快處置天數', '99'))
         reason = str(row.get('處置觸發原因', ''))
-        risk = row.get('風險等級', '')
 
         if not days_str.isdigit():
             continue
 
         days = int(days_str)
-        
         is_in_jail = "處置中" in reason
         is_approaching = days <= JAIL_ENTER_THRESHOLD
 
-        if is_in_jail or is_approaching:
-            
-            display_reason = reason
-            # 如果是處置中，嘗試附加日期區間
-            if is_in_jail and code in jail_period_map:
-                period_str = jail_period_map[code]
-                display_reason = f"{reason} ({period_str})"
-
-            danger_list.append({
+        # 分類邏輯
+        if is_in_jail:
+            period_str = jail_period_map.get(code, "日期未知")
+            in_jail_list.append({
                 "code": code,
                 "name": name,
-                "days": days,
-                "reason": display_reason, 
-                "risk": risk
+                "period": period_str
             })
-            seen_codes.add(code) # 標記已處理
+            seen_codes.add(code)
+            
+        elif is_approaching:
+            entering_list.append({
+                "code": code,
+                "name": name,
+                "days": days
+            })
+            seen_codes.add(code)
     
-    return danger_list
+    return {'entering': entering_list, 'in_jail': in_jail_list}
 
 def check_releasing_stocks(sh):
     """檢查即將出關的股票"""
@@ -197,7 +193,6 @@ def check_releasing_stocks(sh):
     for row in records:
         code = str(row.get('代號', '')).strip()
         
-        # 防止重複
         if code in seen_codes:
             continue
 
@@ -210,8 +205,6 @@ def check_releasing_stocks(sh):
             
         days = int(days_left_str)
         
-        # 假如處置股當天出關 (days < 0 或是邏輯上已過)，清單通常不會有，但若有則過濾
-        # 此處保留 <= 閥值的邏輯
         if days <= JAIL_EXIT_THRESHOLD:
             releasing_list.append({
                 "code": code,
@@ -231,7 +224,6 @@ def main():
         print("❌ 請先設定 DISCORD_WEBHOOK_URL")
         return
 
-    # 時間與假日判斷 (保留平日 18:00 推播邏輯)
     utc_now = datetime.utcnow()
     tw_now = utc_now + timedelta(hours=8)
     current_hour = tw_now.hour
@@ -239,13 +231,11 @@ def main():
 
     print(f"🕒 目前台灣時間: 星期{current_weekday+1}, {current_hour} 點")
 
-    # 🔥 [測試模式] 已註解假日與時間鎖，以便立即測試 🔥
-    # 假日鎖
+    # 🔥 [測試模式] 如需測試請保持註解；正式上線請取消註解 🔥
     # if current_weekday > 4:
     #     print("🔕 今天是假日，暫停推播。")
     #     return
 
-    # 時間鎖
     # if current_hour != 18:
     #     print(f"🔕 非推播時間 (18點)，跳過通知。")
     #     return
@@ -255,65 +245,71 @@ def main():
 
     embeds_to_send = []
 
-    # 1. 先處理 即將出關 (取得名單以便後續排除)
+    # 1. 取得即將出關名單
     releasing_stocks = check_releasing_stocks(sh)
-    # 建立一個集合，包含所有即將出關的股票代號
     releasing_codes = {item['code'] for item in releasing_stocks}
 
-    # 2. 處理 危險股 + 處置中 (傳入排除名單)
-    danger_stocks = check_danger_stocks(sh, releasing_codes)
-    
-    if danger_stocks:
+    # 2. 取得並分類 進處置/處置中 名單
+    status_data = check_status_split(sh, releasing_codes)
+    entering_stocks = status_data['entering']
+    in_jail_stocks = status_data['in_jail']
+
+    # --- Part 1: 即將進處置 (Entering) [最上面] ---
+    if entering_stocks:
         desc_lines = []
-        for s in danger_stocks:
-            # ✅ 根據狀態顯示不同文字與圖示
-            if "處置中" in s['reason']:
-                icon = "🔒"
-                msg = "正在處置中"
-            elif s['days'] == 0:
+        for s in entering_stocks:
+            if s['days'] == 0:
                 icon = "🔥"
-                msg = "明天處置"
+                msg = "明天進處置"
             else:
                 icon = "⚠️"
-                msg = f"再 {s['days']} 天"
+                msg = f"再 {s['days']} 天進處置"
             
-            # ✅ [修改] 加上 Markdown Code Block (`) 讓文字串打包顯示
-            desc_lines.append(
-                f"{icon} **{s['code']} {s['name']}** | `{msg}`\n   └ `{s['reason']}`"
-            )
-        
-        embed_danger = {
-            "title": f"🚨 注意！{len(danger_stocks)} 檔股票 處置監控報告",
+            desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
+
+        embed_entering = {
+            "title": f"🚨 注意！{len(entering_stocks)} 檔股票瀕臨處置",
             "description": "\n".join(desc_lines),
             "color": 15158332, # 紅色
-            "footer": {"text": f"資料時間: {tw_now.strftime('%Y-%m-%d %H:%M')}"}
         }
-        embeds_to_send.append(embed_danger)
+        embeds_to_send.append(embed_entering)
 
-    # 3. 放入即將出關的 Embed
+    # --- Part 2: 即將出關 (Releasing) [中間] ---
     if releasing_stocks:
         desc_lines = []
         for s in releasing_stocks:
-            day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
-            # ✅ [修改] 加上 Markdown Code Block
-            desc_lines.append(
-                f"🔓 **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})"
-            )
-        
-        embed_release = {
-            "title": f"🕊️ 關注！{len(releasing_stocks)} 檔股票即將出關",
+            day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
+            desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})")
+
+        embed_releasing = {
+            "title": f"🔓 關注！{len(releasing_stocks)} 檔股票即將出關",
             "description": "\n".join(desc_lines),
             "color": 3066993, # 綠色
-            "footer": {"text": "處置結束後通常會有行情波動，請留意風險。"}
         }
-        embeds_to_send.append(embed_release)
+        embeds_to_send.append(embed_releasing)
 
-    # 4. 發送
+    # --- Part 3: 正在處置中 (In Jail) [最下面] ---
+    if in_jail_stocks:
+        desc_lines = []
+        for s in in_jail_stocks:
+            desc_lines.append(f"🔒 **{s['code']} {s['name']}** | `{s['period']}`")
+
+        embed_in_jail = {
+            "title": f"⛓️ 監控中！{len(in_jail_stocks)} 檔股票正在處置",
+            "description": "\n".join(desc_lines),
+            "color": 10181046, # 紫色/深灰色
+        }
+        embeds_to_send.append(embed_in_jail)
+
+    # --- Footer 處理 (確保時間戳記附在最後一個區塊) ---
     if embeds_to_send:
+        # 取得列表最後一個 embed，加入 footer
+        embeds_to_send[-1]["footer"] = {
+            "text": f"資料時間: {tw_now.strftime('%Y-%m-%d %H:%M')}"
+        }
         send_discord_webhook(embeds_to_send)
     else:
         print("😴 今日無符合條件的股票，不發送通知。")
-        # 如果你想確認機器人是活的，可以取消下面這行的註解
         # send_discord_webhook([{"title": "測試", "description": "系統運作正常，但無股票符合條件。"}])
 
 if __name__ == "__main__":
