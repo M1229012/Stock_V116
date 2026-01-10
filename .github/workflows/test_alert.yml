@@ -1,0 +1,50 @@
+name: Test Discord Notification (Only)
+
+on:
+  push:
+    paths:
+      - 'notify_discord.py'       # 只有修改推播程式時才自動觸發
+      - '.github/workflows/test_alert.yml'
+  workflow_dispatch:              # 允許在 GitHub 網頁上手動點擊執行
+
+jobs:
+  test-notification:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install gspread google-auth requests
+
+    # 產生金鑰 (因為要讀 Sheet)
+    - name: Create Service Key
+      env:
+        GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY }}
+      run: |
+        python - <<'PY'
+        import os
+        with open("service_key.json", "w", encoding="utf-8") as f:
+            f.write(os.environ["GCP_SERVICE_KEY"])
+        PY
+
+    # 直接執行推播測試
+    - name: Run Discord Notification Test
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        GOOGLE_APPLICATION_CREDENTIALS: service_key.json
+      run: |
+        python notify_discord.py
+
+    - name: Cleanup Service Key
+      if: always()
+      run: rm -f service_key.json
