@@ -177,7 +177,7 @@ def main():
             "title": f"🚨 注意！{len(danger_stocks)} 檔股票瀕臨處置邊緣",
             "description": "\n".join(desc_lines),
             "color": 15158332, # 紅色
-            "footer": {"text": f"資料時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}"}
+            #"footer": {"text": f"資料時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}"}
         }
         embeds_to_send.append(embed_danger)
 
