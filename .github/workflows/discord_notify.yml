@@ -1,14 +1,17 @@
-name: Test Discord Notification (Only)
+name: Scheduled Discord Notification
 
 on:
-  push:
-    paths:
-      - 'notify_discord.py'       # 只有修改推播程式時才自動觸發
-      - '.github/workflows/test_alert.yml'
-  workflow_dispatch:              # 允許在 GitHub 網頁上手動點擊執行
+  # ✅ 設定排程：台灣時間平日晚上 18:00
+  # GitHub Actions 使用 UTC 時間，台灣是 UTC+8
+  # 18:00 (TW) - 8小時 = 10:00 (UTC)
+  schedule:
+    - cron: '0 10 * * 1-5'  # 分 時 日 月 週(1=週一)
+
+  # ✅ 保留手動觸發按鈕 (方便你隨時測試)
+  workflow_dispatch:
 
 jobs:
-  test-notification:
+  run-notification:
     runs-on: ubuntu-latest
 
     steps:
@@ -37,10 +40,11 @@ jobs:
             f.write(os.environ["GCP_SERVICE_KEY"])
         PY
 
-    # 直接執行推播測試
-    - name: Run Discord Notification Test
+    # 執行推播程式
+    - name: Run Discord Notification
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        # 確保程式能讀到剛剛產生的金鑰
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
         python notify_discord.py
