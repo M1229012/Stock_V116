@@ -1,14 +1,21 @@
-name: Test Discord Notification (Only)
+name: Daily Discord Notification (Weekdays) # 建議改個名字，比較像正式版
 
 on:
+  schedule:
+    # 說明：分 時 日 月 星期 (1-5 代表週一到週五)
+    # 台灣時間 18:00 = UTC 10:00
+    - cron: '0 10 * * 1-5'
+  
+  workflow_dispatch:              # 保留手動執行的按鈕，方便測試
+  
+  # 如果你希望每次修改程式碼也順便跑一次，可以保留 push，不需要則刪除下面這段
   push:
     paths:
-      - 'notify_discord.py'       # 只有修改推播程式時才自動觸發
+      - 'notify_discord.py'
       - '.github/workflows/discord_notify.yml'
-  workflow_dispatch:              # 允許在 GitHub 網頁上手動點擊執行
 
 jobs:
-  test-notification:
+  daily-notification:             # job ID 也可以改個比較正式的名字
     runs-on: ubuntu-latest
 
     steps:
@@ -26,7 +33,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install gspread google-auth requests
 
-    # 產生金鑰 (因為要讀 Sheet)
+    # 產生金鑰
     - name: Create Service Key
       env:
         GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY }}
@@ -37,8 +44,8 @@ jobs:
             f.write(os.environ["GCP_SERVICE_KEY"])
         PY
 
-    # 直接執行推播測試
-    - name: Run Discord Notification Test
+    # 執行推播
+    - name: Run Discord Notification
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
