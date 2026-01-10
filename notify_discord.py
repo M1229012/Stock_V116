@@ -9,9 +9,8 @@ from google.oauth2.service_account import Credentials
 # ============================
 # ⚙️ 設定區
 # ============================
-# 請將你的 Discord Webhook URL 貼在這裡
-DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1459469839138684951/hMpqETdUgYeEczeBqx4in7anH6xw2nGYHIkcKbikC5wBw5FVquqSWayBY3VqHjiw4_Yn"
-
+# 環境變數讀取 (GitHub Secrets)
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
