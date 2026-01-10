@@ -81,7 +81,9 @@ def get_merged_jail_periods(sh):
         records = ws.get_all_records()
         
         for row in records:
-            code = str(row.get('代號', '')).strip()
+            # ✅ [修正] 強制去除單引號與空白，確保能跟主表代號對上
+            code = str(row.get('代號', '')).replace("'", "").strip()
+            # 資料位於 D 列 (Header 名稱為 '處置期間')
             period = str(row.get('處置期間', '')).strip()
             
             if not code or not period:
@@ -96,6 +98,7 @@ def get_merged_jail_periods(sh):
                     if code not in jail_map:
                         jail_map[code] = {'start': s_date, 'end': e_date}
                     else:
+                        # 合併邏輯：取最早開始，最晚結束 (自動處理延長處置)
                         if s_date < jail_map[code]['start']:
                             jail_map[code]['start'] = s_date
                         if e_date > jail_map[code]['end']:
@@ -129,6 +132,7 @@ def check_status_split(sh, releasing_codes):
         print(f"⚠️ 讀取「近30日熱門統計」失敗: {e}")
         return {'entering': [], 'in_jail': []}
 
+    # 取得處理好的日期表
     jail_period_map = get_merged_jail_periods(sh)
 
     entering_list = []
@@ -158,6 +162,7 @@ def check_status_split(sh, releasing_codes):
 
         # 分類邏輯
         if is_in_jail:
+            # ✅ 這裡會用到修正後的 map，解決日期未知問題
             period_str = jail_period_map.get(code, "日期未知")
             in_jail_list.append({
                 "code": code,
@@ -258,12 +263,13 @@ def main():
     if entering_stocks:
         desc_lines = []
         for s in entering_stocks:
+            # ✅ [修改] 改成「最快」文字
             if s['days'] == 0:
                 icon = "🔥"
-                msg = "明天進處置"
+                msg = "最快明天進處置"
             else:
                 icon = "⚠️"
-                msg = f"再 {s['days']} 天進處置"
+                msg = f"最快 {s['days']} 天進處置"
             
             desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
 
@@ -301,16 +307,11 @@ def main():
         }
         embeds_to_send.append(embed_in_jail)
 
-    # --- Footer 處理 (確保時間戳記附在最後一個區塊) ---
+    # ✅ [修正] 移除 Footer 設定
     if embeds_to_send:
-        # 取得列表最後一個 embed，加入 footer
-        embeds_to_send[-1]["footer"] = {
-            "text": f"資料時間: {tw_now.strftime('%Y-%m-%d %H:%M')}"
-        }
         send_discord_webhook(embeds_to_send)
     else:
         print("😴 今日無符合條件的股票，不發送通知。")
-        # send_discord_webhook([{"title": "測試", "description": "系統運作正常，但無股票符合條件。"}])
 
 if __name__ == "__main__":
     main()
