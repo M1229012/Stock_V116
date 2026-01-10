@@ -15,7 +15,7 @@ SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
-JAIL_ENTER_THRESHOLD = 2  # 剩餘 X 天內進處置就要通知 (包含 0)
+JAIL_ENTER_THRESHOLD = 2  # 剩餘 X 天內進處置就要通知 (會排除 0)
 JAIL_EXIT_THRESHOLD = 5   # 剩餘 X 天內出關就要通知
 
 # ============================
@@ -78,12 +78,8 @@ def check_danger_stocks(sh):
         code = str(row.get('代號', '')).replace("'", "").strip()
         name = row.get('名稱', '')
         days_str = str(row.get('最快處置天數', '99'))
-        reason = str(row.get('處置觸發原因', '')) # 確保是字串
+        reason = str(row.get('處置觸發原因', '')) # 雖然不推播，但邏輯判斷可能還是會用到
         risk = row.get('風險等級', '')
-
-        # 🛑 修正重點：如果原因包含「處置中」，表示已經進去了，直接跳過
-        if "處置中" in reason:
-            continue
 
         # 排除掉 "X" 或空值
         if not days_str.isdigit():
@@ -91,14 +87,22 @@ def check_danger_stocks(sh):
 
         days = int(days_str)
         
-        # 條件：天數 <= 2 (且非處置中)
+        # 🛑 過濾規則 1：如果天數是 0，直接跳過 (解決處置中股票誤報問題)
+        if days == 0:
+            continue
+
+        # 🛑 過濾規則 2：原因包含「處置中」也跳過 (雙重保險)
+        if "處置中" in reason:
+            continue
+        
+        # 條件：天數 <= 2 (現在只會抓到 1 和 2)
         if days <= JAIL_ENTER_THRESHOLD:
             danger_list.append({
                 "code": code,
                 "name": name,
                 "days": days,
-                "reason": reason,
                 "risk": risk
+                # reason 已不需要存入
             })
     
     return danger_list
@@ -146,7 +150,6 @@ def check_releasing_stocks(sh):
 # 🚀 主程式
 # ============================
 def main():
-    # 簡單檢查是否有設定 Webhook (非必要，看個人需求)
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
         print("❌ 請先設定 DISCORD_WEBHOOK_URL")
         return
@@ -161,13 +164,13 @@ def main():
     if danger_stocks:
         desc_lines = []
         for s in danger_stocks:
-            # 根據天數給予不同圖示
-            icon = "🔥" if s['days'] == 0 else "⚠️"
-            day_msg = "明天處置" if s['days'] == 0 else f"再 {s['days']} 天"
+            # 因為排除 0 了，所以只會有 "再 X 天"
+            icon = "⚠️"
+            day_msg = f"再 {s['days']} 天"
             
+            # 🛑 修改：不顯示原因，只顯示代號、名稱、天數
             desc_lines.append(
-                f"{icon} **{s['code']} {s['name']}** | {day_msg}\n"
-                f"   └ 原因: {s['reason']}"
+                f"{icon} **{s['code']} {s['name']}** | {day_msg}"
             )
         
         embed_danger = {
