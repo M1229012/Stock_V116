@@ -42,7 +42,7 @@ def send_discord_webhook(embeds):
 
     data = {
         "username": "台股處置監控機器人",
-        "avatar_url": "https://cdn-icons-png.flaticon.com/512/2502/2502697.png", # 或是你喜歡的圖片連結
+        "avatar_url": "https://cdn-icons-png.flaticon.com/512/2502/2502697.png", 
         "embeds": embeds
     }
 
@@ -78,8 +78,12 @@ def check_danger_stocks(sh):
         code = str(row.get('代號', '')).replace("'", "").strip()
         name = row.get('名稱', '')
         days_str = str(row.get('最快處置天數', '99'))
-        reason = row.get('處置觸發原因', '')
+        reason = str(row.get('處置觸發原因', '')) # 確保是字串
         risk = row.get('風險等級', '')
+
+        # 🛑 修正重點：如果原因包含「處置中」，表示已經進去了，直接跳過
+        if "處置中" in reason:
+            continue
 
         # 排除掉 "X" 或空值
         if not days_str.isdigit():
@@ -87,7 +91,7 @@ def check_danger_stocks(sh):
 
         days = int(days_str)
         
-        # 條件：天數 <= 2 (0=明天進, 1=再1天, 2=再2天)
+        # 條件：天數 <= 2 (且非處置中)
         if days <= JAIL_ENTER_THRESHOLD:
             danger_list.append({
                 "code": code,
@@ -104,12 +108,10 @@ def check_releasing_stocks(sh):
     print("🔍 檢查「即將出關」名單...")
     try:
         ws = sh.worksheet("即將出關監控")
-        # 注意：如果表單只有標題或 "目前無 5 日內..." 的文字，get_all_records 可能會報錯或回傳空
         all_values = ws.get_all_values()
-        if len(all_values) < 2: return [] # 沒資料
+        if len(all_values) < 2: return [] 
         
         headers = all_values[0]
-        # 簡單檢查 header 是否包含我們需要的欄位
         if "剩餘天數" not in headers: return []
         
         records = ws.get_all_records()
@@ -144,7 +146,8 @@ def check_releasing_stocks(sh):
 # 🚀 主程式
 # ============================
 def main():
-    if "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
+    # 簡單檢查是否有設定 Webhook (非必要，看個人需求)
+    if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
         print("❌ 請先設定 DISCORD_WEBHOOK_URL")
         return
 
@@ -158,8 +161,10 @@ def main():
     if danger_stocks:
         desc_lines = []
         for s in danger_stocks:
+            # 根據天數給予不同圖示
             icon = "🔥" if s['days'] == 0 else "⚠️"
             day_msg = "明天處置" if s['days'] == 0 else f"再 {s['days']} 天"
+            
             desc_lines.append(
                 f"{icon} **{s['code']} {s['name']}** | {day_msg}\n"
                 f"   └ 原因: {s['reason']}"
