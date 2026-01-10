@@ -3,19 +3,18 @@ import gspread
 import requests
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
 # ============================
 # ⚙️ 設定區
 # ============================
-# 環境變數讀取 (GitHub Secrets)
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
-JAIL_ENTER_THRESHOLD = 2  # 剩餘 X 天內進處置就要通知 (會排除 0)
+JAIL_ENTER_THRESHOLD = 2  # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5   # 剩餘 X 天內出關就要通知
 
 # ============================
@@ -37,7 +36,6 @@ def connect_google_sheets():
 def send_discord_webhook(embeds):
     """發送訊息到 Discord"""
     if not embeds:
-        print("⚠️ 沒有內容需要推播")
         return
 
     data = {
@@ -63,8 +61,8 @@ def send_discord_webhook(embeds):
 # 🔍 核心邏輯
 # ============================
 def check_danger_stocks(sh):
-    """檢查即將進入處置的股票 (讀取：近30日熱門統計)"""
-    print("🔍 檢查「即將進處置」名單...")
+    """檢查即將進入處置 + 正在處置中的股票"""
+    print("🔍 檢查「即將進處置/處置中」名單...")
     try:
         ws = sh.worksheet("近30日熱門統計")
         records = ws.get_all_records()
@@ -78,46 +76,37 @@ def check_danger_stocks(sh):
         code = str(row.get('代號', '')).replace("'", "").strip()
         name = row.get('名稱', '')
         days_str = str(row.get('最快處置天數', '99'))
-        reason = str(row.get('處置觸發原因', '')) # 雖然不推播，但邏輯判斷可能還是會用到
+        reason = str(row.get('處置觸發原因', ''))
         risk = row.get('風險等級', '')
 
-        # 排除掉 "X" 或空值
         if not days_str.isdigit():
             continue
 
         days = int(days_str)
         
-        # 🛑 過濾規則 1：如果天數是 0，直接跳過 (解決處置中股票誤報問題)
-        if days == 0:
-            continue
+        # ✅ 修改點：放寬條件
+        # 1. 處置中 (reason 包含 "處置中")
+        # 2. 即將處置 (days <= 2)
+        is_in_jail = "處置中" in reason
+        is_approaching = days <= JAIL_ENTER_THRESHOLD
 
-        # 🛑 過濾規則 2：原因包含「處置中」也跳過 (雙重保險)
-        if "處置中" in reason:
-            continue
-        
-        # 條件：天數 <= 2 (現在只會抓到 1 和 2)
-        if days <= JAIL_ENTER_THRESHOLD:
+        if is_in_jail or is_approaching:
             danger_list.append({
                 "code": code,
                 "name": name,
                 "days": days,
+                "reason": reason, # 存下來判斷狀態用
                 "risk": risk
-                # reason 已不需要存入
             })
     
     return danger_list
 
 def check_releasing_stocks(sh):
-    """檢查即將出關的股票 (讀取：即將出關監控)"""
+    """檢查即將出關的股票"""
     print("🔍 檢查「即將出關」名單...")
     try:
         ws = sh.worksheet("即將出關監控")
-        all_values = ws.get_all_values()
-        if len(all_values) < 2: return [] 
-        
-        headers = all_values[0]
-        if "剩餘天數" not in headers: return []
-        
+        if len(ws.get_all_values()) < 2: return [] 
         records = ws.get_all_records()
     except Exception as e:
         print(f"⚠️ 讀取「即將出關監控」失敗: {e}")
@@ -154,34 +143,58 @@ def main():
         print("❌ 請先設定 DISCORD_WEBHOOK_URL")
         return
 
+    # 時間與假日判斷 (保留平日 18:00 推播邏輯)
+    utc_now = datetime.utcnow()
+    tw_now = utc_now + timedelta(hours=8)
+    current_hour = tw_now.hour
+    current_weekday = tw_now.weekday()
+
+    print(f"🕒 目前台灣時間: 星期{current_weekday+1}, {current_hour} 點")
+
+    # 假日鎖
+    if current_weekday > 4:
+        print("🔕 今天是假日，暫停推播。")
+        return
+
+    # 時間鎖
+    if current_hour != 18:
+        print(f"🔕 非推播時間 (18點)，跳過通知。")
+        return
+
     sh = connect_google_sheets()
     if not sh: return
 
     embeds_to_send = []
 
-    # 1. 處理危險股 (紅色警報)
+    # 1. 處理 危險股 + 處置中
     danger_stocks = check_danger_stocks(sh)
     if danger_stocks:
         desc_lines = []
         for s in danger_stocks:
-            # 因為排除 0 了，所以只會有 "再 X 天"
-            icon = "⚠️"
-            day_msg = f"再 {s['days']} 天"
+            # ✅ 根據狀態顯示不同文字與圖示
+            if "處置中" in s['reason']:
+                icon = "🔒"
+                msg = "正在處置中"
+            elif s['days'] == 0:
+                icon = "🔥"
+                msg = "明天處置"
+            else:
+                icon = "⚠️"
+                msg = f"再 {s['days']} 天"
             
-            # 🛑 修改：不顯示原因，只顯示代號、名稱、天數
             desc_lines.append(
-                f"{icon} **{s['code']} {s['name']}** | {day_msg}"
+                f"{icon} **{s['code']} {s['name']}** | {msg}"
             )
         
         embed_danger = {
-            "title": f"🚨 注意！{len(danger_stocks)} 檔股票瀕臨處置邊緣",
+            "title": f"🚨 注意！{len(danger_stocks)} 檔股票 處置監控報告",
             "description": "\n".join(desc_lines),
             "color": 15158332, # 紅色
-            #"footer": {"text": f"資料時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}"}
+            "footer": {"text": f"資料時間: {tw_now.strftime('%Y-%m-%d %H:%M')}"}
         }
         embeds_to_send.append(embed_danger)
 
-    # 2. 處理即將出關股 (綠色機會)
+    # 2. 處理 即將出關
     releasing_stocks = check_releasing_stocks(sh)
     if releasing_stocks:
         desc_lines = []
