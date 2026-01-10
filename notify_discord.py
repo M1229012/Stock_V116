@@ -58,13 +58,25 @@ def send_discord_webhook(embeds):
     except Exception as e:
         print(f"❌ 發送請求錯誤: {e}")
 
-def parse_date_str(date_str):
-    """解析各種格式的日期字串為 datetime object"""
-    date_str = str(date_str).strip()
+def parse_roc_date(date_str):
+    """
+    ✅ [修正] 專門解析民國年格式 (例如 115/01/09 -> 2026-01-09)
+    """
+    s = str(date_str).strip()
+    # 嘗試匹配 115/01/09 或 115-01-09
+    match = re.match(r'^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$', s)
+    if match:
+        y, m, d = map(int, match.groups())
+        # 如果年份小於 1911，視為民國年，加上 1911 轉西元
+        if y < 1911:
+            return datetime(y + 1911, m, d)
+        return datetime(y, m, d)
+    
+    # 如果上面沒抓到，嘗試標準西元格式
     formats = ["%Y/%m/%d", "%Y-%m-%d", "%Y%m%d"]
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(s, fmt)
         except ValueError:
             continue
     return None
@@ -81,24 +93,25 @@ def get_merged_jail_periods(sh):
         records = ws.get_all_records()
         
         for row in records:
-            # ✅ [修正] 強制去除單引號與空白，確保能跟主表代號對上
+            # 強制去除單引號與空白
             code = str(row.get('代號', '')).replace("'", "").strip()
-            # 資料位於 D 列 (Header 名稱為 '處置期間')
             period = str(row.get('處置期間', '')).strip()
             
             if not code or not period:
                 continue
-                
+            
+            # 分割日期區間 (例如 115/01/09~115/01/26)
             dates = re.split(r'[~-]', period)
             if len(dates) >= 2:
-                s_date = parse_date_str(dates[0])
-                e_date = parse_date_str(dates[1])
+                # ✅ 改用 parse_roc_date 來處理民國年
+                s_date = parse_roc_date(dates[0])
+                e_date = parse_roc_date(dates[1])
                 
                 if s_date and e_date:
                     if code not in jail_map:
                         jail_map[code] = {'start': s_date, 'end': e_date}
                     else:
-                        # 合併邏輯：取最早開始，最晚結束 (自動處理延長處置)
+                        # 合併邏輯：取最早開始，最晚結束
                         if s_date < jail_map[code]['start']:
                             jail_map[code]['start'] = s_date
                         if e_date > jail_map[code]['end']:
@@ -110,6 +123,7 @@ def get_merged_jail_periods(sh):
 
     final_map = {}
     for code, dates in jail_map.items():
+        # 轉回易讀的格式 (西元)
         fmt_str = f"{dates['start'].strftime('%Y/%m/%d')}-{dates['end'].strftime('%Y/%m/%d')}"
         final_map[code] = fmt_str
         
@@ -162,7 +176,7 @@ def check_status_split(sh, releasing_codes):
 
         # 分類邏輯
         if is_in_jail:
-            # ✅ 這裡會用到修正後的 map，解決日期未知問題
+            # 嘗試取得日期，若無則顯示未知 (但現在民國年修復後應該都有了)
             period_str = jail_period_map.get(code, "日期未知")
             in_jail_list.append({
                 "code": code,
@@ -263,7 +277,6 @@ def main():
     if entering_stocks:
         desc_lines = []
         for s in entering_stocks:
-            # ✅ [修改] 改成「最快」文字
             if s['days'] == 0:
                 icon = "🔥"
                 msg = "最快明天進處置"
@@ -307,7 +320,6 @@ def main():
         }
         embeds_to_send.append(embed_in_jail)
 
-    # ✅ [修正] 移除 Footer 設定
     if embeds_to_send:
         send_discord_webhook(embeds_to_send)
     else:
