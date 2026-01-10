@@ -239,15 +239,16 @@ def main():
 
     print(f"🕒 目前台灣時間: 星期{current_weekday+1}, {current_hour} 點")
 
+    # 🔥 [測試模式] 已註解假日與時間鎖，以便立即測試 🔥
     # 假日鎖
-    if current_weekday > 4:
-        print("🔕 今天是假日，暫停推播。")
-        return
+    # if current_weekday > 4:
+    #     print("🔕 今天是假日，暫停推播。")
+    #     return
 
     # 時間鎖
-    if current_hour != 18:
-        print(f"🔕 非推播時間 (18點)，跳過通知。")
-        return
+    # if current_hour != 18:
+    #     print(f"🔕 非推播時間 (18點)，跳過通知。")
+    #     return
 
     sh = connect_google_sheets()
     if not sh: return
@@ -276,8 +277,9 @@ def main():
                 icon = "⚠️"
                 msg = f"再 {s['days']} 天"
             
+            # ✅ [修改] 加上 Markdown Code Block (`) 讓文字串打包顯示
             desc_lines.append(
-                f"{icon} **{s['code']} {s['name']}** | {msg}\n   └ {s['reason']}"
+                f"{icon} **{s['code']} {s['name']}** | `{msg}`\n   └ `{s['reason']}`"
             )
         
         embed_danger = {
@@ -293,8 +295,9 @@ def main():
         desc_lines = []
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
+            # ✅ [修改] 加上 Markdown Code Block
             desc_lines.append(
-                f"🔓 **{s['code']} {s['name']}** | {day_msg} ({s['date']})"
+                f"🔓 **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})"
             )
         
         embed_release = {
@@ -310,6 +313,8 @@ def main():
         send_discord_webhook(embeds_to_send)
     else:
         print("😴 今日無符合條件的股票，不發送通知。")
+        # 如果你想確認機器人是活的，可以取消下面這行的註解
+        # send_discord_webhook([{"title": "測試", "description": "系統運作正常，但無股票符合條件。"}])
 
 if __name__ == "__main__":
     main()
