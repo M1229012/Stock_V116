@@ -68,12 +68,10 @@ def parse_roc_date(date_str):
     match = re.match(r'^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$', s)
     if match:
         y, m, d = map(int, match.groups())
-        # 如果年份小於 1911 (如 115)，視為民國年，加上 1911 轉西元
         if y < 1911:
             return datetime(y + 1911, m, d)
         return datetime(y, m, d)
     
-    # 嘗試標準西元格式
     formats = ["%Y/%m/%d", "%Y-%m-%d", "%Y%m%d"]
     for fmt in formats:
         try:
@@ -85,11 +83,8 @@ def parse_roc_date(date_str):
 def get_merged_jail_periods(sh):
     """
     從「處置股90日明細」讀取資料，並合併同一檔股票的處置期間。
-    ✅ 修正重點：
-    1. 支援全形波浪號 '～' 切割。
-    2. 過濾掉已經結束的舊紀錄，確保不會合併到很久以前的資料。
     """
-    jail_map = {} # {code: {'start': min_date, 'end': max_date}}
+    jail_map = {} 
     
     # 設定基準時間：今天 (UTC+8) 的 00:00:00
     tw_now = datetime.utcnow() + timedelta(hours=8)
@@ -100,14 +95,12 @@ def get_merged_jail_periods(sh):
         records = ws.get_all_records()
         
         for row in records:
-            # 強制去除單引號與空白
             code = str(row.get('代號', '')).replace("'", "").strip()
             period = str(row.get('處置期間', '')).strip()
             
             if not code or not period:
                 continue
             
-            # 支援全形波浪號 '～' 
             dates = re.split(r'[~-～]', period)
             
             if len(dates) >= 2:
@@ -115,18 +108,12 @@ def get_merged_jail_periods(sh):
                 e_date = parse_roc_date(dates[1])
                 
                 if s_date and e_date:
-                    # 🔥【關鍵過濾】🔥
-                    # 如果這筆紀錄的結束日期 < 今天，代表是歷史紀錄 (90天內但已結束的)
-                    # 直接跳過，不參與合併，避免拉長區間
                     if e_date < today:
                         continue
 
                     if code not in jail_map:
                         jail_map[code] = {'start': s_date, 'end': e_date}
                     else:
-                        # 合併邏輯：
-                        # 起始日取最早 (保留原本進處置的時間)
-                        # 結束日取最晚 (抓取最新延長後的出關日)
                         if s_date < jail_map[code]['start']:
                             jail_map[code]['start'] = s_date
                         if e_date > jail_map[code]['end']:
@@ -148,9 +135,7 @@ def get_merged_jail_periods(sh):
 # ============================
 def check_status_split(sh, releasing_codes):
     """
-    檢查並分類股票：
-    1. 即將進處置 (entering)
-    2. 正在處置中 (in_jail)
+    檢查並分類股票，並進行排序
     """
     print("🔍 檢查「即將進處置/處置中」名單並分類...")
     try:
@@ -160,7 +145,6 @@ def check_status_split(sh, releasing_codes):
         print(f"⚠️ 讀取「近30日熱門統計」失敗: {e}")
         return {'entering': [], 'in_jail': []}
 
-    # 取得處理好的日期表
     jail_period_map = get_merged_jail_periods(sh)
 
     entering_list = []
@@ -170,7 +154,6 @@ def check_status_split(sh, releasing_codes):
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
         
-        # 排除已在出關名單的股票
         if code in releasing_codes:
             continue
 
@@ -188,9 +171,7 @@ def check_status_split(sh, releasing_codes):
         is_in_jail = "處置中" in reason
         is_approaching = days <= JAIL_ENTER_THRESHOLD
 
-        # 分類邏輯
         if is_in_jail:
-            # 這裡一定能抓到日期，因為已經修正了 Split 邏輯
             period_str = jail_period_map.get(code, "日期未知")
             in_jail_list.append({
                 "code": code,
@@ -207,10 +188,25 @@ def check_status_split(sh, releasing_codes):
             })
             seen_codes.add(code)
     
+    # ✅ [新增排序邏輯]
+    # 1. 即將進處置：按 days 由小到大排序 (明天進 -> 後天進)
+    entering_list.sort(key=lambda x: x['days'])
+    
+    # 2. 正在處置中：按處置「結束日期」由早到晚排序
+    def get_end_date(item):
+        try:
+            # period 格式為 "YYYY/MM/DD-YYYY/MM/DD"，取後面那個日期
+            end_date_str = item['period'].split('-')[1]
+            return datetime.strptime(end_date_str, "%Y/%m/%d")
+        except:
+            return datetime.max # 如果日期未知，排到最後面
+            
+    in_jail_list.sort(key=get_end_date)
+
     return {'entering': entering_list, 'in_jail': in_jail_list}
 
 def check_releasing_stocks(sh):
-    """檢查即將出關的股票"""
+    """檢查即將出關的股票，並進行排序"""
     print("🔍 檢查「即將出關」名單...")
     try:
         ws = sh.worksheet("即將出關監控")
@@ -247,6 +243,9 @@ def check_releasing_stocks(sh):
             })
             seen_codes.add(code)
             
+    # ✅ [新增排序邏輯] 按剩餘天數由小到大排序 (越早出關越前面)
+    releasing_list.sort(key=lambda x: x['days'])
+
     return releasing_list
 
 # ============================
