@@ -1,0 +1,202 @@
+# -*- coding: utf-8 -*-
+import gspread
+import requests
+import os
+import json
+from datetime import datetime
+from google.oauth2.service_account import Credentials
+
+# ============================
+# ⚙️ 設定區
+# ============================
+# 請將你的 Discord Webhook URL 貼在這裡
+DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1459469839138684951/hMpqETdUgYeEczeBqx4in7anH6xw2nGYHIkcKbikC5wBw5FVquqSWayBY3VqHjiw4_Yn"
+
+SHEET_NAME = "台股注意股資料庫_V33"
+SERVICE_KEY_FILE = "service_key.json"
+
+# 設定閥值
+JAIL_ENTER_THRESHOLD = 2  # 剩餘 X 天內進處置就要通知 (包含 0)
+JAIL_EXIT_THRESHOLD = 5   # 剩餘 X 天內出關就要通知
+
+# ============================
+# 🛠️ 工具函式
+# ============================
+def connect_google_sheets():
+    """連線 Google Sheets"""
+    try:
+        if not os.path.exists(SERVICE_KEY_FILE):
+            print("❌ 找不到 service_key.json")
+            return None
+        gc = gspread.service_account(filename=SERVICE_KEY_FILE)
+        sh = gc.open(SHEET_NAME)
+        return sh
+    except Exception as e:
+        print(f"❌ Google Sheet 連線失敗: {e}")
+        return None
+
+def send_discord_webhook(embeds):
+    """發送訊息到 Discord"""
+    if not embeds:
+        print("⚠️ 沒有內容需要推播")
+        return
+
+    data = {
+        "username": "台股處置監控機器人",
+        "avatar_url": "https://cdn-icons-png.flaticon.com/512/2502/2502697.png", # 或是你喜歡的圖片連結
+        "embeds": embeds
+    }
+
+    try:
+        response = requests.post(
+            DISCORD_WEBHOOK_URL, 
+            data=json.dumps(data), 
+            headers={"Content-Type": "application/json"}
+        )
+        if response.status_code == 204:
+            print("✅ Discord 推播成功！")
+        else:
+            print(f"❌ Discord 推播失敗: {response.status_code}, {response.text}")
+    except Exception as e:
+        print(f"❌ 發送請求錯誤: {e}")
+
+# ============================
+# 🔍 核心邏輯
+# ============================
+def check_danger_stocks(sh):
+    """檢查即將進入處置的股票 (讀取：近30日熱門統計)"""
+    print("🔍 檢查「即將進處置」名單...")
+    try:
+        ws = sh.worksheet("近30日熱門統計")
+        records = ws.get_all_records()
+    except Exception as e:
+        print(f"⚠️ 讀取「近30日熱門統計」失敗: {e}")
+        return None
+
+    danger_list = []
+    
+    for row in records:
+        code = str(row.get('代號', '')).replace("'", "").strip()
+        name = row.get('名稱', '')
+        days_str = str(row.get('最快處置天數', '99'))
+        reason = row.get('處置觸發原因', '')
+        risk = row.get('風險等級', '')
+
+        # 排除掉 "X" 或空值
+        if not days_str.isdigit():
+            continue
+
+        days = int(days_str)
+        
+        # 條件：天數 <= 2 (0=明天進, 1=再1天, 2=再2天)
+        if days <= JAIL_ENTER_THRESHOLD:
+            danger_list.append({
+                "code": code,
+                "name": name,
+                "days": days,
+                "reason": reason,
+                "risk": risk
+            })
+    
+    return danger_list
+
+def check_releasing_stocks(sh):
+    """檢查即將出關的股票 (讀取：即將出關監控)"""
+    print("🔍 檢查「即將出關」名單...")
+    try:
+        ws = sh.worksheet("即將出關監控")
+        # 注意：如果表單只有標題或 "目前無 5 日內..." 的文字，get_all_records 可能會報錯或回傳空
+        all_values = ws.get_all_values()
+        if len(all_values) < 2: return [] # 沒資料
+        
+        headers = all_values[0]
+        # 簡單檢查 header 是否包含我們需要的欄位
+        if "剩餘天數" not in headers: return []
+        
+        records = ws.get_all_records()
+    except Exception as e:
+        print(f"⚠️ 讀取「即將出關監控」失敗: {e}")
+        return []
+
+    releasing_list = []
+    
+    for row in records:
+        code = str(row.get('代號', '')).strip()
+        name = row.get('名稱', '')
+        days_left_str = str(row.get('剩餘天數', '99'))
+        release_date = row.get('出關日期', '')
+        
+        if not days_left_str.isdigit():
+            continue
+            
+        days = int(days_left_str)
+        
+        if days <= JAIL_EXIT_THRESHOLD:
+            releasing_list.append({
+                "code": code,
+                "name": name,
+                "days": days,
+                "date": release_date
+            })
+            
+    return releasing_list
+
+# ============================
+# 🚀 主程式
+# ============================
+def main():
+    if "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
+        print("❌ 請先設定 DISCORD_WEBHOOK_URL")
+        return
+
+    sh = connect_google_sheets()
+    if not sh: return
+
+    embeds_to_send = []
+
+    # 1. 處理危險股 (紅色警報)
+    danger_stocks = check_danger_stocks(sh)
+    if danger_stocks:
+        desc_lines = []
+        for s in danger_stocks:
+            icon = "🔥" if s['days'] == 0 else "⚠️"
+            day_msg = "明天處置" if s['days'] == 0 else f"再 {s['days']} 天"
+            desc_lines.append(
+                f"{icon} **{s['code']} {s['name']}** | {day_msg}\n"
+                f"   └ 原因: {s['reason']}"
+            )
+        
+        embed_danger = {
+            "title": f"🚨 注意！{len(danger_stocks)} 檔股票瀕臨處置邊緣",
+            "description": "\n".join(desc_lines),
+            "color": 15158332, # 紅色
+            "footer": {"text": f"資料時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}"}
+        }
+        embeds_to_send.append(embed_danger)
+
+    # 2. 處理即將出關股 (綠色機會)
+    releasing_stocks = check_releasing_stocks(sh)
+    if releasing_stocks:
+        desc_lines = []
+        for s in releasing_stocks:
+            day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
+            desc_lines.append(
+                f"🔓 **{s['code']} {s['name']}** | {day_msg} ({s['date']})"
+            )
+        
+        embed_release = {
+            "title": f"🕊️ 關注！{len(releasing_stocks)} 檔股票即將出關",
+            "description": "\n".join(desc_lines),
+            "color": 3066993, # 綠色
+            "footer": {"text": "處置結束後通常會有行情波動，請留意風險。"}
+        }
+        embeds_to_send.append(embed_release)
+
+    # 3. 發送
+    if embeds_to_send:
+        send_discord_webhook(embeds_to_send)
+    else:
+        print("😴 今日無符合條件的股票，不發送通知。")
+
+if __name__ == "__main__":
+    main()
