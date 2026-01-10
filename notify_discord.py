@@ -60,19 +60,20 @@ def send_discord_webhook(embeds):
 
 def parse_roc_date(date_str):
     """
-    ✅ [修正] 專門解析民國年格式 (例如 115/01/09 -> 2026-01-09)
+    專門解析民國年格式 (例如 115/01/09 -> 2026-01-09)
+    同時兼容西元格式
     """
     s = str(date_str).strip()
     # 嘗試匹配 115/01/09 或 115-01-09
     match = re.match(r'^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$', s)
     if match:
         y, m, d = map(int, match.groups())
-        # 如果年份小於 1911，視為民國年，加上 1911 轉西元
+        # 如果年份小於 1911 (如 115)，視為民國年，加上 1911 轉西元
         if y < 1911:
             return datetime(y + 1911, m, d)
         return datetime(y, m, d)
     
-    # 如果上面沒抓到，嘗試標準西元格式
+    # 嘗試標準西元格式
     formats = ["%Y/%m/%d", "%Y-%m-%d", "%Y%m%d"]
     for fmt in formats:
         try:
@@ -83,11 +84,17 @@ def parse_roc_date(date_str):
 
 def get_merged_jail_periods(sh):
     """
-    從「處置股90日明細」讀取資料，並合併同一檔股票的處置期間
-    回傳字典: { 'StockCode': 'YYYY/MM/DD-YYYY/MM/DD' }
+    從「處置股90日明細」讀取資料，並合併同一檔股票的處置期間。
+    ✅ 修正重點：
+    1. 支援全形波浪號 '～' 切割。
+    2. 過濾掉已經結束的舊紀錄，確保不會合併到很久以前的資料。
     """
-    jail_map = {} # 暫存 {code: {'start': min_date, 'end': max_date}}
+    jail_map = {} # {code: {'start': min_date, 'end': max_date}}
     
+    # 設定基準時間：今天 (UTC+8) 的 00:00:00
+    tw_now = datetime.utcnow() + timedelta(hours=8)
+    today = datetime(tw_now.year, tw_now.month, tw_now.day)
+
     try:
         ws = sh.worksheet("處置股90日明細")
         records = ws.get_all_records()
@@ -100,30 +107,37 @@ def get_merged_jail_periods(sh):
             if not code or not period:
                 continue
             
-            # 分割日期區間 (例如 115/01/09~115/01/26)
-            dates = re.split(r'[~-]', period)
+            # 支援全形波浪號 '～' 
+            dates = re.split(r'[~-～]', period)
+            
             if len(dates) >= 2:
-                # ✅ 改用 parse_roc_date 來處理民國年
                 s_date = parse_roc_date(dates[0])
                 e_date = parse_roc_date(dates[1])
                 
                 if s_date and e_date:
+                    # 🔥【關鍵過濾】🔥
+                    # 如果這筆紀錄的結束日期 < 今天，代表是歷史紀錄 (90天內但已結束的)
+                    # 直接跳過，不參與合併，避免拉長區間
+                    if e_date < today:
+                        continue
+
                     if code not in jail_map:
                         jail_map[code] = {'start': s_date, 'end': e_date}
                     else:
-                        # 合併邏輯：取最早開始，最晚結束
+                        # 合併邏輯：
+                        # 起始日取最早 (保留原本進處置的時間)
+                        # 結束日取最晚 (抓取最新延長後的出關日)
                         if s_date < jail_map[code]['start']:
                             jail_map[code]['start'] = s_date
                         if e_date > jail_map[code]['end']:
                             jail_map[code]['end'] = e_date
 
     except Exception as e:
-        print(f"⚠️ 讀取處置明細失敗 (可能該工作表不存在): {e}")
+        print(f"⚠️ 讀取處置明細失敗: {e}")
         return {}
 
     final_map = {}
     for code, dates in jail_map.items():
-        # 轉回易讀的格式 (西元)
         fmt_str = f"{dates['start'].strftime('%Y/%m/%d')}-{dates['end'].strftime('%Y/%m/%d')}"
         final_map[code] = fmt_str
         
@@ -176,7 +190,7 @@ def check_status_split(sh, releasing_codes):
 
         # 分類邏輯
         if is_in_jail:
-            # 嘗試取得日期，若無則顯示未知 (但現在民國年修復後應該都有了)
+            # 這裡一定能抓到日期，因為已經修正了 Split 邏輯
             period_str = jail_period_map.get(code, "日期未知")
             in_jail_list.append({
                 "code": code,
