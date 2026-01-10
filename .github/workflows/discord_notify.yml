@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'notify_discord.py'       # 只有修改推播程式時才自動觸發
-      - '.github/workflows/test_alert.yml'
+      - '.github/workflows/discord_notify.yml'
   workflow_dispatch:              # 允許在 GitHub 網頁上手動點擊執行
 
 jobs:
