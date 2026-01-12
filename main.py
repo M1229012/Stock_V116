@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-V116.24 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股)
+V116.24 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 + 修正預測斷層)
 修正重點：
-1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄（如延長處置、二次處置）的情況，
-   改為取「最晚結束日期」來計算剩餘天數。
+1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄，取「最晚結束日期」。
 2. [修正] 處置股爬蟲與寫入邏輯：
    - 爬蟲搜尋截止日往後推 30 天，確保能抓到「今日公告、明天生效」的未來處置股。
    - 寫入 Google Sheet 改為「比對後新增」(Append)，不清除既有資料。
-3. [保留] 上櫃 Requests API 爬蟲、上市 Selenium 爬蟲與風險計算邏輯。
+3. [修正] 預測天數邏輯：加入 safe_cal_dates 機制，避免盤中/公告前因補 0 而切斷連續違規紀錄。
 """
 
 import os
@@ -1296,6 +1295,12 @@ def main():
     precise_db = load_precise_db_from_sheet(sh)
     rows_stats = []
 
+    # ==========================================
+    # ⚡ [修正] 建立安全日曆：確保不放入尚未公告的「未來/今日」日期
+    # 避免因為資料還沒出來，被當作「安全(0)」而切斷連續違規紀錄
+    # ==========================================
+    safe_cal_dates = [d for d in cal_dates if d <= target_trade_date_obj]
+
     print(f"🔍 掃描 {len(target_stocks)} 檔股票...")
     for idx, code in enumerate(target_stocks):
         code = str(code).strip()
@@ -1306,8 +1311,9 @@ def main():
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
+        # ⚡ [修正] 這裡使用 safe_cal_dates，避免盤中「補0」造成的斷層
         stock_calendar = get_last_n_non_jail_trade_dates(
-            code, cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
+            code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
         cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
