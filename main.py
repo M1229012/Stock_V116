@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.25 台股注意股系統 (修正爬蟲與寫入邏輯)
+V116.24 台股注意股系統 (修正即將出關邏輯)
 修正重點：
-1. [修正] 爬蟲改為能抓取「明日處置股」的正確邏輯 (上市 send_keys / 上櫃一般日期)。
-2. [修正] Google Sheet 寫入改為「不覆蓋、只新增」模式。
-3. [新增] 系統判斷邏輯加入「明日進處置」的狀態顯示。
+1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄（如延長處置、二次處置）的情況，
+   改為取「最晚結束日期」來計算剩餘天數。
+   - 避免「舊案快結束，但新案剛開始」的股票誤判為即將出關。
+2. [保留] 上櫃 Requests API 爬蟲、上市 Selenium 爬蟲與風險計算邏輯。
 """
 
 import os
@@ -86,7 +87,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.25 台股注意股系統 (Fix Jail Crawler & Append Logic)")
+print(f"🚀 啟動 V116.24 台股注意股系統 (Jail Release Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -861,25 +862,8 @@ def check_jail_trigger_now(status_list, clause_list):
     return (len(reasons) > 0), " | ".join(reasons)
 
 def simulate_days_to_jail_strict(status_list, clause_list, *, stock_id=None, target_date=None, jail_map=None, enable_safe_filter=True):
-    # ---------------------------------------------------------
-    # 1. [新增] 檢查是否已經公告「未來」要處置 (例如今天公告，明天關)
-    # ---------------------------------------------------------
-    if stock_id and target_date and jail_map and stock_id in jail_map:
-        # 先檢查是不是「正在」坐牢
-        if is_in_jail(stock_id, target_date, jail_map):
-            return 0, "處置中"
-        
-        # [關鍵修正] 檢查是不是「即將」坐牢 (Start Date > Today)
-        for s, e in jail_map[stock_id]:
-            if s > target_date:
-                # 算出還要幾天 (如果是明天 s-target=1)
-                days_diff = (s - target_date).days
-                s_str = s.strftime('%m/%d')
-                
-                if days_diff == 1:
-                    return 0, f"已公告: 明日({s_str})進處置"
-                elif days_diff <= 3:
-                    return 0, f"已公告: {s_str} 開始處置"
+    if stock_id and target_date and jail_map and is_in_jail(stock_id, target_date, jail_map):
+        return 0, "處置中"
 
     trigger_now, reason_now = check_jail_trigger_now(status_list, clause_list)
     if trigger_now:
@@ -952,16 +936,16 @@ def get_driver():
 
 def fetch_tpex_jail_90d_requests(s_date, e_date):
     """
-    [修正] 上櫃 (TPEx) 處置股爬蟲 - Requests API 版
-    修正：移除將結束日期強制 +30 天的邏輯，避免被 API 阻擋。
+    [替換] 上櫃 (TPEx) 處置股爬蟲 - Requests API 版 (參照使用者提供的邏輯)
     """
     print(f"  [上櫃] 啟動 Requests 爬蟲 (新版官網 API)... {s_date} ~ {e_date}")
     
-    # ⚠️ 關鍵修正：查詢結束日 = 今天 (e_date)，不要加 30 天
-    # 處置期間字串本身就會包含未來的結束日
+    # 依照使用者的邏輯修正：結束日期強制往後推 30 天
+    # 確保抓到「今日公布、下週才開始處置」的股票
+    real_end_date = e_date + timedelta(days=30)
     
     sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
-    ed = f"{e_date.year - 1911}/{e_date.month:02d}/{e_date.day:02d}"
+    ed = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
     
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
     
@@ -990,15 +974,12 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
         
         if r.status_code == 200:
             data = r.json()
-            rows = []
             if "tables" in data and len(data["tables"]) > 0:
                 rows = data["tables"][0].get("data", [])
-            elif "data" in data:
-                rows = data.get("data", [])
-
-            if rows:
                 print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料...")
+                
                 for row in rows:
+                    # 1: Date, 2: Code, 3: Name(HTML), 5: Period
                     if len(row) < 6: continue
                     c_code = str(row[2]).strip()
                     c_name_raw = str(row[3]).strip()
@@ -1012,8 +993,6 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
                             "Period": c_period,
                             "Market": "上櫃"
                         })
-            else:
-                print(f"    ⚠️ 上櫃無資料 (Payload: {sd}~{ed})")
     except Exception as e:
         print(f"    ❌ TPEx Requests 失敗: {e}")
         
@@ -1023,8 +1002,7 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
 
 def fetch_twse_selenium_90d(s_date, e_date):
     """
-    [修正] 上市 (TWSE) 處置股爬蟲 - Selenium 版
-    修正：改用 send_keys 輸入日期，確保網頁能接收到日期變更。
+    [重寫] 上市 (TWSE) 處置股爬蟲 - Selenium 版
     """
     print(f"  [上市] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
     
@@ -1039,54 +1017,44 @@ def fetch_twse_selenium_90d(s_date, e_date):
         driver.get(url)
         wait = WebDriverWait(driver, 20)
         
-        # 等待輸入框出現
-        start_input = wait.until(EC.visibility_of_element_located((By.NAME, "startDate")))
-        end_input = driver.find_element(By.NAME, "endDate")
-
-        # ⚠️ 關鍵修正：用 Selenium 模擬打字，而不是用 JS 硬塞
-        start_input.clear()
-        start_input.send_keys(sd_str)
-        time.sleep(0.5)
-
-        end_input.clear()
-        end_input.send_keys(ed_str)
-        time.sleep(0.5)
-
-        # 點擊查詢
-        search_btn = driver.find_element(By.CSS_SELECTOR, "button.search")
+        # 1. 填寫日期
+        driver.execute_script(f"""
+            document.querySelector('input[name="startDate"]').value = "{sd_str}";
+            document.querySelector('input[name="endDate"]').value = "{ed_str}";
+        """)
+        
+        # 2. 點擊查詢
+        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
         search_btn.click()
         
-        # 等待表格出現
-        try:
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
-        except:
-            print("    ⚠️ 等待表格逾時，可能是該區間無資料或載入過慢")
+        # 3. 等待表格出現
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
+        time.sleep(3)
         
-        time.sleep(2) 
-
-        # 解析表格
+        # 4. 解析表格
+        # 上市表格結構通常比較標準，直接抓取
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
         
-        if len(rows) == 1 and "無資料" in rows[0].text:
-            print("    ⚠️ 上市查無資料")
-        else:
-            print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
-            for row in rows:
-                try:
-                    cols = row.find_elements(By.TAG_NAME, "td")
-                    if len(cols) >= 7:
-                        c_code = cols[2].text.strip()
-                        c_name = cols[3].text.strip()
-                        c_period = cols[6].text.strip()
-                        
-                        if c_code and c_code.isdigit() and len(c_code) == 4:
-                                clean_data.append({
-                                "Code": c_code,
-                                "Name": c_name,
-                                "Period": c_period,
-                                "Market": "上市"
-                            })
-                except: continue
+        for row in rows:
+            try:
+                cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) >= 7:
+                    # Index 2: Code
+                    # Index 3: Name
+                    # Index 6: Period
+                    c_code = cols[2].text.strip()
+                    c_name = cols[3].text.strip()
+                    c_period = cols[6].text.strip()
+                    
+                    if c_code and c_code.isdigit() and len(c_code) == 4:
+                         clean_data.append({
+                            "Code": c_code,
+                            "Name": c_name,
+                            "Period": c_period,
+                            "Market": "上市"
+                        })
+            except: continue
             
     except Exception as e:
         print(f"    ❌ TWSE Selenium 操作失敗: {e}")
@@ -1097,6 +1065,7 @@ def fetch_twse_selenium_90d(s_date, e_date):
         print(f"    ✅ 成功解析 {len(clean_data)} 筆資料")
         return pd.DataFrame(clean_data)
 
+    print("    ⚠️ TWSE 無資料")
     return pd.DataFrame()
 
 
@@ -1107,8 +1076,8 @@ def run_jail_crawler_pipeline_sync():
     print(f"🎯 啟動全市場處置股抓取 (TWSE: Selenium / TPEx: Requests): {start_date} ~ {end_date}")
 
     # 依序執行
-    df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date) 
-    df_twse = fetch_twse_selenium_90d(start_date, end_date) 
+    df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date) # 改用 Requests
+    df_twse = fetch_twse_selenium_90d(start_date, end_date) # 維持 Selenium
     
     all_dfs = []
     if not df_tpex.empty: all_dfs.append(df_tpex)
@@ -1183,46 +1152,23 @@ def main():
             df_jail_unique = df_jail_90.drop_duplicates(subset=["代號", "處置期間"])
             sheet_title = "處置股90日明細"
             print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
-            
-            # 修正：不執行 clear，改為「讀取舊資料 -> 比對 -> 僅新增新資料」
-            ws_jail = get_or_create_ws(sh, sheet_title, headers=["市場", "代號", "名稱", "處置期間"])
-            
-            # (A) 讀取現有資料建立索引
-            existing_data = ws_jail.get_all_records()
-            existing_keys = set()
-            for r in existing_data:
-                k_code = str(r.get('代號', '')).strip()
-                k_period = str(r.get('處置期間', '')).strip()
-                if k_code and k_period:
-                    existing_keys.add((k_code, k_period))
-            
-            # (B) 篩選出新資料
-            new_rows_to_append = []
-            for _, row in df_jail_unique.iterrows():
-                code = str(row['代號']).strip()
-                period = str(row['處置期間']).strip()
-                
-                if (code, period) not in existing_keys:
-                    new_rows_to_append.append([
-                        row['市場'], row['代號'], row['名稱'], row['處置期間']
-                    ])
-            
-            # (C) 寫入新資料
-            if new_rows_to_append:
-                ws_jail.append_rows(new_rows_to_append, value_input_option='USER_ENTERED')
-                print(f"✅ 已新增 {len(new_rows_to_append)} 筆新處置資料。")
-            else:
-                print("✅ 無新增資料，維持現狀。")
+            export_cols = ["市場", "代號", "名稱", "處置期間"]
+            final_rows = [export_cols] + df_jail_unique[export_cols].values.tolist()
+            ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
+            ws_jail.clear()
+            ws_jail.append_rows(final_rows, value_input_option='USER_ENTERED')
+            print(f"✅ {sheet_title} 更新完成！")
 
             # 2. [新增] 篩選「即將出關」 (剩餘 0~5 天)
+            # 邏輯優化：若有二次處置，需取「最晚」的結束日期
             print("🔍 篩選即將出關股票 (5日內)...")
             releasing_rows = []
             today_date = TARGET_DATE.date()
             
-            # 重新從 df_jail_unique 建立完整對應表 (無論新舊都要納入運算)
-            stock_latest_end = {} 
+            # (A) 建立每檔股票的「最晚結束日期」對應表
+            stock_latest_end = {} # {code: {'date': max_end_date, 'row': row_data}}
 
-            for idx, row in df_jail_unique.iterrows():
+            for idx, row in df_jail_90.iterrows():
                 try:
                     p = str(row["處置期間"]).strip()
                     sd_date, ed_date = parse_jail_period(p)
@@ -1236,8 +1182,9 @@ def main():
                             }
                 except: pass
 
+            # (B) 檢查每檔股票的「最終結束日」是否在 5 天內
+            # 排序：按結束日期
             sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
-            export_cols = ["市場", "代號", "名稱", "處置期間"]
 
             for code, data in sorted_stocks:
                 final_end_date = data['date']
