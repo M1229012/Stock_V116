@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-V116.24 台股注意股系統 (修正即將出關邏輯)
+V116.24 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股)
 修正重點：
 1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄（如延長處置、二次處置）的情況，
    改為取「最晚結束日期」來計算剩餘天數。
-   - 避免「舊案快結束，但新案剛開始」的股票誤判為即將出關。
-2. [保留] 上櫃 Requests API 爬蟲、上市 Selenium 爬蟲與風險計算邏輯。
+2. [修正] 處置股爬蟲與寫入邏輯：
+   - 爬蟲搜尋截止日往後推 30 天，確保能抓到「今日公告、明天生效」的未來處置股。
+   - 寫入 Google Sheet 改為「比對後新增」(Append)，不清除既有資料。
+3. [保留] 上櫃 Requests API 爬蟲、上市 Selenium 爬蟲與風險計算邏輯。
 """
 
 import os
@@ -73,7 +75,7 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   
-VERIFY_RECENT_DAYS = 2              
+VERIFY_RECENT_DAYS = 2               
 
 # ==========================================
 # 🔑 FinMind 金鑰設定
@@ -87,7 +89,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.24 台股注意股系統 (Jail Release Fix)")
+print(f"🚀 啟動 V116.24 台股注意股系統 (Jail Release Fix + Future Jail)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1048,7 +1050,7 @@ def fetch_twse_selenium_90d(s_date, e_date):
                     c_period = cols[6].text.strip()
                     
                     if c_code and c_code.isdigit() and len(c_code) == 4:
-                         clean_data.append({
+                          clean_data.append({
                             "Code": c_code,
                             "Name": c_name,
                             "Period": c_period,
@@ -1071,9 +1073,14 @@ def fetch_twse_selenium_90d(s_date, e_date):
 
 def run_jail_crawler_pipeline_sync():
     """ 整合上市櫃近 90 日處置股爬蟲流程 (同步版) """
-    end_date = TARGET_DATE.date()
-    start_date = end_date - timedelta(days=150)
-    print(f"🎯 啟動全市場處置股抓取 (TWSE: Selenium / TPEx: Requests): {start_date} ~ {end_date}")
+    # [修正] 這裡將結束日期強制往後推 30 天，讓爬蟲可以搜尋到「未來」的處置開始日
+    # 例如：1/12 搜尋，若設定 e_date=1/12，可能抓不到 1/13 開始的處置
+    # 設定 e_date=2/11，就能抓到 1/13 開始的資料
+    end_date = TARGET_DATE.date() + timedelta(days=30)
+    start_date = TARGET_DATE.date() - timedelta(days=150)
+    
+    print(f"🎯 啟動全市場處置股抓取 (TWSE: Selenium / TPEx: Requests)")
+    print(f"🔎 搜尋範圍 (含未來預告): {start_date} ~ {end_date}")
 
     # 依序執行
     df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date) # 改用 Requests
@@ -1140,7 +1147,7 @@ def main():
     if not sh: return
 
     print("\n" + "="*50)
-    print("🚀 啟動額外任務：抓取近 90 日處置股清單...")
+    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (含未來處置)...")
     print("="*50)
     
     try:
@@ -1148,16 +1155,42 @@ def main():
         df_jail_90 = run_jail_crawler_pipeline_sync()
         
         if not df_jail_90.empty:
-            # 1. 寫入總表 (去重後寫入)
+            # 1. 寫入總表 (改用比對新增邏輯，避免清除舊資料)
             df_jail_unique = df_jail_90.drop_duplicates(subset=["代號", "處置期間"])
             sheet_title = "處置股90日明細"
-            print(f"💾 正在寫入 Google Sheet: {sheet_title}...")
+            print(f"💾 正在寫入 Google Sheet: {sheet_title} (新增模式)...")
             export_cols = ["市場", "代號", "名稱", "處置期間"]
-            final_rows = [export_cols] + df_jail_unique[export_cols].values.tolist()
+            
+            # 取得 Sheet 物件
             ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
-            ws_jail.clear()
-            ws_jail.append_rows(final_rows, value_input_option='USER_ENTERED')
-            print(f"✅ {sheet_title} 更新完成！")
+            
+            # 讀取現有資料以進行比對
+            existing_rows = ws_jail.get_all_values()
+            existing_keys = set()
+            if len(existing_rows) > 1: # 若有資料 (排除 header)
+                for r in existing_rows[1:]:
+                    if len(r) >= 4:
+                        # 組合 Key: 代號_處置期間
+                        k = f"{str(r[1]).strip()}_{str(r[3]).strip()}" 
+                        existing_keys.add(k)
+            
+            rows_to_append = []
+            new_count = 0
+            for idx, row in df_jail_unique.iterrows():
+                code = str(row["代號"]).strip()
+                period = str(row["處置期間"]).strip()
+                check_key = f"{code}_{period}"
+                
+                if check_key not in existing_keys:
+                    rows_to_append.append([row["市場"], code, row["名稱"], period])
+                    existing_keys.add(check_key) # 防止本次批次內重複
+                    new_count += 1
+            
+            if rows_to_append:
+                ws_jail.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+                print(f"✅ {sheet_title} 更新完成！成功新增 {new_count} 筆新處置資料。")
+            else:
+                print(f"✅ {sheet_title} 無需新增 (所有資料已存在)。")
 
             # 2. [新增] 篩選「即將出關」 (剩餘 0~5 天)
             # 邏輯優化：若有二次處置，需取「最晚」的結束日期
