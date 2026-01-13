@@ -51,7 +51,7 @@ def send_discord_webhook(embeds):
             headers={"Content-Type": "application/json"}
         )
         if response.status_code == 204:
-            print("✅ Discord 推播成功！")
+            print("✅ Discord 部分推播成功！")
         else:
             print(f"❌ Discord 推播失敗: {response.status_code}, {response.text}")
     except Exception as e:
@@ -63,7 +63,6 @@ def parse_roc_date(date_str):
     同時兼容西元格式
     """
     s = str(date_str).strip()
-    # 嘗試匹配 115/01/09 或 115-01-09
     match = re.match(r'^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$', s)
     if match:
         y, m, d = map(int, match.groups())
@@ -85,7 +84,6 @@ def get_merged_jail_periods(sh):
     """
     jail_map = {} 
     
-    # 設定基準時間：今天 (UTC+8) 的 00:00:00
     tw_now = datetime.utcnow() + timedelta(hours=8)
     today = datetime(tw_now.year, tw_now.month, tw_now.day)
 
@@ -187,18 +185,14 @@ def check_status_split(sh, releasing_codes):
             })
             seen_codes.add(code)
     
-    # ✅ [新增排序邏輯]
-    # 1. 即將進處置：按 days 由小到大排序 (明天進 -> 後天進)
     entering_list.sort(key=lambda x: x['days'])
     
-    # 2. 正在處置中：按處置「結束日期」由早到晚排序
     def get_end_date(item):
         try:
-            # period 格式為 "YYYY/MM/DD-YYYY/MM/DD"，取後面那個日期
             end_date_str = item['period'].split('-')[1]
             return datetime.strptime(end_date_str, "%Y/%m/%d")
         except:
-            return datetime.max # 如果日期未知，排到最後面
+            return datetime.max 
             
     in_jail_list.sort(key=get_end_date)
 
@@ -242,13 +236,12 @@ def check_releasing_stocks(sh):
             })
             seen_codes.add(code)
             
-    # ✅ [新增排序邏輯] 按剩餘天數由小到大排序 (越早出關越前面)
     releasing_list.sort(key=lambda x: x['days'])
 
     return releasing_list
 
 # ============================
-# 🚀 主程式
+# 🚀 主程式 (已修改發送邏輯)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -262,79 +255,68 @@ def main():
 
     print(f"🕒 目前台灣時間: 星期{current_weekday+1}, {current_hour} 點")
 
-    # 🔥 [測試模式] 如需測試請保持註解；正式上線請取消註解 🔥
-    # if current_weekday > 4:
-    #     print("🔕 今天是假日，暫停推播。")
-    #     return
-
-    # if current_hour != 18:
-    #     print(f"🔕 非推播時間 (18點)，跳過通知。")
-    #     return
-
     sh = connect_google_sheets()
     if not sh: return
 
-    embeds_to_send = []
-
-    # 1. 取得即將出關名單
+    # 1. 取得資料
     releasing_stocks = check_releasing_stocks(sh)
     releasing_codes = {item['code'] for item in releasing_stocks}
-
-    # 2. 取得並分類 進處置/處置中 名單
     status_data = check_status_split(sh, releasing_codes)
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # --- Part 1: 即將進處置 (Entering) [最上面] ---
+    # --- 包裹 1: 優先通知 (瀕臨處置 + 即將出關) ---
+    urgent_embeds = []
+
     if entering_stocks:
         desc_lines = []
         for s in entering_stocks:
-            if s['days'] == 0:
-                icon = "🔥"
-                msg = "最快明天進處置"
-            else:
-                icon = "⚠️"
-                msg = f"最快 {s['days']} 天進處置"
-            
+            icon = "🔥" if s['days'] == 0 else "⚠️"
+            msg = "最快明天進處置" if s['days'] == 0 else f"最快 {s['days']} 天進處置"
             desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
-
-        embed_entering = {
+        
+        urgent_embeds.append({
             "title": f"🚨 注意！{len(entering_stocks)} 檔股票瀕臨處置",
             "description": "\n".join(desc_lines),
-            "color": 15158332, # 紅色
-        }
-        embeds_to_send.append(embed_entering)
+            "color": 15158332,
+        })
 
-    # --- Part 2: 即將出關 (Releasing) [中間] ---
     if releasing_stocks:
         desc_lines = []
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
             desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})")
 
-        embed_releasing = {
+        urgent_embeds.append({
             "title": f"🔓 關注！{len(releasing_stocks)} 檔股票即將出關",
             "description": "\n".join(desc_lines),
-            "color": 3066993, # 綠色
-        }
-        embeds_to_send.append(embed_releasing)
+            "color": 3066993,
+        })
 
-    # --- Part 3: 正在處置中 (In Jail) [最下面] ---
+    if urgent_embeds:
+        print("📤 正在發送優先通知包裹...")
+        send_discord_webhook(urgent_embeds)
+
+    # --- 包裹 2: 處置中名單 (獨立發送並具備分段邏輯) ---
     if in_jail_stocks:
-        desc_lines = []
-        for s in in_jail_stocks:
-            desc_lines.append(f"🔒 **{s['code']} {s['name']}** | `{s['period']}`")
+        print(f"📤 正在發送處置中名單 (共 {len(in_jail_stocks)} 檔)...")
+        # 每 20 檔股票切分一個 Embed，避免單個 Embed 超過 Discord 字數上限
+        chunk_size = 20
+        for i in range(0, len(in_jail_stocks), chunk_size):
+            chunk = in_jail_stocks[i : i + chunk_size]
+            desc_lines = [f"🔒 **{s['code']} {s['name']}** | `{s['period']}`" for s in chunk]
+            
+            # 計算目前是第幾部分
+            part_info = f" (第 {i//chunk_size + 1} 部分)" if len(in_jail_stocks) > chunk_size else ""
+            
+            jail_embed = [{
+                "title": f"⛓️ 監控中！正在處置股票{part_info}",
+                "description": "\n".join(desc_lines),
+                "color": 10181046,
+            }]
+            send_discord_webhook(jail_embed)
 
-        embed_in_jail = {
-            "title": f"⛓️ 監控中！{len(in_jail_stocks)} 檔股票正在處置",
-            "description": "\n".join(desc_lines),
-            "color": 10181046, # 紫色/深灰色
-        }
-        embeds_to_send.append(embed_in_jail)
-
-    if embeds_to_send:
-        send_discord_webhook(embeds_to_send)
-    else:
+    if not entering_stocks and not releasing_stocks and not in_jail_stocks:
         print("😴 今日無符合條件的股票，不發送通知。")
 
 if __name__ == "__main__":
