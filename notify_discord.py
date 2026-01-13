@@ -241,7 +241,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式 (已修改發送邏輯)
+# 🚀 主程式 (改為三次發送)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -265,49 +265,49 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # --- 包裹 1: 優先通知 (瀕臨處置 + 即將出關) ---
-    urgent_embeds = []
-
+    # --- 第一次發送: 🚨 瀕臨處置股票 ---
     if entering_stocks:
+        print(f"📤 正在發送瀕臨處置名單 ({len(entering_stocks)} 檔)...")
         desc_lines = []
         for s in entering_stocks:
             icon = "🔥" if s['days'] == 0 else "⚠️"
             msg = "最快明天進處置" if s['days'] == 0 else f"最快 {s['days']} 天進處置"
             desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
         
-        urgent_embeds.append({
+        entering_embed = [{
             "title": f"🚨 注意！{len(entering_stocks)} 檔股票瀕臨處置",
             "description": "\n".join(desc_lines),
             "color": 15158332,
-        })
+        }]
+        send_discord_webhook(entering_embed)
 
+    # --- 第二次發送: 🔓 即將出關股票 ---
     if releasing_stocks:
+        print(f"📤 正在發送即將出關名單 ({len(releasing_stocks)} 檔)...")
         desc_lines = []
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
             desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})")
 
-        urgent_embeds.append({
+        releasing_embed = [{
             "title": f"🔓 關注！{len(releasing_stocks)} 檔股票即將出關",
             "description": "\n".join(desc_lines),
             "color": 3066993,
-        })
+        }]
+        send_discord_webhook(releasing_embed)
 
-    if urgent_embeds:
-        print("📤 正在發送優先通知包裹...")
-        send_discord_webhook(urgent_embeds)
-
-    # --- 包裹 2: 處置中名單 (獨立發送並具備分段邏輯) ---
+    # --- 第三次發送: ⛓️ 處置中名單 (具備分段邏輯) ---
     if in_jail_stocks:
         print(f"📤 正在發送處置中名單 (共 {len(in_jail_stocks)} 檔)...")
-        # 每 20 檔股票切分一個 Embed，避免單個 Embed 超過 Discord 字數上限
+        # 每 20 檔股票切分一個 Request 包裹，徹底避開字數上限
         chunk_size = 20
         for i in range(0, len(in_jail_stocks), chunk_size):
             chunk = in_jail_stocks[i : i + chunk_size]
             desc_lines = [f"🔒 **{s['code']} {s['name']}** | `{s['period']}`" for s in chunk]
             
             # 計算目前是第幾部分
-            part_info = f" (第 {i//chunk_size + 1} 部分)" if len(in_jail_stocks) > chunk_size else ""
+            total_parts = (len(in_jail_stocks) + chunk_size - 1) // chunk_size
+            part_info = f" ({i//chunk_size + 1}/{total_parts})" if total_parts > 1 else ""
             
             jail_embed = [{
                 "title": f"⛓️ 監控中！正在處置股票{part_info}",
