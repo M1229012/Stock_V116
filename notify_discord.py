@@ -151,7 +151,6 @@ def check_status_split(sh, releasing_codes):
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
         
-        # 排除即將出關的，避免重複出現在「處置中」
         if code in releasing_codes:
             continue
 
@@ -242,7 +241,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式 (三次發送 + 手機版優化)
+# 🚀 主程式 (修正第四次發送邏輯)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -253,6 +252,8 @@ def main():
     tw_now = utc_now + timedelta(hours=8)
     current_hour = tw_now.hour
     current_weekday = tw_now.weekday()
+
+    print(f"🕒 目前台灣時間: 星期{current_weekday+1}, {current_hour} 點")
 
     sh = connect_google_sheets()
     if not sh: return
@@ -266,51 +267,60 @@ def main():
 
     # --- 第一次發送: 🚨 瀕臨處置股票 ---
     if entering_stocks:
+        print(f"📤 正在發送瀕臨處置名單 ({len(entering_stocks)} 檔)...")
         desc_lines = []
         for s in entering_stocks:
             icon = "🔥" if s['days'] == 0 else "⚠️"
             msg = "最快明天進處置" if s['days'] == 0 else f"最快 {s['days']} 天進處置"
             desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
         
-        send_discord_webhook([{
+        entering_embed = [{
             "title": f"🚨 注意！{len(entering_stocks)} 檔股票瀕臨處置",
             "description": "\n".join(desc_lines),
             "color": 15158332,
-        }])
+        }]
+        send_discord_webhook(entering_embed)
 
     # --- 第二次發送: 🔓 即將出關股票 ---
     if releasing_stocks:
+        print(f"📤 正在發送即將出關名單 ({len(releasing_stocks)} 檔)...")
         desc_lines = []
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
             desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})")
 
-        send_discord_webhook([{
+        releasing_embed = [{
             "title": f"🔓 關注！{len(releasing_stocks)} 檔股票即將出關",
             "description": "\n".join(desc_lines),
             "color": 3066993,
-        }])
+        }]
+        send_discord_webhook(releasing_embed)
 
-    # --- 第三次發送: ⛓️ 處置中名單 (chunk_size 改為 10 改善手機版顯示) ---
+    # --- 第三次(及之後)發送: ⛓️ 處置中名單 (動態判定) ---
     if in_jail_stocks:
         total_count = len(in_jail_stocks)
-        chunk_size = 10
-        print(f"📤 正在發送處置中名單 (共 {total_count} 檔)...")
+        
+        # 💡 邏輯：超過 15 檔才分段(每10個一段)，否則維持每20個一段(通常只需一次發送)
+        chunk_size = 10 if total_count > 15 else 20
+        print(f"📤 正在發送處置中名單 (共 {total_count} 檔，分段大小: {chunk_size})...")
         
         for i in range(0, total_count, chunk_size):
-            # 切片範例：[0:10], [10:20]... 會確保包含到最後一筆
             chunk = in_jail_stocks[i : i + chunk_size]
             desc_lines = [f"🔒 **{s['code']} {s['name']}** | `{s['period']}`" for s in chunk]
             
-            total_parts = (total_count + chunk_size - 1) // chunk_size
-            current_part = i // chunk_size + 1
-            part_info = f" ({current_part}/{total_parts})" if total_parts > 1 else ""
+            # 判斷是否為第一段 (i=0 為第一段，其餘為接續段)
+            is_first_part = (i == 0)
             
-            send_discord_webhook([{
-                "title": f"⛓️ 監控中！{len(in_jail_stocks)} 檔股票正在處置",
+            jail_embed = {
                 "description": "\n".join(desc_lines),
                 "color": 10181046,
-            }])
+            }
+            
+            # 💡 只有第一段才放標題，後續段落(如第四次發送)不放標題以達到接續效果
+            if is_first_part:
+                jail_embed["title"] = f"⛓️ 監控中！{total_count} 檔股票正在處置"
+
+            send_discord_webhook([jail_embed])
 
     if not entering_stocks and not releasing_stocks and not in_jail_stocks:
         print("😴 今日無符合條件的股票，不發送通知。")
