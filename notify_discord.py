@@ -310,7 +310,7 @@ def main():
             part_info = f" ({i//chunk_size + 1}/{total_parts})" if total_parts > 1 else ""
             
             jail_embed = [{
-                "title": f"⛓️ 監控中！正在處置股票{part_info}",
+                "title": f"⛓️ 監控中！{len(in_jail_stocks)} 檔股票正在處置",
                 "description": "\n".join(desc_lines),
                 "color": 10181046,
             }]
