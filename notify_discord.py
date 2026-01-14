@@ -3,6 +3,7 @@ import requests
 import os
 import json
 import re
+import time  # 📌 新增：用於控制發送間隔
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
@@ -248,7 +249,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式 (修正第四次發送邏輯)
+# 🚀 主程式 (修正第四次發送邏輯 + 新增延遲)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -287,6 +288,7 @@ def main():
             "color": 15158332,
         }]
         send_discord_webhook(entering_embed)
+        time.sleep(1) # 🛑 暫停 1 秒，確保 Discord 順序正確
 
     # --- 第二次發送: 🔓 即將出關股票 ---
     if releasing_stocks:
@@ -302,12 +304,13 @@ def main():
             "color": 3066993,
         }]
         send_discord_webhook(releasing_embed)
+        time.sleep(1) # 🛑 暫停 1 秒，確保 Discord 順序正確
 
     # --- 第三次(及之後)發送: ⛓️ 處置中名單 (動態判定) ---
     if in_jail_stocks:
         total_count = len(in_jail_stocks)
         
-        # 💡 邏輯：超過 15 檔才分段(每10個一段)，否則維持每20個一段(通常只需一次發送)
+        # 💡 邏輯：超過 15 檔才分段(每10個一段)，否則維持每20個一段
         chunk_size = 10 if total_count > 15 else 20
         print(f"📤 正在發送處置中名單 (共 {total_count} 檔，分段大小: {chunk_size})...")
         
@@ -323,11 +326,12 @@ def main():
                 "color": 10181046,
             }
             
-            # 💡 只有第一段才放標題，後續段落(如第四次發送)不放標題以達到接續效果
+            # 💡 只有第一段才放標題
             if is_first_part:
                 jail_embed["title"] = f"⛓️ 監控中！{total_count} 檔股票正在處置"
 
             send_discord_webhook([jail_embed])
+            time.sleep(0.5) # 🛑 每一段之間稍微暫停，避免 Discord 順序跳動
 
     if not entering_stocks and not releasing_stocks and not in_jail_stocks:
         print("😴 今日無符合條件的股票，不發送通知。")
