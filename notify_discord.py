@@ -14,8 +14,8 @@ SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
-JAIL_ENTER_THRESHOLD = 2  # 剩餘 X 天內進處置就要通知
-JAIL_EXIT_THRESHOLD = 5   # 剩餘 X 天內出關就要通知
+JAIL_ENTER_THRESHOLD = 2   # 剩餘 X 天內進處置就要通知
+JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ============================
 # 🛠️ 工具函式
@@ -164,7 +164,11 @@ def check_status_split(sh, releasing_codes):
         if not days_str.isdigit():
             continue
 
-        days = int(days_str)
+        # ---------------------------------------------------
+        # 修正：依照指示將天數 +1，改以當下時間計算
+        # ---------------------------------------------------
+        days = int(days_str) + 1  
+        
         is_in_jail = "處置中" in reason
         is_approaching = days <= JAIL_ENTER_THRESHOLD
 
@@ -225,7 +229,10 @@ def check_releasing_stocks(sh):
         if not days_left_str.isdigit():
             continue
             
-        days = int(days_left_str)
+        # ---------------------------------------------------
+        # 修正：依照指示將天數 +1，改以當下時間計算
+        # ---------------------------------------------------
+        days = int(days_left_str) + 1
         
         if days <= JAIL_EXIT_THRESHOLD:
             releasing_list.append({
