@@ -278,8 +278,14 @@ def main():
         print(f"📤 正在發送瀕臨處置名單 ({len(entering_stocks)} 檔)...")
         desc_lines = []
         for s in entering_stocks:
-            icon = "🔥" if s['days'] == 0 else "⚠️"
-            msg = "最快明天進處置" if s['days'] == 0 else f"最快 {s['days']} 天進處置"
+            # 📌 修正：days=1 代表 DB值為0 (官方已公告)，給予明確的處置訊息
+            if s['days'] == 1:
+                icon = "🔥"
+                msg = "明日開始處置 (官方已公告)"
+            else:
+                icon = "⚠️"
+                msg = f"最快 {s['days']} 天進處置"
+            
             desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
         
         entering_embed = [{
