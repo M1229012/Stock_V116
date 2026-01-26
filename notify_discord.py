@@ -294,7 +294,8 @@ def main():
             "color": 15158332,
         }]
         send_discord_webhook(entering_embed)
-        time.sleep(1) # 🛑 暫停 1 秒，確保 Discord 順序正確
+        # 🛑 修改：暫停 2 秒，確保 Discord 有足夠時間處理順序
+        time.sleep(2) 
 
     # --- 第二次發送: 🔓 即將出關股票 ---
     if releasing_stocks:
@@ -310,7 +311,8 @@ def main():
             "color": 3066993,
         }]
         send_discord_webhook(releasing_embed)
-        time.sleep(1) # 🛑 暫停 1 秒，確保 Discord 順序正確
+        # 🛑 修改：暫停 2 秒，確保 Discord 有足夠時間處理順序
+        time.sleep(2)
 
     # --- 第三次(及之後)發送: ⛓️ 處置中名單 (動態判定) ---
     if in_jail_stocks:
@@ -337,7 +339,8 @@ def main():
                 jail_embed["title"] = f"⛓️ 監控中！{total_count} 檔股票正在處置"
 
             send_discord_webhook([jail_embed])
-            time.sleep(0.5) # 🛑 每一段之間稍微暫停，避免 Discord 順序跳動
+            # 🛑 修改：分段之間也休息 2 秒，避免最後幾段順序亂掉
+            time.sleep(2)
 
     if not entering_stocks and not releasing_stocks and not in_jail_stocks:
         print("😴 今日無符合條件的股票，不發送通知。")
