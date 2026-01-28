@@ -4,6 +4,7 @@ import os
 import json
 import re
 import time  # 📌 新增：用於控制發送間隔
+import yfinance as yf # 📌 新增：用於抓取股價計算位階
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
@@ -129,6 +130,64 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
+# 📌 新增：股價位階計算函式
+# ============================
+def get_price_rank_info(code, period_str, market):
+    """
+    計算處置期間的價格位階
+    Return: 格式化後的狀態字串 (e.g., "🔥 強勢創高 (位階 95%)")
+    """
+    try:
+        # 1. 解析日期範圍 (從處置開始 到 今天)
+        dates = re.split(r'[~-～]', str(period_str))
+        if len(dates) < 1: return "無日期資料"
+        
+        start_date = parse_roc_date(dates[0])
+        if not start_date: return "日期解析錯誤"
+        
+        # 結束日期設為今天 (才能包含最新的價格)
+        end_date = datetime.now() + timedelta(days=1) 
+        
+        # 2. 判斷後綴 (TWSE: .TW, TPEx: .TWO)
+        suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
+        ticker = f"{code}{suffix}"
+        
+        # 3. 抓取歷史資料
+        df = yf.Ticker(ticker).history(start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=False)
+        
+        if df.empty:
+            # 嘗試另一種後綴 (防呆)
+            alt_suffix = ".TW" if suffix == ".TWO" else ".TWO"
+            df = yf.Ticker(f"{code}{alt_suffix}").history(start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=False)
+            if df.empty: return "暫無股價資料"
+
+        # 4. 計算位階
+        high_p = df['High'].max()
+        low_p = df['Low'].min()
+        curr_p = df['Close'].iloc[-1]
+        
+        if high_p == low_p:
+            ratio = 0.5
+        else:
+            ratio = (curr_p - low_p) / (high_p - low_p)
+            
+        pct = int(ratio * 100)
+        
+        # 5. 判斷狀態
+        if pct >= 85:
+            status = "🔥 **強勢創高**"
+        elif pct <= 20:
+            status = "📉 **弱勢破底**"
+        else:
+            status = "🧊 **區間整理**"
+            
+        return f"{status} (位階 {pct}%)"
+        
+    except Exception as e:
+        print(f"⚠️ 計算位階失敗 ({code}): {e}")
+        return "位階計算失敗"
+
+# ============================
 # 🔍 核心邏輯
 # ============================
 def check_status_split(sh, releasing_codes):
@@ -204,7 +263,7 @@ def check_status_split(sh, releasing_codes):
     return {'entering': entering_list, 'in_jail': in_jail_list}
 
 def check_releasing_stocks(sh):
-    """檢查即將出關的股票，並進行排序"""
+    """檢查即將出關的股票，並進行排序 + 計算位階"""
     print("🔍 檢查「即將出關」名單...")
     try:
         ws = sh.worksheet("即將出關監控")
@@ -226,6 +285,8 @@ def check_releasing_stocks(sh):
         name = row.get('名稱', '')
         days_left_str = str(row.get('剩餘天數', '99'))
         release_date = row.get('出關日期', '')
+        period_str = str(row.get('處置期間', ''))
+        market = str(row.get('市場', '上市'))
         
         if not days_left_str.isdigit():
             continue
@@ -236,11 +297,15 @@ def check_releasing_stocks(sh):
         days = int(days_left_str) + 1
         
         if days <= JAIL_EXIT_THRESHOLD:
+            # 📌 計算位階資訊
+            rank_info = get_price_rank_info(code, period_str, market)
+            
             releasing_list.append({
                 "code": code,
                 "name": name,
                 "days": days,
-                "date": release_date
+                "date": release_date,
+                "rank_info": rank_info # 儲存位階資訊
             })
             seen_codes.add(code)
             
@@ -273,7 +338,7 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # --- 第一次發送: 🚨 瀕臨處置股票 ---
+    # --- 第一段發送: 🚨 瀕臨處置股票 ---
     if entering_stocks:
         print(f"📤 正在發送瀕臨處置名單 ({len(entering_stocks)} 檔)...")
         desc_lines = []
@@ -297,13 +362,14 @@ def main():
         # 🛑 修改：暫停 2 秒，確保 Discord 有足夠時間處理順序
         time.sleep(2) 
 
-    # --- 第二次發送: 🔓 即將出關股票 ---
+    # --- 第二段發送: 🔓 即將出關股票 (含位階) ---
     if releasing_stocks:
         print(f"📤 正在發送即將出關名單 ({len(releasing_stocks)} 檔)...")
         desc_lines = []
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
-            desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})")
+            # 📌 修正：格式化輸出，增加位階資訊
+            desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})\n╰ {s['rank_info']}")
 
         releasing_embed = [{
             "title": f"🔓 關注！{len(releasing_stocks)} 檔股票即將出關",
@@ -314,7 +380,7 @@ def main():
         # 🛑 修改：暫停 2 秒，確保 Discord 有足夠時間處理順序
         time.sleep(2)
 
-    # --- 第三次(及之後)發送: ⛓️ 處置中名單 (動態判定) ---
+    # --- 第三段(及之後)發送: ⛓️ 處置中名單 (動態判定) ---
     if in_jail_stocks:
         total_count = len(in_jail_stocks)
         
