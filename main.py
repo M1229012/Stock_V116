@@ -74,7 +74,7 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   
-VERIFY_RECENT_DAYS = 2                
+VERIFY_RECENT_DAYS = 2               
 
 # ==========================================
 # 🔑 FinMind 金鑰設定
