@@ -25,7 +25,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install gspread google-auth requests
+        # 📌 修正：這裡補上了 yfinance，確保機器人有安裝這個套件
+        pip install gspread google-auth requests yfinance
 
     - name: Create Service Key
       env:
