@@ -181,7 +181,7 @@ def get_price_rank_info(code, period_str, market):
         else:
             status = "🧊 **區間整理**"
             
-        return f"{status} (位階 {pct}%)"
+        return f"{status}"
         
     except Exception as e:
         print(f"⚠️ 計算位階失敗 ({code}): {e}")
