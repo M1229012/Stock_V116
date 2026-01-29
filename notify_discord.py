@@ -17,7 +17,7 @@ SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
-JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知 (已修正為 3)
+JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ============================
@@ -115,7 +115,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 視覺優化：統一採「開盤價」計算 + 更新圖示
+# 📌 視覺優化：統一採「開盤價」計算 + 圖示更換 (🧊)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -194,7 +194,7 @@ def get_price_rank_info(code, period_str, market):
         rank_pct = int(ratio * 100)
 
         # ----------------------------------------------------
-        # 💡 圖示修正：📉 (破底), ⚖️ (盤整) + 小數點一位
+        # 💡 圖示修正：📉 (破底), 🧊 (盤整) + 小數點一位
         # ----------------------------------------------------
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
@@ -204,7 +204,7 @@ def get_price_rank_info(code, period_str, market):
         elif rank_pct <= 20: 
             status = "📉破底"  
         else: 
-            status = "⚖️盤整"  
+            status = "🧊盤整"  
         
         # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
         return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 期間{sign_in}{in_jail_pct:.1f}%`"
@@ -298,7 +298,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式
+# 🚀 主程式 (修正：entering_stocks 增加分段發送)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -319,23 +319,32 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # --- 第一段: 🚨 瀕臨處置 ---
+    # --- 第一段: 🚨 瀕臨處置 (新增分段發送) ---
     if entering_stocks:
-        print(f"📤 發送瀕臨處置 ({len(entering_stocks)} 檔)...")
-        desc_lines = []
-        for s in entering_stocks:
-            if s['days'] == 1:
-                icon = "🔥"; msg = "明日開始處置"
-            else:
-                icon = "⚠️"; msg = f"最快 {s['days']} 天進處置"
-            desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
+        total_entering = len(entering_stocks)
+        chunk_size = 20
+        print(f"📤 發送瀕臨處置 ({total_entering} 檔)...")
         
-        send_discord_webhook([{
-            "title": f"🚨 注意！{len(entering_stocks)} 檔股票瀕臨處置",
-            "description": "\n".join(desc_lines),
-            "color": 15158332,
-        }])
-        time.sleep(2) 
+        for i in range(0, total_entering, chunk_size):
+            chunk = entering_stocks[i : i + chunk_size]
+            desc_lines = []
+            for s in chunk:
+                if s['days'] == 1:
+                    icon = "🔥"; msg = "明日開始處置"
+                else:
+                    icon = "⚠️"; msg = f"最快 {s['days']} 天進處置"
+                desc_lines.append(f"{icon} **{s['code']} {s['name']}** | `{msg}`")
+            
+            embed = {
+                "description": "\n".join(desc_lines),
+                "color": 15158332,
+            }
+            # 只有第一段才放標題
+            if i == 0:
+                embed["title"] = f"🚨 注意！{total_entering} 檔股票瀕臨處置"
+            
+            send_discord_webhook([embed])
+            time.sleep(2) # 確保順序
 
     # --- 第二段: 🔓 即將出關 (簡潔版) ---
     if releasing_stocks:
