@@ -115,7 +115,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 視覺優化：統一採「開盤價」計算 + 圖示更換 (🧊)
+# 📌 視覺優化：動態週期 + 盤整判定(5%)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -128,8 +128,8 @@ def get_price_rank_info(code, period_str, market):
         start_date = parse_roc_date(dates[0])
         if not start_date: return "日期錯"
         
-        # 往前多抓一點確保有前 5 日數據
-        fetch_start = start_date - timedelta(days=30)
+        # 📌 加大抓取範圍 (60天)，確保如果處置很久，還能抓到足夠的「前 N 天」
+        fetch_start = start_date - timedelta(days=60)
         end_date = datetime.now() + timedelta(days=1)
         
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
@@ -145,8 +145,17 @@ def get_price_rank_info(code, period_str, market):
         # 🔧 關鍵修正：移除 yfinance 的時區資訊
         df.index = df.index.tz_localize(None)
 
+        # 準備資料：處置期間 DataFrame
+        df_in_jail = df[df.index >= pd.Timestamp(start_date)]
+        
+        # 1. 取得處置天數 N (Trading Days)
+        if df_in_jail.empty:
+            jail_days_count = 0
+        else:
+            jail_days_count = len(df_in_jail)
+
         # =========================================================
-        # 1. 計算【處置前熱度】(入獄前5日開盤 ~ 入獄前1日收盤)
+        # 2. 計算【處置前熱度】(入獄前 N 日開盤 ~ 入獄前 1 日收盤)
         # =========================================================
         mask_before_jail = df.index < pd.Timestamp(start_date)
         if not mask_before_jail.any(): 
@@ -156,55 +165,49 @@ def get_price_rank_info(code, period_str, market):
             jail_base_date = df[mask_before_jail].index[-1]
             jail_base_price = df.loc[jail_base_date]['Close'] # 入獄前1日收盤 (賣點)
 
-            # 找出入獄前第 5 個交易日 (包含 base_date 往前數第 5 根)
+            # 找出入獄前第 N 個交易日 (動態調整)
+            # 如果 jail_days_count 為 0 (例如剛開盤), 預設抓前 1 天
+            lookback_days = max(1, jail_days_count)
+            
             loc_idx = df.index.get_loc(jail_base_date)
-            if loc_idx >= 4:
-                # loc_idx 是前1日，loc_idx-4 是前5日
-                start_row_pre = df.iloc[loc_idx - 4]
-                pre_5d_entry = start_row_pre['Open'] # 📌 統一抓開盤價
+            # 要往前推 N 天 (包含 base date 本身是第 0 天的話... 不，是往前數)
+            # 例如 N=1: 就是 loc_idx 本身. N=3: loc_idx, loc_idx-1, loc_idx-2.
+            target_idx = loc_idx - lookback_days + 1
+            
+            if target_idx >= 0:
+                start_row_pre = df.iloc[target_idx]
+                pre_n_entry = start_row_pre['Open'] # 📌 統一抓開盤價
                 
-                pre_jail_pct = ((jail_base_price - pre_5d_entry) / pre_5d_entry) * 100
+                pre_jail_pct = ((jail_base_price - pre_n_entry) / pre_n_entry) * 100
             else:
                 pre_jail_pct = 0.0
 
         # =========================================================
-        # 2. 計算【處置期間績效】(處置第1日開盤 ~ 目前最新收盤)
+        # 3. 計算【處置期間績效】(處置第 1 日開盤 ~ 目前最新收盤)
         # =========================================================
-        df_in_jail = df[df.index >= pd.Timestamp(start_date)]
-        
         if df_in_jail.empty: 
             in_jail_pct = 0.0
-            curr_p = df['Close'].iloc[-1]
-            high_p = curr_p
-            low_p = curr_p
         else:
             start_row_in = df_in_jail.iloc[0] # 處置第1天 K 棒
-            jail_start_entry = start_row_in['Open'] # 📌 統一抓開盤價 (Open)
+            jail_start_entry = start_row_in['Open'] # 📌 統一抓開盤價
             
-            curr_p = df_in_jail['Close'].iloc[-1] # 目前最新收盤 (賣點)
+            curr_p = df_in_jail['Close'].iloc[-1] # 目前最新收盤
             
             in_jail_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
-            
-            high_p = df_in_jail['High'].max()
-            low_p = df_in_jail['Low'].min()
-        
-        # 3. 計算位階
-        if high_p == low_p: ratio = 0.5
-        else: ratio = (curr_p - low_p) / (high_p - low_p)
-        rank_pct = int(ratio * 100)
 
         # ----------------------------------------------------
-        # 💡 圖示修正：📉 (破底), 🧊 (盤整) + 小數點一位
+        # 💡 圖示修正：依照漲跌幅 ±5% 判定
         # ----------------------------------------------------
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
         
-        if rank_pct >= 85: 
+        # 📌 新邏輯：5% 區間內算盤整，超過算創高/破底
+        if abs(in_jail_pct) <= 5:
+            status = "🧊盤整"
+        elif in_jail_pct > 5:
             status = "🔥創高"
-        elif rank_pct <= 20: 
-            status = "📉破底"  
-        else: 
-            status = "🧊盤整"  
+        else:
+            status = "📉破底"
         
         # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
         return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 期間{sign_in}{in_jail_pct:.1f}%`"
