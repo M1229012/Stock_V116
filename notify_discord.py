@@ -115,7 +115,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 視覺優化：更新圖示 + Smart Entry 計算邏輯
+# 📌 視覺優化：統一採「開盤價」計算 + 更新圖示
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -145,12 +145,8 @@ def get_price_rank_info(code, period_str, market):
         # 🔧 關鍵修正：移除 yfinance 的時區資訊
         df.index = df.index.tz_localize(None)
 
-        # Helper: 取得 Smart Entry 價格 (紅K抓Open, 綠K抓Close => 即 min(Open, Close))
-        def get_smart_entry_price(row):
-            return min(row['Open'], row['Close'])
-
         # =========================================================
-        # 1. 計算【處置前熱度】(入獄前5日 Smart Entry ~ 入獄前1日收盤)
+        # 1. 計算【處置前熱度】(入獄前5日開盤 ~ 入獄前1日收盤)
         # =========================================================
         mask_before_jail = df.index < pd.Timestamp(start_date)
         if not mask_before_jail.any(): 
@@ -165,14 +161,14 @@ def get_price_rank_info(code, period_str, market):
             if loc_idx >= 4:
                 # loc_idx 是前1日，loc_idx-4 是前5日
                 start_row_pre = df.iloc[loc_idx - 4]
-                pre_5d_entry = get_smart_entry_price(start_row_pre) # 📌 Smart Entry
+                pre_5d_entry = start_row_pre['Open'] # 📌 統一抓開盤價
                 
                 pre_jail_pct = ((jail_base_price - pre_5d_entry) / pre_5d_entry) * 100
             else:
                 pre_jail_pct = 0.0
 
         # =========================================================
-        # 2. 計算【處置期間績效】(處置第1日 Smart Entry ~ 目前最新收盤)
+        # 2. 計算【處置期間績效】(處置第1日開盤 ~ 目前最新收盤)
         # =========================================================
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
@@ -183,7 +179,7 @@ def get_price_rank_info(code, period_str, market):
             low_p = curr_p
         else:
             start_row_in = df_in_jail.iloc[0] # 處置第1天 K 棒
-            jail_start_entry = get_smart_entry_price(start_row_in) # 📌 Smart Entry
+            jail_start_entry = start_row_in['Open'] # 📌 統一抓開盤價 (Open)
             
             curr_p = df_in_jail['Close'].iloc[-1] # 目前最新收盤 (賣點)
             
@@ -198,7 +194,7 @@ def get_price_rank_info(code, period_str, market):
         rank_pct = int(ratio * 100)
 
         # ----------------------------------------------------
-        # 💡 圖示修正：📉 (破底), ⚖️ (盤整)
+        # 💡 圖示修正：📉 (破底), ⚖️ (盤整) + 小數點一位
         # ----------------------------------------------------
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
@@ -206,9 +202,9 @@ def get_price_rank_info(code, period_str, market):
         if rank_pct >= 85: 
             status = "🔥創高"
         elif rank_pct <= 20: 
-            status = "📉破底"  # 改用圖表下跌，比綠色圈圈直覺
+            status = "📉破底"  
         else: 
-            status = "⚖️盤整"  # 改用天平，代表多空平衡
+            status = "⚖️盤整"  
         
         # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
         return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 期間{sign_in}{in_jail_pct:.1f}%`"
