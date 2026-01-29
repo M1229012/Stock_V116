@@ -298,7 +298,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式 (修正：entering_stocks 增加分段發送)
+# 🚀 主程式 (全分類統一分段邏輯)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -319,13 +319,13 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # --- 第一段: 🚨 瀕臨處置 (新增分段發送) ---
+    # --- 第一段: 🚨 瀕臨處置 (統一分段) ---
     if entering_stocks:
-        total_entering = len(entering_stocks)
-        chunk_size = 20
-        print(f"📤 發送瀕臨處置 ({total_entering} 檔)...")
+        total = len(entering_stocks)
+        chunk_size = 10 if total > 15 else 20
+        print(f"📤 發送瀕臨處置 ({total} 檔)...")
         
-        for i in range(0, total_entering, chunk_size):
+        for i in range(0, total, chunk_size):
             chunk = entering_stocks[i : i + chunk_size]
             desc_lines = []
             for s in chunk:
@@ -339,31 +339,34 @@ def main():
                 "description": "\n".join(desc_lines),
                 "color": 15158332,
             }
-            # 只有第一段才放標題
-            if i == 0:
-                embed["title"] = f"🚨 注意！{total_entering} 檔股票瀕臨處置"
+            if i == 0: embed["title"] = f"🚨 注意！{total} 檔股票瀕臨處置"
             
             send_discord_webhook([embed])
-            time.sleep(2) # 確保順序
+            time.sleep(2) 
 
-    # --- 第二段: 🔓 即將出關 (簡潔版) ---
+    # --- 第二段: 🔓 即將出關 (統一分段) ---
     if releasing_stocks:
-        print(f"📤 發送即將出關 ({len(releasing_stocks)} 檔)...")
-        desc_lines = []
-        for s in releasing_stocks:
-            day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
-            # 📌 格式：🕊️ 2330 台積電 | `明天出關` (2024-02-01)
-            #           ╰ 🔥創高｜`處置前+25.3% 期間+10.5%`
-            desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})\n╰ {s['rank_info']}")
+        total = len(releasing_stocks)
+        chunk_size = 10 if total > 15 else 20
+        print(f"📤 發送即將出關 ({total} 檔)...")
 
-        send_discord_webhook([{
-            "title": f"🔓 關注！{len(releasing_stocks)} 檔股票即將出關",
-            "description": "\n".join(desc_lines),
-            "color": 3066993,
-        }])
-        time.sleep(2)
+        for i in range(0, total, chunk_size):
+            chunk = releasing_stocks[i : i + chunk_size]
+            desc_lines = []
+            for s in chunk:
+                day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
+                desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})\n╰ {s['rank_info']}")
+            
+            embed = {
+                "description": "\n".join(desc_lines),
+                "color": 3066993,
+            }
+            if i == 0: embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
 
-    # --- 第三段: ⛓️ 處置中 ---
+            send_discord_webhook([embed])
+            time.sleep(2)
+
+    # --- 第三段: ⛓️ 處置中 (維持統一分段) ---
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -372,9 +375,14 @@ def main():
         for i in range(0, total, chunk_size):
             chunk = in_jail_stocks[i : i + chunk_size]
             desc_lines = [f"🔒 **{s['code']} {s['name']}** | `{s['period']}`" for s in chunk]
-            jail_embed = {"description": "\n".join(desc_lines), "color": 10181046}
-            if i == 0: jail_embed["title"] = f"⛓️ 監控中！{total} 檔股票正在處置"
-            send_discord_webhook([jail_embed])
+            
+            embed = {
+                "description": "\n".join(desc_lines),
+                "color": 10181046
+            }
+            if i == 0: embed["title"] = f"⛓️ 監控中！{total} 檔股票正在處置"
+            
+            send_discord_webhook([embed])
             time.sleep(2)
 
     if not entering_stocks and not releasing_stocks and not in_jail_stocks:
