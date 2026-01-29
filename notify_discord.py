@@ -17,7 +17,7 @@ SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
-JAIL_ENTER_THRESHOLD = 2   # 剩餘 X 天內進處置就要通知
+JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知 (已修正為 3)
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ============================
