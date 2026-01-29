@@ -115,7 +115,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 視覺優化：還原「處置前/期間」文字
+# 📌 修正：加入時區校正，解決「計算失敗」問題
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -140,6 +140,9 @@ def get_price_rank_info(code, period_str, market):
             alt_suffix = ".TW" if suffix == ".TWO" else ".TWO"
             df = yf.Ticker(f"{code}{alt_suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=False)
             if df.empty: return "無股價"
+
+        # 🔧 關鍵修正：移除 yfinance 的時區資訊，避免與 start_date 比較時報錯
+        df.index = df.index.tz_localize(None)
 
         mask_before_jail = df.index < pd.Timestamp(start_date)
         if not mask_before_jail.any(): return "資料不足"
@@ -185,7 +188,7 @@ def get_price_rank_info(code, period_str, market):
         return f"{status} ${int(curr_p)}｜處置前{sign_pre}{pre_jail_pct:.0f}% 期間{sign_in}{in_jail_pct:.0f}%"
         
     except Exception as e:
-        print(f"⚠️ 失敗: {e}")
+        print(f"⚠️ 計算失敗詳細原因 ({code}): {e}") # 這樣可以看到具體錯誤
         return "計算失敗"
 
 # ============================
