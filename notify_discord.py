@@ -115,7 +115,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 視覺優化：移除價格 + 縮小字體 (使用代碼塊)
+# 📌 視覺優化：計算邏輯修正 + 小數點一位
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -128,6 +128,7 @@ def get_price_rank_info(code, period_str, market):
         start_date = parse_roc_date(dates[0])
         if not start_date: return "日期錯"
         
+        # 往前多抓一點確保有前 5 日數據
         fetch_start = start_date - timedelta(days=30)
         end_date = datetime.now() + timedelta(days=1)
         
@@ -144,37 +145,53 @@ def get_price_rank_info(code, period_str, market):
         # 🔧 關鍵修正：移除 yfinance 的時區資訊
         df.index = df.index.tz_localize(None)
 
+        # =========================================================
+        # 1. 計算【處置前熱度】(入獄前5日開盤 ~ 入獄前1日收盤)
+        # =========================================================
         mask_before_jail = df.index < pd.Timestamp(start_date)
-        if not mask_before_jail.any(): return "資料不足"
-            
-        jail_base_date = df[mask_before_jail].index[-1]
-        jail_base_price = df.loc[jail_base_date]['Close']
-        
-        # A. 入獄前一週
-        loc_idx = df.index.get_loc(jail_base_date)
-        if loc_idx >= 5:
-            pre_5d_price = df['Close'].iloc[loc_idx - 5]
-            pre_jail_pct = ((jail_base_price - pre_5d_price) / pre_5d_price) * 100
-        else:
+        if not mask_before_jail.any(): 
             pre_jail_pct = 0.0
-            
-        # B. 蹲苦窯期間
-        curr_p = df['Close'].iloc[-1]
-        in_jail_pct = ((curr_p - jail_base_price) / jail_base_price) * 100
-        
-        # C. 位階
+            jail_base_price = 0 # 避免未定義變數
+        else:
+            jail_base_date = df[mask_before_jail].index[-1]
+            jail_base_price = df.loc[jail_base_date]['Close'] # 入獄前1日收盤
+
+            # 找出入獄前第 5 個交易日 (包含 base_date 往前數第 5 根)
+            loc_idx = df.index.get_loc(jail_base_date)
+            if loc_idx >= 4:
+                # loc_idx 是前1日，loc_idx-4 是前5日
+                pre_5d_open = df['Open'].iloc[loc_idx - 4] 
+                pre_jail_pct = ((jail_base_price - pre_5d_open) / pre_5d_open) * 100
+            else:
+                pre_jail_pct = 0.0
+
+        # =========================================================
+        # 2. 計算【處置期間績效】(處置第1日開盤 ~ 目前最新收盤)
+        # =========================================================
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
-        if df_in_jail.empty: df_in_jail = df.tail(1)
-             
-        high_p = df_in_jail['High'].max()
-        low_p = df_in_jail['Low'].min()
         
+        if df_in_jail.empty: 
+            # 如果還沒有處置期間的 K 棒 (例如剛開盤尚未抓到)，用目前的 close 暫代
+            in_jail_pct = 0.0
+            curr_p = df['Close'].iloc[-1]
+            high_p = curr_p
+            low_p = curr_p
+        else:
+            jail_start_open = df_in_jail['Open'].iloc[0] # 處置第1天開盤
+            curr_p = df_in_jail['Close'].iloc[-1]        # 目前最新收盤
+            
+            in_jail_pct = ((curr_p - jail_start_open) / jail_start_open) * 100
+            
+            high_p = df_in_jail['High'].max()
+            low_p = df_in_jail['Low'].min()
+        
+        # 3. 計算位階
         if high_p == low_p: ratio = 0.5
         else: ratio = (curr_p - low_p) / (high_p - low_p)
         rank_pct = int(ratio * 100)
 
         # ----------------------------------------------------
-        # 💡 格式修正：移除價格，將數據放入 `...` 縮小字體
+        # 💡 格式修正：小數點一位 (.1f)
         # ----------------------------------------------------
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
@@ -183,8 +200,8 @@ def get_price_rank_info(code, period_str, market):
         elif rank_pct <= 20: status = "🟢破底"
         else: status = "🟡盤整"
         
-        # 格式：🔥創高｜`處置前+25% 期間+10%`
-        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.0f}% 期間{sign_in}{in_jail_pct:.0f}%`"
+        # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
+        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 期間{sign_in}{in_jail_pct:.1f}%`"
         
     except Exception as e:
         print(f"⚠️ 失敗: {e}")
@@ -321,7 +338,7 @@ def main():
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
             # 📌 格式：🕊️ 2330 台積電 | `明天出關` (2024-02-01)
-            #           ╰ 🔥創高｜`處置前+25% 期間+10%`
+            #           ╰ 🔥創高｜`處置前+25.3% 期間+10.5%`
             desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})\n╰ {s['rank_info']}")
 
         send_discord_webhook([{
