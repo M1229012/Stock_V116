@@ -115,7 +115,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 修正：加入時區校正，解決「計算失敗」問題
+# 📌 視覺優化：移除價格 + 縮小字體 (使用代碼塊)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -141,7 +141,7 @@ def get_price_rank_info(code, period_str, market):
             df = yf.Ticker(f"{code}{alt_suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=False)
             if df.empty: return "無股價"
 
-        # 🔧 關鍵修正：移除 yfinance 的時區資訊，避免與 start_date 比較時報錯
+        # 🔧 關鍵修正：移除 yfinance 的時區資訊
         df.index = df.index.tz_localize(None)
 
         mask_before_jail = df.index < pd.Timestamp(start_date)
@@ -174,21 +174,20 @@ def get_price_rank_info(code, period_str, market):
         rank_pct = int(ratio * 100)
 
         # ----------------------------------------------------
-        # 💡 格式修正：還原易讀文字
+        # 💡 格式修正：移除價格，將數據放入 `...` 縮小字體
         # ----------------------------------------------------
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
         
-        # 狀態 (保留簡寫)
         if rank_pct >= 85: status = "🔥創高"
         elif rank_pct <= 20: status = "🟢破底"
         else: status = "🟡盤整"
         
-        # 格式：🔥創高 $185｜處置前+25% 期間+10%
-        return f"{status} ${int(curr_p)}｜處置前{sign_pre}{pre_jail_pct:.0f}% 期間{sign_in}{in_jail_pct:.0f}%"
+        # 格式：🔥創高｜`處置前+25% 期間+10%`
+        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.0f}% 期間{sign_in}{in_jail_pct:.0f}%`"
         
     except Exception as e:
-        print(f"⚠️ 計算失敗詳細原因 ({code}): {e}") # 這樣可以看到具體錯誤
+        print(f"⚠️ 失敗: {e}")
         return "計算失敗"
 
 # ============================
@@ -315,13 +314,14 @@ def main():
         }])
         time.sleep(2) 
 
-    # --- 第二段: 🔓 即將出關 (單行詳細版) ---
+    # --- 第二段: 🔓 即將出關 (簡潔版) ---
     if releasing_stocks:
         print(f"📤 發送即將出關 ({len(releasing_stocks)} 檔)...")
         desc_lines = []
         for s in releasing_stocks:
             day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
-            # 📌 格式：🔥創高 $185｜處置前+25% 期間+10%
+            # 📌 格式：🕊️ 2330 台積電 | `明天出關` (2024-02-01)
+            #           ╰ 🔥創高｜`處置前+25% 期間+10%`
             desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})\n╰ {s['rank_info']}")
 
         send_discord_webhook([{
