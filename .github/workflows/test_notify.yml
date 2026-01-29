@@ -41,7 +41,7 @@ jobs:
     - name: Run Discord Notification (Test Mode)
       env:
         # 注意：這裡改成讀取測試用的 Webhook Secret
-        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
         python notify_discord.py
