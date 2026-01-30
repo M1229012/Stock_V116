@@ -8,6 +8,16 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
+from io import StringIO
+
+# === 新增：爬蟲相關套件 ===
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ============================
 # ⚙️ 設定區
@@ -20,8 +30,84 @@ SERVICE_KEY_FILE = "service_key.json"
 JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
+# ⚡ 法人判斷閥值 (成交量佔比)
+# 設定為 3% (0.03)，只有當買賣超佔區間總成交量超過 3% 時才顯示
+INST_RATIO_THRESHOLD = 0.03
+
 # ============================
-# 🛠️ 工具函式
+# 🛠️ 爬蟲工具函式 (新增)
+# ============================
+def get_driver():
+    """初始化 Selenium Driver (無頭模式)"""
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # 資源加載優化
+    options.page_load_strategy = 'eager'
+    prefs = {"profile.managed_default_content_settings.images": 2} 
+    options.add_experimental_option("prefs", prefs)
+
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
+
+def is_roc_date(s: str) -> bool:
+    return re.match(r"\d{2,3}/\d{1,2}/\d{1,2}", str(s).strip()) is not None
+
+def roc_to_datestr(d_str: str) -> str | None:
+    parts = re.split(r"[/-]", str(d_str).strip())
+    if len(parts) < 2: return None
+    y = int(parts[0])
+    y = y + 1911 if y < 1911 else y
+    m = int(parts[1])
+    d = int(parts[2]) if len(parts) > 2 else 1
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+def get_institutional_data(stock_id, start_date, end_date):
+    """
+    爬取富邦證券的個股法人買賣超 (累積計算用)
+    """
+    driver = get_driver()
+    # 富邦證券網址參數：a=股票代號, c=開始日, d=結束日
+    url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
+    
+    try:
+        driver.get(url)
+        # 等待表格出現
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]")))
+        html = driver.page_source
+        tables = pd.read_html(StringIO(html))
+        
+        target_df = None
+        for df in tables:
+            if df.astype(str).apply(lambda x: x.str.contains('外資買賣超', na=False)).any().any():
+                target_df = df
+                break
+        
+        if target_df is not None and len(target_df.columns) >= 4:
+            clean_df = target_df.iloc[:, [0, 1, 2, 3]].copy()
+            clean_df.columns = ['日期', '外資買賣超', '投信買賣超', '自營商買賣超']
+            clean_df = clean_df[clean_df['日期'].apply(is_roc_date)]
+            
+            for col in ['外資買賣超', '投信買賣超', '自營商買賣超']:
+                clean_df[col] = clean_df[col].astype(str).str.replace(',', '').str.replace('+', '').str.replace('nan', '0')
+                clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce').fillna(0)
+
+            clean_df['DateStr'] = clean_df['日期'].apply(roc_to_datestr)
+            return clean_df.dropna(subset=['DateStr'])
+            
+    except Exception as e:
+        print(f"⚠️ 爬蟲失敗 ({stock_id}): {e}")
+        return None
+    finally:
+        driver.quit()
+
+# ============================
+# 🛠️ 原有工具函式
 # ============================
 def connect_google_sheets():
     """連線 Google Sheets"""
@@ -115,11 +201,11 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 視覺優化：動態週期 + 盤整判定(5%)
+# 📌 核心邏輯：動態週期 + 盤整判定(5%) + 法人爬蟲(3%佔比)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
-    計算處置期間數據，並回傳單行字串
+    計算處置期間數據，並回傳單行字串 (含法人判斷)
     """
     try:
         dates = re.split(r'[~-～]', str(period_str))
@@ -151,8 +237,14 @@ def get_price_rank_info(code, period_str, market):
         # 1. 取得處置天數 N (Trading Days)
         if df_in_jail.empty:
             jail_days_count = 0
+            total_volume_in_jail = 0 # 處置期間無量
         else:
             jail_days_count = len(df_in_jail)
+            total_volume_in_jail = df_in_jail['Volume'].sum() # 累計成交量 (張/股 視 yfinance 回傳而定，通常 yf 為股)
+            # yfinance 回傳通常是股數，這裡不需特別除 1000，因為下面法人買賣超也是張，
+            # 若要統一單位，法人張數*1000 = 股數。
+            # 這裡我們統一：佔比 = (法人買賣超張數 * 1000) / (總成交量股數)
+            # 或是：佔比 = (法人買賣超張數) / (總成交量股數 / 1000) -> 轉成張
 
         # =========================================================
         # 2. 計算【處置前熱度】(入獄前 N 日開盤 ~ 入獄前 1 日收盤)
@@ -208,8 +300,73 @@ def get_price_rank_info(code, period_str, market):
         else:
             status = "📉破底"
         
-        # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
-        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 處置中{sign_in}{in_jail_pct:.1f}%`"
+        base_info = f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 處置中{sign_in}{in_jail_pct:.1f}%`"
+
+        # ==========================================
+        # 🔥 新增：法人買賣超判斷 (3% 佔比邏輯)
+        # ==========================================
+        inst_msg = ""
+        
+        # 只有當處置期間有成交量才需要爬蟲判斷
+        if total_volume_in_jail > 0:
+            crawl_start = start_date.strftime("%Y-%m-%d")
+            crawl_end = datetime.now().strftime("%Y-%m-%d")
+            
+            # 爬取法人資料
+            inst_df = get_institutional_data(code, crawl_start, crawl_end)
+            
+            if inst_df is not None and not inst_df.empty:
+                # 總結算 (單位：張)
+                sum_foreign = inst_df['外資買賣超'].sum()
+                sum_trust = inst_df['投信買賣超'].sum()
+                sum_dealer = inst_df['自營商買賣超'].sum()
+                
+                # 計算佔比 (Net / Total Volume)
+                # yfinance Volume 是股數，所以要除以 1000 變成張數
+                volume_in_lots = total_volume_in_jail / 1000
+                if volume_in_lots == 0: volume_in_lots = 1 # 避免除以零
+
+                ratio_foreign = sum_foreign / volume_in_lots
+                ratio_trust = sum_trust / volume_in_lots
+                ratio_dealer = sum_dealer / volume_in_lots
+                
+                # 3% 門檻
+                threshold = INST_RATIO_THRESHOLD 
+
+                # --- 判斷邏輯 ---
+                # A. 三大法人共識
+                if ratio_foreign > threshold and ratio_trust > threshold and ratio_dealer > threshold:
+                    inst_msg = "🔥 三大法人累計買超"
+                elif ratio_foreign < -threshold and ratio_trust < -threshold and ratio_dealer < -threshold:
+                    inst_msg = "🟢 三大法人累計賣超"
+                else:
+                    # B. 個別表態 (只顯示超過 3% 的)
+                    msgs = []
+                    
+                    # 投信 (優先判斷)
+                    if ratio_trust > threshold: msgs.append("投信累計買超")
+                    elif ratio_trust < -threshold: msgs.append("投信累計賣超")
+                    
+                    # 外資
+                    if ratio_foreign > threshold: msgs.append("外資累計買超")
+                    elif ratio_foreign < -threshold: msgs.append("外資累計賣超")
+                    
+                    # 自營商
+                    if ratio_dealer > threshold: msgs.append("自營商累計買超")
+                    elif ratio_dealer < -threshold: msgs.append("自營商累計賣超")
+                    
+                    if msgs:
+                        # 顏色判定：若全賣用綠色，否則只要有買就用火
+                        if all("賣超" in m for m in msgs):
+                            inst_msg = "🟢 " + " ".join(msgs)
+                        else:
+                            # 混和(有買有賣)時，我們全部顯示，用火表示有買盤介入
+                            inst_msg = "🔥 " + " ".join(msgs)
+
+        if inst_msg:
+            return f"{base_info}\n╰ `{inst_msg}`"
+        else:
+            return base_info
         
     except Exception as e:
         print(f"⚠️ 失敗: {e}")
