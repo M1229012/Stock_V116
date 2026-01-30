@@ -30,9 +30,9 @@ SERVICE_KEY_FILE = "service_key.json"
 JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
-# ⚡ 法人判斷閥值 (成交量佔比)
-# 設定為 5% (0.05)，只有當買賣超佔區間總成交量超過 5% 時才顯示 (高門檻)
-INST_RATIO_THRESHOLD = 0.03
+# ⚡ 法人判斷閥值 (還原常態量能佔比)
+# 因為分母改用「處置前日均量」，數值會變大，所以門檻設為 1.5% 即代表顯著
+INST_RATIO_THRESHOLD = 0.015
 
 # ============================
 # 🛠️ 爬蟲工具函式
@@ -195,19 +195,34 @@ def get_price_rank_info(code, period_str, market):
             if df.empty: return "無股價"
 
         df.index = df.index.tz_localize(None)
+        
+        # 切分處置期間
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
+        # 切分處置前 (用來算常態量)
+        mask_before_jail = df.index < pd.Timestamp(start_date)
+        df_before_jail = df[mask_before_jail]
+        
+        # 1. 計算處置天數
         if df_in_jail.empty:
-            jail_days_count = 0; total_volume_in_jail = 0
+            jail_days_count = 0
+            # 若剛開始沒資料，無法計算
+            total_volume_in_jail = 0 
         else:
             jail_days_count = len(df_in_jail)
-            total_volume_in_jail = df_in_jail['Volume'].sum()
+            total_volume_in_jail = df_in_jail['Volume'].sum() # 這個變數只用來判斷是否有成交
 
-        mask_before_jail = df.index < pd.Timestamp(start_date)
-        if not mask_before_jail.any(): 
+        # 2. 計算處置前的漲跌幅
+        if df_before_jail.empty: 
             pre_jail_pct = 0.0
+            pre_jail_avg_volume = 0
         else:
-            jail_base_date = df[mask_before_jail].index[-1]
+            # 取得處置前 5 日的日均量 (還原常態量)
+            # 如果資料不足 5 天，就取所有可用天數
+            days_to_avg = min(5, len(df_before_jail))
+            pre_jail_avg_volume = df_before_jail['Volume'].tail(days_to_avg).mean()
+
+            jail_base_date = df_before_jail.index[-1]
             jail_base_price = df.loc[jail_base_date]['Close']
             lookback_days = max(1, jail_days_count)
             loc_idx = df.index.get_loc(jail_base_date)
@@ -218,6 +233,7 @@ def get_price_rank_info(code, period_str, market):
             else:
                 pre_jail_pct = 0.0
 
+        # 3. 計算處置中的漲跌幅
         if df_in_jail.empty: in_jail_pct = 0.0
         else:
             jail_start_entry = df_in_jail.iloc[0]['Open']
@@ -234,10 +250,11 @@ def get_price_rank_info(code, period_str, market):
         base_info = f"{status}｜`前{sign_pre}{pre_jail_pct:.0f}% 中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
-        # 🔥 修正：法人買賣超判斷邏輯 (確保賣超被執行)
+        # 🔥 修正：還原常態量能判斷邏輯
         # ==========================================
         inst_msg = ""
-        if total_volume_in_jail > 0:
+        # 只有當處置期間有成交 且 處置前有常態量能時才計算
+        if total_volume_in_jail > 0 and pre_jail_avg_volume > 0:
             crawl_start = start_date.strftime("%Y-%m-%d")
             crawl_end = datetime.now().strftime("%Y-%m-%d")
             inst_df = get_institutional_data(code, crawl_start, crawl_end)
@@ -247,51 +264,45 @@ def get_price_rank_info(code, period_str, market):
                 sum_trust = inst_df['投信買賣超'].sum()
                 sum_dealer = inst_df['自營商買賣超'].sum()
                 
-                volume_in_lots = total_volume_in_jail / 1000
-                if volume_in_lots == 0: volume_in_lots = 1 
+                # 計算基準：常態日均量(股) * 處置天數 / 1000 = 應有的成交張數
+                benchmark_lots = (pre_jail_avg_volume * jail_days_count) / 1000
+                if benchmark_lots == 0: benchmark_lots = 1 # 避免除以零
 
-                ratio_foreign = sum_foreign / volume_in_lots
-                ratio_trust = sum_trust / volume_in_lots
-                ratio_dealer = sum_dealer / volume_in_lots
+                ratio_foreign = sum_foreign / benchmark_lots
+                ratio_trust = sum_trust / benchmark_lots
+                ratio_dealer = sum_dealer / benchmark_lots
                 threshold = INST_RATIO_THRESHOLD 
 
-                # A. 三大法人共識判斷
-                # 情況 1: 三大法人全買 -> 火焰
+                # A. 三大法人共識
                 if ratio_foreign > threshold and ratio_trust > threshold and ratio_dealer > threshold:
                     inst_msg = "🔥 三大法人累計買超"
-                # 情況 2: 三大法人全賣 -> 冰塊
                 elif ratio_foreign < -threshold and ratio_trust < -threshold and ratio_dealer < -threshold:
                     inst_msg = "🧊 三大法人累計賣超"
                 else:
-                    # B. 個別表態 (混合狀況)
+                    # B. 個別表態
                     msgs = []
                     
-                    # 投信 (Trust) - 買或賣都加
                     if ratio_trust > threshold: msgs.append("投信買")
                     elif ratio_trust < -threshold: msgs.append("投信賣")
                     
-                    # 外資 (Foreign) - 買或賣都加
                     if ratio_foreign > threshold: msgs.append("外資買")
                     elif ratio_foreign < -threshold: msgs.append("外資賣")
                     
-                    # 自營商 (Dealer) - 買或賣都加
                     if ratio_dealer > threshold: msgs.append("自營買")
                     elif ratio_dealer < -threshold: msgs.append("自營賣")
                     
                     if msgs:
-                        # 邏輯: 
-                        # 如果全部都是"賣" -> 顯示冰塊 🧊
+                        # 全賣 -> 冰塊
                         if all("賣" in m for m in msgs):
                             inst_msg = "🧊 **" + " ".join(msgs) + "**"
-                        # 如果全部都是"買" -> 顯示火焰 🔥
+                        # 全買 -> 火焰
                         elif all("買" in m for m in msgs):
                             inst_msg = "🔥 **" + " ".join(msgs) + "**"
-                        # 如果有買有賣 (混和) -> 顯示循環 🔄
+                        # 混和 -> 循環
                         else:
                             inst_msg = "🔄 **" + " ".join(msgs) + "**"
 
         if inst_msg:
-            # 使用 ｜ 分隔，確保並列顯示
             return f"{base_info} ｜ {inst_msg}"
         else:
             return base_info
