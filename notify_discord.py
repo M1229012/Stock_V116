@@ -256,8 +256,8 @@ def get_price_rank_info(code, period_str, market):
             status_icon = "📉"
             status_text = "破底"
         
-        # 價格字串 (正常字體)
-        price_data = f"處置前{sign_pre}{pre_jail_pct:.0f}% 處置中{sign_in}{in_jail_pct:.0f}%"
+        # 🔥 修改：恢復使用反引號 (Code Block) 以縮小字體視覺
+        price_data = f"`處置前{sign_pre}{pre_jail_pct:.0f}% 處置中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
         # 🔥 法人判斷
@@ -433,7 +433,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：使用 L型符號 '└ ' 替代 '> ' 以解決手機版間距問題)
+    # 2. 即將出關 (🔥 修正：L型符號 + Inline Code 格式)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -448,7 +448,7 @@ def main():
                 # Line 1: 圖示 **代號 名稱｜狀態文字**｜天數 (MM/DD)
                 desc_lines.append(f"{s['status_icon']} **{s['code']} {s['name']}｜{s['status_text']}**｜{day_msg} ({s['date']})")
                 
-                # Line 2: 使用 L型符號 '└ ' 取代引用區塊，確保手機版行距緊湊
+                # Line 2: L型符號 + Inline Code價格 + 法人
                 if s['inst_info']:
                     desc_lines.append(f"└ {s['price_info']} ｜ {s['inst_info']}")
                 else:
