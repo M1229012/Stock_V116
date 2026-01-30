@@ -35,14 +35,14 @@ JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 INST_RATIO_THRESHOLD = 0.005
 
 # ============================
-# 🛠️ 爬蟲工具函式 (完全對照 Streamlit 原始碼)
+# 🛠️ 爬蟲工具函式 (100% 還原籌碼K線邏輯)
 # ============================
 
 def get_driver_path():
     return ChromeDriverManager().install()
 
 def get_driver():
-    """初始化 Selenium Driver (完全照搬 Streamlit 設定)"""
+    """初始化 Selenium Driver (完全還原籌碼K線 APP 設定)"""
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -51,16 +51,16 @@ def get_driver():
     options.add_argument('--window-size=1920,1080')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-    # 1. 開啟 Eager 模式
+    # 1. 開啟 Eager 模式 (不等待資源載入完畢)
     options.page_load_strategy = 'eager'
 
     # 2. 禁止圖片、CSS、通知等資源載入
     prefs = {
-        "profile.managed_default_content_settings.images": 2,
-        "profile.default_content_setting_values.notifications": 2,
-        "profile.managed_default_content_settings.stylesheets": 2,
-        "profile.managed_default_content_settings.cookies": 2,
-        "profile.managed_default_content_settings.javascript": 1,
+        "profile.managed_default_content_settings.images": 2,          # 禁止圖片
+        "profile.default_content_setting_values.notifications": 2,     # 禁止通知
+        "profile.managed_default_content_settings.stylesheets": 2,     # 禁止 CSS
+        "profile.managed_default_content_settings.cookies": 2,         # 禁止 Cookies
+        "profile.managed_default_content_settings.javascript": 1,      # JS 建議開啟
         "profile.managed_default_content_settings.plugins": 1,
         "profile.managed_default_content_settings.popups": 2,
         "profile.managed_default_content_settings.geolocation": 2,
@@ -68,11 +68,12 @@ def get_driver():
     }
     options.add_experimental_option("prefs", prefs)
     
-    # 額外參數
+    # 額外參數減少渲染負擔
     options.add_argument('--blink-settings=imagesEnabled=false')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-infobars')
     
+    # 自動偵測 binary 位置 (這段是關鍵，確保在不同環境都能找到瀏覽器)
     if shutil.which("chromium"):
         options.binary_location = shutil.which("chromium")
     elif shutil.which("chromium-browser"):
@@ -101,19 +102,20 @@ def roc_to_datestr(d_str: str) -> str | None:
 
 def get_institutional_data(stock_id, start_date, end_date):
     """
-    爬取富邦證券 (完全照搬 Streamlit 邏輯，包含 XPath)
+    爬取富邦證券 (完全還原籌碼K線 APP 邏輯)
     """
     driver = get_driver()
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
         driver.get(url)
-        # ⚠️ 關鍵：使用與原始碼完全一致的 XPath
+        # ⚠️ 這裡使用原本程式碼中特定的 XPath，確保抓取目標一致
         WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "/html/body/div[1]/table/tbody/tr[2]/td[2]/table/tbody/tr/td/form/table/tbody/tr/td/table/tbody/tr[8]/td[1]")))
         html = driver.page_source
         tables = pd.read_html(StringIO(html))
         
         target_df = None
         for df in tables:
+            # 透過關鍵字尋找正確的表格
             if df.astype(str).apply(lambda x: x.str.contains('外資買賣超', na=False)).any().any():
                 target_df = df
                 break
@@ -125,6 +127,7 @@ def get_institutional_data(stock_id, start_date, end_date):
                 
                 clean_df = clean_df[clean_df['日期'].apply(is_roc_date)]
                 
+                # 資料清洗 (移除逗號、加號、處理 nan)
                 for col in ['外資買賣超', '投信買賣超', '自營商買賣超']:
                     clean_df[col] = clean_df[col].astype(str).str.replace(',', '').str.replace('+', '').str.replace('nan', '0')
                     clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce').fillna(0)
@@ -132,8 +135,7 @@ def get_institutional_data(stock_id, start_date, end_date):
                 clean_df['DateStr'] = clean_df['日期'].apply(roc_to_datestr)
                 return clean_df.dropna(subset=['DateStr'])
     except Exception as e:
-        # 為了 debug，這裡稍微印出錯誤，但保持 pass 行為
-        print(f"⚠️ 爬蟲異常 ({stock_id}): {e}")
+        print(f"⚠️ 爬蟲發生錯誤 ({stock_id}): {e}")
         pass
     finally:
         driver.quit()
