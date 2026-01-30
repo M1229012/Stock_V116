@@ -28,7 +28,7 @@ SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
 JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
-JAIL_EXIT_THRESHOLD = 8    # 剩餘 X 天內出關就要通知
+JAIL_EXIT_THRESHOLD = 10    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (還原常態量能佔比)
 # 維持：投信/自營商門檻 0.5%, 外資 1.0%
