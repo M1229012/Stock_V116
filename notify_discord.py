@@ -32,7 +32,7 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (成交量佔比)
-INST_RATIO_THRESHOLD = 0.005
+INST_RATIO_THRESHOLD = 0.03
 
 # ============================
 # 🛠️ 爬蟲工具函式 (100% 還原籌碼K線邏輯 + Debug 輸出)
