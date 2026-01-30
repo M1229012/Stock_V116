@@ -300,7 +300,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式 (註解文案更新：N 天同天數對比)
+# 🚀 主程式 (修正：註解加上反引號縮小)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -356,9 +356,9 @@ def main():
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
             
-            # 📌 修正文案：強調「N 天 vs N 天」與「同天數對比」
+            # 📌 修正：加上反引號 (`) 讓字體變小並與下方風格統一
             if i == 0:
-                desc_lines.append("💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)\n" + "─" * 15)
+                desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)`\n" + "─" * 15)
 
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
