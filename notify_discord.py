@@ -31,8 +31,9 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (還原常態量能佔比)
-# 因為分母改用「處置前日均量」，數值會變大，所以門檻設為 1.5% 即代表顯著
-INST_RATIO_THRESHOLD = 0.01
+# 採用分級制，下方程式碼會針對不同法人套用不同門檻
+THRESH_FOREIGN = 0.015  # 外資 1.5%
+THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 
 # ============================
 # 🛠️ 爬蟲工具函式
@@ -206,20 +207,18 @@ def get_price_rank_info(code, period_str, market):
         # 1. 計算處置天數
         if df_in_jail.empty:
             jail_days_count = 0
-            # 若剛開始沒資料，無法計算
             total_volume_in_jail = 0 
         else:
             jail_days_count = len(df_in_jail)
-            total_volume_in_jail = df_in_jail['Volume'].sum() # 這個變數只用來判斷是否有成交
+            total_volume_in_jail = df_in_jail['Volume'].sum()
 
-        # 2. 計算處置前的漲跌幅
+        # 2. 計算處置前的漲跌幅 與 常態均量
         if df_before_jail.empty: 
             pre_jail_pct = 0.0
             pre_jail_avg_volume = 0
         else:
-            # 取得處置前 5 日的日均量 (還原常態量)
-            # 如果資料不足 5 天，就取所有可用天數
-            days_to_avg = min(5, len(df_before_jail))
+            # 🔥 修正：使用 20 日均量 (月均量) 作為常態基準
+            days_to_avg = min(20, len(df_before_jail))
             pre_jail_avg_volume = df_before_jail['Volume'].tail(days_to_avg).mean()
 
             jail_base_date = df_before_jail.index[-1]
@@ -250,7 +249,7 @@ def get_price_rank_info(code, period_str, market):
         base_info = f"{status}｜`前{sign_pre}{pre_jail_pct:.0f}% 中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
-        # 🔥 修正：還原常態量能判斷邏輯
+        # 🔥 修正：分級門檻 + 20日均量基準
         # ==========================================
         inst_msg = ""
         # 只有當處置期間有成交 且 處置前有常態量能時才計算
@@ -266,30 +265,42 @@ def get_price_rank_info(code, period_str, market):
                 
                 # 計算基準：常態日均量(股) * 處置天數 / 1000 = 應有的成交張數
                 benchmark_lots = (pre_jail_avg_volume * jail_days_count) / 1000
-                if benchmark_lots == 0: benchmark_lots = 1 # 避免除以零
+                if benchmark_lots == 0: benchmark_lots = 1 
 
                 ratio_foreign = sum_foreign / benchmark_lots
                 ratio_trust = sum_trust / benchmark_lots
                 ratio_dealer = sum_dealer / benchmark_lots
-                threshold = INST_RATIO_THRESHOLD 
+                
+                # 🔥 這裡實施分級門檻
+                # 情況 1: 三大法人共識判斷 (需同時滿足各自門檻)
+                # 外資 > 1.5%, 投信 > 0.5%, 自營 > 0.5%
+                is_all_buy = (ratio_foreign > THRESH_FOREIGN and 
+                              ratio_trust > THRESH_OTHERS and 
+                              ratio_dealer > THRESH_OTHERS)
+                              
+                is_all_sell = (ratio_foreign < -THRESH_FOREIGN and 
+                               ratio_trust < -THRESH_OTHERS and 
+                               ratio_dealer < -THRESH_OTHERS)
 
-                # A. 三大法人共識
-                if ratio_foreign > threshold and ratio_trust > threshold and ratio_dealer > threshold:
+                if is_all_buy:
                     inst_msg = "🔥 三大法人累計買超"
-                elif ratio_foreign < -threshold and ratio_trust < -threshold and ratio_dealer < -threshold:
+                elif is_all_sell:
                     inst_msg = "🧊 三大法人累計賣超"
                 else:
-                    # B. 個別表態
+                    # B. 個別表態 (混合狀況，使用各自門檻)
                     msgs = []
                     
-                    if ratio_trust > threshold: msgs.append("投信買")
-                    elif ratio_trust < -threshold: msgs.append("投信賣")
+                    # 投信 (0.5% 門檻)
+                    if ratio_trust > THRESH_OTHERS: msgs.append("投信買")
+                    elif ratio_trust < -THRESH_OTHERS: msgs.append("投信賣")
                     
-                    if ratio_foreign > threshold: msgs.append("外資買")
-                    elif ratio_foreign < -threshold: msgs.append("外資賣")
+                    # 外資 (1.5% 門檻)
+                    if ratio_foreign > THRESH_FOREIGN: msgs.append("外資買")
+                    elif ratio_foreign < -THRESH_FOREIGN: msgs.append("外資賣")
                     
-                    if ratio_dealer > threshold: msgs.append("自營買")
-                    elif ratio_dealer < -threshold: msgs.append("自營賣")
+                    # 自營商 (0.5% 門檻)
+                    if ratio_dealer > THRESH_OTHERS: msgs.append("自營買")
+                    elif ratio_dealer < -THRESH_OTHERS: msgs.append("自營賣")
                     
                     if msgs:
                         # 全賣 -> 冰塊
