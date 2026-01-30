@@ -256,7 +256,7 @@ def get_price_rank_info(code, period_str, market):
             status_icon = "📉"
             status_text = "破底"
         
-        # 價格字串 (維持雙膠囊格式)
+        # 價格字串 (維持雙膠囊格式，主程式會再處理)
         price_data = f"`處置前{sign_pre}{pre_jail_pct:.0f}%` `處置中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
@@ -372,14 +372,13 @@ def check_releasing_stocks(sh):
         name = row.get('名稱', '')
         days_left_str = str(row.get('剩餘天數', '99'))
         
-        # 🔥 修改開始：日期格式化 (加回年份)
+        # 日期格式化 (維持年份)
         release_date_raw = row.get('出關日期', '')
         dt = parse_roc_date(release_date_raw)
         if dt:
-            release_date = dt.strftime("%Y/%m/%d") # 例如 2026/02/02
+            release_date = dt.strftime("%Y/%m/%d") 
         else:
             release_date = str(release_date_raw)
-        # 🔥 修改結束
 
         period_str = str(row.get('處置期間', ''))
         market = str(row.get('市場', '上市'))
@@ -434,7 +433,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：樣式 C 直豎對齊 | + 移除空行)
+    # 2. 即將出關 (🔥 修正：移除虛線，改用「股票:」與「▸」箭頭清單樣式)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -444,21 +443,22 @@ def main():
             desc_lines = []
             
             for s in chunk:
-                day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
+                day_msg = "剩 " + str(s['days']) + " 天"
                 
-                # Line 1 (大標題): ### 2485 兆赫｜剩 8 天 (2026/02/02)
-                desc_lines.append(f"### {s['code']} {s['name']}｜{day_msg} ({s['date']})")
+                # Line 1: 股票: 2485 兆赫 (剩 4 天 2026/02/02)
+                desc_lines.append(f"股票: {s['code']} {s['name']} ({day_msg} {s['date']})")
                 
-                # Line 2 (直豎對齊): | 🔥 **創高**　`處置前+47%` `處置中+13%`
-                # 使用 | 作為開頭，全形空白分隔
-                desc_lines.append(f"| {s['status_icon']} **{s['status_text']}**　{s['price_info']}")
+                # Line 2: ▸ 狀態: 🔥 創高 (處置前+47% / 處置中+13%)
+                # 處理股價字串，移除反引號，將空格替換為 /
+                clean_price = s['price_info'].replace('`', '').replace(' ', ' / ')
+                desc_lines.append(f"▸ 狀態: {s['status_icon']} {s['status_text']} ({clean_price})")
                 
-                # Line 3 (直豎對齊): | 法人籌碼
+                # Line 3: ▸ 籌碼: 🔥 外資買
                 if s['inst_info']:
-                    desc_lines.append(f"| {s['inst_info']}")
+                    desc_lines.append(f"▸ 籌碼: {s['inst_info']}")
                 
-                # 🔥 關鍵修改：移除了原本的空行 desc_lines.append("") 
-                # 讓下一檔標題直接接在下面，創造緊湊感
+                # 加上空行作為分隔
+                desc_lines.append("")
 
             embed = {
                 "description": "\n".join(desc_lines),
