@@ -209,7 +209,7 @@ def get_price_rank_info(code, period_str, market):
             status = "📉破底"
         
         # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
-        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 期間{sign_in}{in_jail_pct:.1f}%`"
+        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 處置中{sign_in}{in_jail_pct:.1f}%`"
         
     except Exception as e:
         print(f"⚠️ 失敗: {e}")
@@ -358,7 +358,7 @@ def main():
             
             # 📌 修正文案：強調「N 天 vs N 天」與「同天數對比」
             if i == 0:
-                desc_lines.append("💡 說明：處置前 N 天 vs 處置後 N 天 (同天數對比)\n" + "─" * 15)
+                desc_lines.append("💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)\n" + "─" * 15)
 
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
