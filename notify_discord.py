@@ -35,7 +35,7 @@ JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 INST_RATIO_THRESHOLD = 0.005
 
 # ============================
-# 🛠️ 爬蟲工具函式 (100% 還原籌碼K線邏輯)
+# 🛠️ 爬蟲工具函式 (100% 還原籌碼K線邏輯 + Debug 輸出)
 # ============================
 
 def get_driver_path():
@@ -102,16 +102,21 @@ def roc_to_datestr(d_str: str) -> str | None:
 
 def get_institutional_data(stock_id, start_date, end_date):
     """
-    爬取富邦證券 (完全還原籌碼K線 APP 邏輯)
+    爬取富邦證券 (完全還原籌碼K線 APP 邏輯 + Debug)
     """
     driver = get_driver()
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
+    
+    print(f"\n[DEBUG] 正在爬取: {stock_id}, URL: {url}") # DEBUG
+
     try:
         driver.get(url)
         # ⚠️ 這裡使用原本程式碼中特定的 XPath，確保抓取目標一致
         WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "/html/body/div[1]/table/tbody/tr[2]/td[2]/table/tbody/tr/td/form/table/tbody/tr/td/table/tbody/tr[8]/td[1]")))
+        
         html = driver.page_source
         tables = pd.read_html(StringIO(html))
+        print(f"[DEBUG] 頁面讀取成功，找到表格數: {len(tables)}") # DEBUG
         
         target_df = None
         for df in tables:
@@ -121,6 +126,7 @@ def get_institutional_data(stock_id, start_date, end_date):
                 break
         
         if target_df is not None:
+            print(f"[DEBUG] 找到目標表格，原始形狀: {target_df.shape}") # DEBUG
             if len(target_df.columns) >= 4:
                 clean_df = target_df.iloc[:, [0, 1, 2, 3]].copy()
                 clean_df.columns = ['日期', '外資買賣超', '投信買賣超', '自營商買賣超']
@@ -133,9 +139,18 @@ def get_institutional_data(stock_id, start_date, end_date):
                     clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce').fillna(0)
 
                 clean_df['DateStr'] = clean_df['日期'].apply(roc_to_datestr)
-                return clean_df.dropna(subset=['DateStr'])
+                final_df = clean_df.dropna(subset=['DateStr'])
+                
+                print(f"[DEBUG] 清洗後資料筆數: {len(final_df)}") # DEBUG
+                if not final_df.empty:
+                    print(f"[DEBUG] 最新一筆資料範例:\n{final_df.head(1)}") # DEBUG
+                
+                return final_df
+        else:
+            print("[DEBUG] ❌ 未找到包含 '外資買賣超' 的表格") # DEBUG
+
     except Exception as e:
-        print(f"⚠️ 爬蟲發生錯誤 ({stock_id}): {e}")
+        print(f"⚠️ [DEBUG] 爬蟲發生錯誤 ({stock_id}): {e}")
         pass
     finally:
         driver.quit()
@@ -295,11 +310,16 @@ def get_price_rank_info(code, period_str, market):
         # 🔥 法人買賣超判斷
         inst_msg = ""
         
+        # DEBUG: 檢查成交量是否足夠
+        print(f"[DEBUG] {code} 處置期間成交量(volume_in_jail): {total_volume_in_jail}")
+
         # 當處置期間有量才爬蟲
         if total_volume_in_jail > 0:
             crawl_start = start_date.strftime("%Y-%m-%d")
             crawl_end = datetime.now().strftime("%Y-%m-%d")
             
+            print(f"[DEBUG] 準備抓取 {code} 法人資料, 區間: {crawl_start} ~ {crawl_end}") # DEBUG
+
             # 使用修正後的函式抓取資料
             inst_df = get_institutional_data(code, crawl_start, crawl_end)
             
@@ -317,6 +337,13 @@ def get_price_rank_info(code, period_str, market):
                 ratio_dealer = sum_dealer / volume_in_lots
                 
                 threshold = INST_RATIO_THRESHOLD 
+                
+                # DEBUG: 印出計算結果
+                print(f"[DEBUG] {code} 佔比分析 (總量張數: {volume_in_lots:.0f})")
+                print(f"      外資: {sum_foreign} (佔比 {ratio_foreign:.4f})")
+                print(f"      投信: {sum_trust} (佔比 {ratio_trust:.4f})")
+                print(f"      自營: {sum_dealer} (佔比 {ratio_dealer:.4f})")
+                print(f"      門檻: {threshold}")
 
                 if ratio_foreign > threshold and ratio_trust > threshold and ratio_dealer > threshold:
                     inst_msg = "🔥 三大法人累計買超"
@@ -338,6 +365,10 @@ def get_price_rank_info(code, period_str, market):
                             inst_msg = "🟢 " + " ".join(msgs)
                         else:
                             inst_msg = "🔥 " + " ".join(msgs)
+            else:
+                 print(f"[DEBUG] {code} 法人資料為 None 或空值") # DEBUG
+        else:
+             print(f"[DEBUG] {code} 成交量為 0，跳過爬蟲") # DEBUG
 
         if inst_msg:
             return f"{base_info}\n╰ `{inst_msg}`"
