@@ -446,7 +446,7 @@ def main():
                 day_msg = "剩 " + str(s['days']) + " 天"
                 
                 # Line 1: **2312 金寶  剩 4 天  2026/02/02** (加粗)
-                desc_lines.append(f"**{s['code']} | {s['name']}  {day_msg}   {s['date']}**")
+                desc_lines.append(f"**{s['code']} {s['name']} | {day_msg}   {s['date']}**")
                 
                 # Line 2: ▸ 📉 破底  處置前+51% / 處置中-24%
                 # 清除反引號，將空格替換為 /
