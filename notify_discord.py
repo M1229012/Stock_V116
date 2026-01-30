@@ -31,9 +31,9 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (還原常態量能佔比)
-# 🔥 修正：採用分級門檻，大幅降低內資標準以避免熱門股訊號被吃掉
-THRESH_FOREIGN = 0.010  # 外資 1.0%
-THRESH_OTHERS  = 0.001  # 投信/自營 0.1% (只要有動作就顯示)
+# 維持分級門檻：外資 1.0% / 內資 0.1%
+THRESH_FOREIGN = 0.010
+THRESH_OTHERS  = 0.001
 
 # ============================
 # 🛠️ 爬蟲工具函式
@@ -179,14 +179,13 @@ def get_merged_jail_periods(sh):
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
-    回傳 Tuple: (股價資訊字串, 法人資訊字串)
-    若無法人資訊，第二個元素為空字串
+    回傳 Tuple: (狀態, 價格數據字串, 法人資訊字串)
     """
     try:
         dates = re.split(r'[~-～]', str(period_str))
-        if len(dates) < 1: return "無日期", ""
+        if len(dates) < 1: return "無日期", "資料錯誤", ""
         start_date = parse_roc_date(dates[0])
-        if not start_date: return "日期錯", ""
+        if not start_date: return "日期錯", "資料錯誤", ""
         
         fetch_start = start_date - timedelta(days=60)
         end_date = datetime.now() + timedelta(days=1)
@@ -197,14 +196,14 @@ def get_price_rank_info(code, period_str, market):
         if df.empty:
             alt_suffix = ".TW" if suffix == ".TWO" else ".TWO"
             df = yf.Ticker(f"{code}{alt_suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=False)
-            if df.empty: return "無股價", ""
+            if df.empty: return "無股價", "查無資料", ""
 
         df.index = df.index.tz_localize(None)
         
         # 切分處置期間
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
-        # 切分處置前 (用來算常態量)
+        # 切分處置前
         mask_before_jail = df.index < pd.Timestamp(start_date)
         df_before_jail = df[mask_before_jail]
         
@@ -221,7 +220,7 @@ def get_price_rank_info(code, period_str, market):
             pre_jail_pct = 0.0
             pre_jail_avg_volume = 0
         else:
-            # 🔥 修正：使用 20 日均量 (月均量) 作為常態基準
+            # 使用 20 日均量 (月均量) 作為常態基準
             days_to_avg = min(20, len(df_before_jail))
             pre_jail_avg_volume = df_before_jail['Volume'].tail(days_to_avg).mean()
 
@@ -250,14 +249,13 @@ def get_price_rank_info(code, period_str, market):
         elif in_jail_pct > 5: status = "🔥創高"
         else: status = "📉破底"
         
-        # 🔥 修正：保留「處置前」與「處置中」完整中文，並移除小數點以節省空間
-        base_info = f"{status}｜`處置前{sign_pre}{pre_jail_pct:.0f}% 處置中{sign_in}{in_jail_pct:.0f}%`"
+        # 🔥 修改：將狀態分離，只回傳純數據字串
+        price_data = f"`處置前{sign_pre}{pre_jail_pct:.0f}% ｜ 處置中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
-        # 🔥 法人判斷 (還原常態量 + 分級門檻)
+        # 🔥 法人判斷
         # ==========================================
         inst_msg = ""
-        # 只有當處置期間有成交 且 處置前有常態量能時才計算
         if total_volume_in_jail > 0 and pre_jail_avg_volume > 0:
             crawl_start = start_date.strftime("%Y-%m-%d")
             crawl_end = datetime.now().strftime("%Y-%m-%d")
@@ -268,7 +266,6 @@ def get_price_rank_info(code, period_str, market):
                 sum_trust = inst_df['投信買賣超'].sum()
                 sum_dealer = inst_df['自營商買賣超'].sum()
                 
-                # 計算基準：常態日均量(股) * 處置天數 / 1000 = 應有的成交張數
                 benchmark_lots = (pre_jail_avg_volume * jail_days_count) / 1000
                 if benchmark_lots == 0: benchmark_lots = 1 
 
@@ -276,7 +273,6 @@ def get_price_rank_info(code, period_str, market):
                 ratio_trust = sum_trust / benchmark_lots
                 ratio_dealer = sum_dealer / benchmark_lots
                 
-                # 分級門檻判斷
                 is_foreign_buy = ratio_foreign > THRESH_FOREIGN
                 is_foreign_sell = ratio_foreign < -THRESH_FOREIGN
                 
@@ -286,15 +282,13 @@ def get_price_rank_info(code, period_str, market):
                 is_dealer_buy = ratio_dealer > THRESH_OTHERS
                 is_dealer_sell = ratio_dealer < -THRESH_OTHERS
 
-                # A. 三大法人共識判斷
+                # 共識與個別表態判斷
                 if is_foreign_buy and is_trust_buy and is_dealer_buy:
                     inst_msg = "🔥 三大法人累計買超"
                 elif is_foreign_sell and is_trust_sell and is_dealer_sell:
                     inst_msg = "🧊 三大法人累計賣超"
                 else:
-                    # B. 個別表態
                     msgs = []
-                    
                     if is_trust_buy: msgs.append("投信買")
                     elif is_trust_sell: msgs.append("投信賣")
                     
@@ -312,12 +306,12 @@ def get_price_rank_info(code, period_str, market):
                         else:
                             inst_msg = "🔄 **" + " ".join(msgs) + "**"
 
-        # 回傳 tuple (股價資訊, 法人資訊)
-        return base_info, inst_msg
+        # 回傳: 狀態, 價格數據, 法人數據
+        return status, price_data, inst_msg
         
     except Exception as e:
         print(f"⚠️ 失敗: {e}")
-        return "計算失敗", ""
+        return "計算失敗", "Error", ""
 
 # ============================
 # 🔍 核心邏輯
@@ -379,14 +373,15 @@ def check_releasing_stocks(sh):
         days = int(days_left_str) + 1
         
         if days <= JAIL_EXIT_THRESHOLD:
-            # 取得 (股價資訊, 法人資訊) 的 Tuple
-            price_info, inst_info = get_price_rank_info(code, period_str, market)
+            # 取得分離後的數據 (狀態, 數據, 法人)
+            status, price_info, inst_info = get_price_rank_info(code, period_str, market)
             
             releasing_list.append({
                 "code": code, "name": name, "days": days,
-                "date": release_date, 
-                "price_info": price_info, # 分開存
-                "inst_info": inst_info    # 分開存
+                "date": release_date,
+                "status": status,         # 新增
+                "price_info": price_info, # 純數據
+                "inst_info": inst_info    # 法人
             })
             seen_codes.add(code)
     releasing_list.sort(key=lambda x: x['days'])
@@ -423,7 +418,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：改為三行式 + 動態樹狀圖)
+    # 2. 即將出關 (🔥 修正：Option A 樣式 - 標題整合 + 引用區塊)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -434,19 +429,20 @@ def main():
             if i == 0: desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)`\n" + "─" * 15)
             
             for s in chunk:
-                day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
+                day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
                 
-                # 第一行
-                desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})")
+                # Line 1: 狀態 + 代號名稱 + 日期 (標題整合)
+                desc_lines.append(f"{s['status']} **{s['code']} {s['name']}** | {day_msg} ({s['date']})")
                 
-                # 防呆判斷：決定第二行與第三行的符號
+                # Line 2: 價格數據 (使用引用區塊 >)
+                desc_lines.append(f"> {s['price_info']}")
+                
+                # Line 3: 法人數據 (使用引用區塊 >，有資料才顯示)
                 if s['inst_info']:
-                    # 有法人資訊 -> 第二行用「├」，第三行用「╰」
-                    desc_lines.append(f"├ {s['price_info']}")
-                    desc_lines.append(f"╰ {s['inst_info']}")
-                else:
-                    # 無法人資訊 -> 第二行用「╰」直接結束
-                    desc_lines.append(f"╰ {s['price_info']}")
+                    desc_lines.append(f"> {s['inst_info']}")
+                
+                # 增加空行，讓卡片感更明顯
+                desc_lines.append("")
             
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
             if i == 0: embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
