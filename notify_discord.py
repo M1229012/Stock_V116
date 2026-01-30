@@ -445,13 +445,13 @@ def main():
             for s in chunk:
                 day_msg = "剩 " + str(s['days']) + " 天"
                 
-                # Line 1: 股票: 2485 兆赫 (剩 4 天 2026/02/02)
-                desc_lines.append(f"股票: {s['code']} {s['name']} ({day_msg} {s['date']})")
+                # Line 1: 2485 兆赫 (剩 4 天 2026/02/02)
+                desc_lines.append(f"{s['code']} {s['name']} {day_msg} {s['date']}")
                 
                 # Line 2: ▸ 狀態: 🔥 創高 (處置前+47% / 處置中+13%)
                 # 處理股價字串，移除反引號，將空格替換為 /
                 clean_price = s['price_info'].replace('`', '').replace(' ', ' / ')
-                desc_lines.append(f"▸ 狀態: {s['status_icon']} {s['status_text']} ({clean_price})")
+                desc_lines.append(f"▸ {s['status_icon']} {s['status_text']} ({clean_price})")
                 
                 # Line 3: ▸ 籌碼: 🔥 外資買
                 if s['inst_info']:
