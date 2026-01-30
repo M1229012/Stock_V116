@@ -6,6 +6,7 @@ import re
 import time
 import yfinance as yf
 import pandas as pd
+import shutil  # 新增：用於檢查瀏覽器路徑
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from io import StringIO
@@ -31,27 +32,59 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (成交量佔比)
-# 設定為 3% (0.03)，只有當買賣超佔區間總成交量超過 3% 時才顯示
+# 設定為 3% (0.03)，只有當買賣超佔區間總成交量超過 3% 時才顯示 (依您的設定改為 0.005)
 INST_RATIO_THRESHOLD = 0.005
 
 # ============================
-# 🛠️ 爬蟲工具函式 (新增)
+# 🛠️ 爬蟲工具函式 (已替換為籌碼K線APP的穩健版本)
 # ============================
+
+def get_driver_path():
+    return ChromeDriverManager().install()
+
 def get_driver():
-    """初始化 Selenium Driver (無頭模式)"""
+    """初始化 Selenium Driver (移植自籌碼K線穩健版)"""
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920,1080')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    # 資源加載優化
-    options.page_load_strategy = 'eager'
-    prefs = {"profile.managed_default_content_settings.images": 2} 
-    options.add_experimental_option("prefs", prefs)
 
-    service = Service(ChromeDriverManager().install())
+    # 1. 開啟 Eager 模式 (不等待資源載入完畢)
+    options.page_load_strategy = 'eager'
+
+    # 2. 禁止圖片、CSS、通知等資源載入
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,          # 禁止圖片
+        "profile.default_content_setting_values.notifications": 2,     # 禁止通知
+        "profile.managed_default_content_settings.stylesheets": 2,     # 禁止 CSS
+        "profile.managed_default_content_settings.cookies": 2,         # 禁止 Cookies
+        "profile.managed_default_content_settings.javascript": 1,      # JS 開啟
+        "profile.managed_default_content_settings.plugins": 1,
+        "profile.managed_default_content_settings.popups": 2,
+        "profile.managed_default_content_settings.geolocation": 2,
+        "profile.managed_default_content_settings.media_stream": 2,
+    }
+    options.add_experimental_option("prefs", prefs)
+    
+    # 額外參數減少渲染負擔
+    options.add_argument('--blink-settings=imagesEnabled=false')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-infobars')
+    
+    # 自動偵測系統上的 Chromium (適用於 Linux/Cloud 環境)
+    if shutil.which("chromium"):
+        options.binary_location = shutil.which("chromium")
+    elif shutil.which("chromium-browser"):
+        options.binary_location = shutil.which("chromium-browser")
+        
+    if shutil.which("chromedriver"):
+        service = Service(shutil.which("chromedriver"))
+    else:
+        service = Service(get_driver_path())
+
     driver = webdriver.Chrome(service=service, options=options)
     return driver
 
@@ -60,7 +93,8 @@ def is_roc_date(s: str) -> bool:
 
 def roc_to_datestr(d_str: str) -> str | None:
     parts = re.split(r"[/-]", str(d_str).strip())
-    if len(parts) < 2: return None
+    if len(parts) < 2:
+        return None
     y = int(parts[0])
     y = y + 1911 if y < 1911 else y
     m = int(parts[1])
@@ -70,15 +104,16 @@ def roc_to_datestr(d_str: str) -> str | None:
 def get_institutional_data(stock_id, start_date, end_date):
     """
     爬取富邦證券的個股法人買賣超 (累積計算用)
+    移植自籌碼K線穩健版，包含完整的錯誤處理與資料清洗
     """
     driver = get_driver()
-    # 富邦證券網址參數：a=股票代號, c=開始日, d=結束日
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
-    
     try:
         driver.get(url)
-        # 等待表格出現
-        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]")))
+        # 等待元素載入
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "/html/body/div[1]/table/tbody/tr[2]/td[2]/table/tbody/tr/td/form/table/tbody/tr/td/table/tbody/tr[8]/td[1]"))
+        )
         html = driver.page_source
         tables = pd.read_html(StringIO(html))
         
@@ -88,23 +123,25 @@ def get_institutional_data(stock_id, start_date, end_date):
                 target_df = df
                 break
         
-        if target_df is not None and len(target_df.columns) >= 4:
-            clean_df = target_df.iloc[:, [0, 1, 2, 3]].copy()
-            clean_df.columns = ['日期', '外資買賣超', '投信買賣超', '自營商買賣超']
-            clean_df = clean_df[clean_df['日期'].apply(is_roc_date)]
-            
-            for col in ['外資買賣超', '投信買賣超', '自營商買賣超']:
-                clean_df[col] = clean_df[col].astype(str).str.replace(',', '').str.replace('+', '').str.replace('nan', '0')
-                clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce').fillna(0)
+        if target_df is not None:
+            if len(target_df.columns) >= 4:
+                clean_df = target_df.iloc[:, [0, 1, 2, 3]].copy()
+                clean_df.columns = ['日期', '外資買賣超', '投信買賣超', '自營商買賣超']
+                
+                clean_df = clean_df[clean_df['日期'].apply(is_roc_date)]
+                
+                for col in ['外資買賣超', '投信買賣超', '自營商買賣超']:
+                    clean_df[col] = clean_df[col].astype(str).str.replace(',', '').str.replace('+', '').str.replace('nan', '0')
+                    clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce').fillna(0)
 
-            clean_df['DateStr'] = clean_df['日期'].apply(roc_to_datestr)
-            return clean_df.dropna(subset=['DateStr'])
-            
+                clean_df['DateStr'] = clean_df['日期'].apply(roc_to_datestr)
+                return clean_df.dropna(subset=['DateStr'])
     except Exception as e:
         print(f"⚠️ 爬蟲失敗 ({stock_id}): {e}")
-        return None
+        pass
     finally:
         driver.quit()
+    return None
 
 # ============================
 # 🛠️ 原有工具函式
@@ -330,7 +367,7 @@ def get_price_rank_info(code, period_str, market):
                 ratio_trust = sum_trust / volume_in_lots
                 ratio_dealer = sum_dealer / volume_in_lots
                 
-                # 3% 門檻
+                # 3% 門檻 (使用全域變數設定)
                 threshold = INST_RATIO_THRESHOLD 
 
                 # --- 判斷邏輯 ---
