@@ -256,7 +256,7 @@ def get_price_rank_info(code, period_str, market):
             status_icon = "📉"
             status_text = "破底"
         
-        # 🔥 修改：恢復使用反引號 (Code Block) 以縮小字體視覺
+        # 價格字串 (使用 inline code 縮小視覺)
         price_data = f"`處置前{sign_pre}{pre_jail_pct:.0f}% 處置中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
@@ -433,34 +433,42 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：L型符號 + Inline Code 格式)
+    # 2. 即將出關 (🔥 修正：改用 Fields 卡片式排版，解決手機錯位問題)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
         print(f"📤 發送即將出關 ({total} 檔)...")
         for i in range(0, total, chunk_size):
             chunk = releasing_stocks[i : i + chunk_size]
-            desc_lines = []
+            
+            # 🔥 修改：使用 fields 列表來構建 Embed
+            fields = []
             
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
                 
-                # Line 1: 圖示 **代號 名稱｜狀態文字**｜天數 (MM/DD)
-                desc_lines.append(f"{s['status_icon']} **{s['code']} {s['name']}｜{s['status_text']}**｜{day_msg} ({s['date']})")
+                # 標題: 圖示 **代號 名稱｜狀態文字**｜天數 (MM/DD)
+                field_name = f"{s['status_icon']} **{s['code']} {s['name']}｜{s['status_text']}**｜{day_msg} ({s['date']})"
                 
-                # Line 2: L型符號 + Inline Code價格 + 法人
+                # 內容: 使用引用區塊 >
+                # 數據 + 法人 (分行顯示)
                 if s['inst_info']:
-                    desc_lines.append(f"└ {s['price_info']} ｜ {s['inst_info']}")
+                    field_value = f"> {s['price_info']}\n> {s['inst_info']}"
                 else:
-                    desc_lines.append(f"└ {s['price_info']}")
+                    field_value = f"> {s['price_info']}"
+                
+                fields.append({
+                    "name": field_name,
+                    "value": field_value,
+                    "inline": False  # 強制換行 (卡片式)
+                })
                 
             embed = {
-                "description": "\n".join(desc_lines),
+                "title": f"🔓 關注！{total} 檔股票即將出關",
                 "color": 3066993,
-                "title": f"🔓 關注！{total} 檔股票即將出關"
+                "fields": fields, # 將欄位加入 Embed
+                "footer": {"text": "💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)"}
             }
-            if i == 0: 
-                embed["footer"] = {"text": "💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)"}
 
             send_discord_webhook([embed])
             time.sleep(2)
