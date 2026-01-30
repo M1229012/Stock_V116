@@ -31,7 +31,7 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (還原常態量能佔比)
-# 🔥 修正：投信/自營商門檻調高至 0.5%
+# 維持：投信/自營商門檻 0.5%, 外資 1.0%
 THRESH_FOREIGN = 0.010  # 外資 1.0%
 THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 
@@ -245,12 +245,12 @@ def get_price_rank_info(code, period_str, market):
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
         
-        # 🔥 修改：狀態僅回傳「圖示」
+        # 狀態僅回傳「圖示」
         if abs(in_jail_pct) <= 5: status = "🧊"
         elif in_jail_pct > 5: status = "🔥"
         else: status = "📉"
         
-        # 🔥 修改：價格字串 (移除 code block 符號，交由外層處理)
+        # 價格字串 (正常字體)
         price_data = f"處置前{sign_pre}{pre_jail_pct:.0f}% 處置中{sign_in}{in_jail_pct:.0f}%"
 
         # ==========================================
@@ -418,7 +418,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：二行式極簡版)
+    # 2. 即將出關 (🔥 修正：二行式極簡版 + 正常字體)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -434,13 +434,12 @@ def main():
                 # Line 1: 圖示 + 代號名稱 + 日期 (無文字狀態描述)
                 desc_lines.append(f"{s['status']} **{s['code']} {s['name']}** | {day_msg} ({s['date']})")
                 
-                # Line 2: 價格數據 + 法人數據 (壓縮於同一行，使用 Quote)
+                # Line 2: 價格數據 (正常字體) + 法人數據 (壓縮於同一行)
+                # 🔥 關鍵修正：這裡移除了 price_info 外面的 backticks (`)
                 if s['inst_info']:
-                    # 有法人: 顯示價格 + 分隔線 + 法人
-                    desc_lines.append(f"> `{s['price_info']}` ｜ {s['inst_info']}")
+                    desc_lines.append(f"> {s['price_info']} ｜ {s['inst_info']}")
                 else:
-                    # 無法人: 僅顯示價格
-                    desc_lines.append(f"> `{s['price_info']}`")
+                    desc_lines.append(f"> {s['price_info']}")
                 
                 # 增加空行
                 desc_lines.append("")
