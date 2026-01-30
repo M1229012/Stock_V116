@@ -418,7 +418,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：二行式極簡版 + 正常字體)
+    # 2. 即將出關 (🔥 修正：二行式極簡版 + 正常字體 + 說明移至 Footer)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -426,26 +426,31 @@ def main():
         for i in range(0, total, chunk_size):
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
-            if i == 0: desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)`\n" + "─" * 15)
+            # 移除了頂部的說明文字 append
             
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
                 
-                # Line 1: 圖示 + 代號名稱 + 日期 (無文字狀態描述)
+                # Line 1: 圖示 + 代號名稱 + 日期
                 desc_lines.append(f"{s['status']} **{s['code']} {s['name']}** | {day_msg} ({s['date']})")
                 
-                # Line 2: 價格數據 (正常字體) + 法人數據 (壓縮於同一行)
-                # 🔥 關鍵修正：這裡移除了 price_info 外面的 backticks (`)
+                # Line 2: 價格數據 (正常字體) + 法人數據 (壓縮於同一行，引用區塊)
                 if s['inst_info']:
                     desc_lines.append(f"> {s['price_info']} ｜ {s['inst_info']}")
                 else:
                     desc_lines.append(f"> {s['price_info']}")
                 
-                # 增加空行
-                desc_lines.append("")
+                # 移除了空行 spacer desc_lines.append("") 以達成緊湊的兩行效果
             
-            embed = {"description": "\n".join(desc_lines), "color": 3066993}
-            if i == 0: embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
+            embed = {
+                "description": "\n".join(desc_lines),
+                "color": 3066993,
+                "title": f"🔓 關注！{total} 檔股票即將出關"
+            }
+            # 🔥 新增：將說明移至 Footer
+            if i == 0: 
+                embed["footer"] = {"text": "💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)"}
+
             send_discord_webhook([embed])
             time.sleep(2)
 
