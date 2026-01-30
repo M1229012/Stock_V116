@@ -245,7 +245,7 @@ def get_price_rank_info(code, period_str, market):
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
         
-        # 🔥 修改：同時回傳「圖示」與「文字」
+        # 修改：同時回傳「圖示」與「文字」
         if abs(in_jail_pct) <= 5: 
             status_icon = "🧊"
             status_text = "盤整"
@@ -371,7 +371,16 @@ def check_releasing_stocks(sh):
         if code in seen_codes: continue
         name = row.get('名稱', '')
         days_left_str = str(row.get('剩餘天數', '99'))
-        release_date = row.get('出關日期', '')
+        
+        # 🔥 修改開始：日期格式化 (僅保留 月/日)
+        release_date_raw = row.get('出關日期', '')
+        dt = parse_roc_date(release_date_raw)
+        if dt:
+            release_date = dt.strftime("%m/%d") # 例如 02/02
+        else:
+            release_date = str(release_date_raw)
+        # 🔥 修改結束
+
         period_str = str(row.get('處置期間', ''))
         market = str(row.get('市場', '上市'))
         
@@ -386,7 +395,7 @@ def check_releasing_stocks(sh):
                 "code": code, "name": name, "days": days,
                 "date": release_date,
                 "status_icon": status_icon,
-                "status_text": status_text, # 新增這欄
+                "status_text": status_text, 
                 "price_info": price_info, 
                 "inst_info": inst_info    
             })
@@ -425,7 +434,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：C-2 樣式 - 直條分隔文字)
+    # 2. 即將出關 (🔥 修正：C-2 樣式 + 月/日格式 + 說明移至 Footer)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -437,7 +446,7 @@ def main():
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
                 
-                # Line 1: 圖示 **代號 名稱｜狀態文字**｜天數 (日期)
+                # Line 1: 圖示 **代號 名稱｜狀態文字**｜天數 (MM/DD)
                 desc_lines.append(f"{s['status_icon']} **{s['code']} {s['name']}｜{s['status_text']}**｜{day_msg} ({s['date']})")
                 
                 # Line 2: 價格數據 + 法人數據
@@ -446,7 +455,6 @@ def main():
                 else:
                     desc_lines.append(f"> {s['price_info']}")
                 
-            
             embed = {
                 "description": "\n".join(desc_lines),
                 "color": 3066993,
