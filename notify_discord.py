@@ -31,9 +31,9 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (還原常態量能佔比)
-# 維持分級門檻：外資 1.0% / 內資 0.1%
-THRESH_FOREIGN = 0.010
-THRESH_OTHERS  = 0.001
+# 🔥 修正：投信/自營商門檻調高至 0.5%
+THRESH_FOREIGN = 0.010  # 外資 1.0%
+THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 
 # ============================
 # 🛠️ 爬蟲工具函式
@@ -179,13 +179,13 @@ def get_merged_jail_periods(sh):
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
-    回傳 Tuple: (狀態, 價格數據字串, 法人資訊字串)
+    回傳 Tuple: (狀態ICON, 價格數據字串, 法人資訊字串)
     """
     try:
         dates = re.split(r'[~-～]', str(period_str))
-        if len(dates) < 1: return "無日期", "資料錯誤", ""
+        if len(dates) < 1: return "❓", "無日期", ""
         start_date = parse_roc_date(dates[0])
-        if not start_date: return "日期錯", "資料錯誤", ""
+        if not start_date: return "❓", "日期錯", ""
         
         fetch_start = start_date - timedelta(days=60)
         end_date = datetime.now() + timedelta(days=1)
@@ -196,7 +196,7 @@ def get_price_rank_info(code, period_str, market):
         if df.empty:
             alt_suffix = ".TW" if suffix == ".TWO" else ".TWO"
             df = yf.Ticker(f"{code}{alt_suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=False)
-            if df.empty: return "無股價", "查無資料", ""
+            if df.empty: return "❓", "無股價", ""
 
         df.index = df.index.tz_localize(None)
         
@@ -245,12 +245,13 @@ def get_price_rank_info(code, period_str, market):
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
         
-        if abs(in_jail_pct) <= 5: status = "🧊盤整"
-        elif in_jail_pct > 5: status = "🔥創高"
-        else: status = "📉破底"
+        # 🔥 修改：狀態僅回傳「圖示」
+        if abs(in_jail_pct) <= 5: status = "🧊"
+        elif in_jail_pct > 5: status = "🔥"
+        else: status = "📉"
         
-        # 🔥 修改：將狀態分離，只回傳純數據字串
-        price_data = f"`處置前{sign_pre}{pre_jail_pct:.0f}% ｜ 處置中{sign_in}{in_jail_pct:.0f}%`"
+        # 🔥 修改：價格字串 (移除 code block 符號，交由外層處理)
+        price_data = f"處置前{sign_pre}{pre_jail_pct:.0f}% 處置中{sign_in}{in_jail_pct:.0f}%"
 
         # ==========================================
         # 🔥 法人判斷
@@ -306,12 +307,11 @@ def get_price_rank_info(code, period_str, market):
                         else:
                             inst_msg = "🔄 **" + " ".join(msgs) + "**"
 
-        # 回傳: 狀態, 價格數據, 法人數據
         return status, price_data, inst_msg
         
     except Exception as e:
         print(f"⚠️ 失敗: {e}")
-        return "計算失敗", "Error", ""
+        return "❓", "Error", ""
 
 # ============================
 # 🔍 核心邏輯
@@ -373,15 +373,15 @@ def check_releasing_stocks(sh):
         days = int(days_left_str) + 1
         
         if days <= JAIL_EXIT_THRESHOLD:
-            # 取得分離後的數據 (狀態, 數據, 法人)
+            # 取得分離後的數據 (狀態Icon, 數據, 法人)
             status, price_info, inst_info = get_price_rank_info(code, period_str, market)
             
             releasing_list.append({
                 "code": code, "name": name, "days": days,
                 "date": release_date,
-                "status": status,         # 新增
-                "price_info": price_info, # 純數據
-                "inst_info": inst_info    # 法人
+                "status": status,         
+                "price_info": price_info, 
+                "inst_info": inst_info    
             })
             seen_codes.add(code)
     releasing_list.sort(key=lambda x: x['days'])
@@ -418,7 +418,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：Option A 樣式 - 標題整合 + 引用區塊)
+    # 2. 即將出關 (🔥 修正：二行式極簡版)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -431,17 +431,18 @@ def main():
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天"
                 
-                # Line 1: 狀態 + 代號名稱 + 日期 (標題整合)
+                # Line 1: 圖示 + 代號名稱 + 日期 (無文字狀態描述)
                 desc_lines.append(f"{s['status']} **{s['code']} {s['name']}** | {day_msg} ({s['date']})")
                 
-                # Line 2: 價格數據 (使用引用區塊 >)
-                desc_lines.append(f"> {s['price_info']}")
-                
-                # Line 3: 法人數據 (使用引用區塊 >，有資料才顯示)
+                # Line 2: 價格數據 + 法人數據 (壓縮於同一行，使用 Quote)
                 if s['inst_info']:
-                    desc_lines.append(f"> {s['inst_info']}")
+                    # 有法人: 顯示價格 + 分隔線 + 法人
+                    desc_lines.append(f"> `{s['price_info']}` ｜ {s['inst_info']}")
+                else:
+                    # 無法人: 僅顯示價格
+                    desc_lines.append(f"> `{s['price_info']}`")
                 
-                # 增加空行，讓卡片感更明顯
+                # 增加空行
                 desc_lines.append("")
             
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
