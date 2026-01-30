@@ -171,7 +171,6 @@ def get_price_rank_info(code, period_str, market):
             
             loc_idx = df.index.get_loc(jail_base_date)
             # 要往前推 N 天 (包含 base date 本身是第 0 天的話... 不，是往前數)
-            # 例如 N=1: 就是 loc_idx 本身. N=3: loc_idx, loc_idx-1, loc_idx-2.
             target_idx = loc_idx - lookback_days + 1
             
             if target_idx >= 0:
@@ -210,7 +209,7 @@ def get_price_rank_info(code, period_str, market):
             status = "📉破底"
         
         # 格式：🔥創高｜`處置前+25.3% 期間+10.5%`
-        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 期間{sign_in}{in_jail_pct:.1f}%`"
+        return f"{status}｜`處置前{sign_pre}{pre_jail_pct:.1f}% 處置中{sign_in}{in_jail_pct:.1f}%`"
         
     except Exception as e:
         print(f"⚠️ 失敗: {e}")
@@ -301,7 +300,7 @@ def check_releasing_stocks(sh):
     return releasing_list
 
 # ============================
-# 🚀 主程式 (全分類統一分段邏輯)
+# 🚀 主程式 (修正：註解加上反引號縮小)
 # ============================
 def main():
     if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
@@ -347,7 +346,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # --- 第二段: 🔓 即將出關 (統一分段) ---
+    # --- 第二段: 🔓 即將出關 (統一分段 + 註解更新) ---
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -356,6 +355,11 @@ def main():
         for i in range(0, total, chunk_size):
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
+            
+            # 📌 修正：加上反引號 (`) 讓字體變小並與下方風格統一
+            if i == 0:
+                desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)`\n" + "─" * 15)
+
             for s in chunk:
                 day_msg = "明天出關" if s['days'] <= 1 else f"剩 {s['days']} 天出關"
                 desc_lines.append(f"🕊️ **{s['code']} {s['name']}** | `{day_msg}` ({s['date']})\n╰ {s['rank_info']}")
