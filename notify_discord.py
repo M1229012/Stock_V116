@@ -31,8 +31,8 @@ JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
 JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知
 
 # ⚡ 法人判斷閥值 (成交量佔比)
-# 設定為 0.5% (0.005)
-INST_RATIO_THRESHOLD = 0.005
+# 設定為 5% (0.05)，只有當買賣超佔區間總成交量超過 5% 時才顯示 (高門檻)
+INST_RATIO_THRESHOLD = 0.05
 
 # ============================
 # 🛠️ 爬蟲工具函式
@@ -231,10 +231,10 @@ def get_price_rank_info(code, period_str, market):
         elif in_jail_pct > 5: status = "🔥創高"
         else: status = "📉破底"
         
-        base_info = f"{status}｜`前{sign_pre}{pre_jail_pct:.0f}% 中{sign_in}{in_jail_pct:.0f}%`" # 縮短文字
+        base_info = f"{status}｜`前{sign_pre}{pre_jail_pct:.0f}% 中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
-        # 🔥 新增：法人買賣超判斷 (0.5% 佔比邏輯)
+        # 🔥 新增：法人買賣超判斷 (5% 佔比邏輯 + 冷熱圖示)
         # ==========================================
         inst_msg = ""
         if total_volume_in_jail > 0:
@@ -257,9 +257,9 @@ def get_price_rank_info(code, period_str, market):
 
                 # A. 三大法人共識
                 if ratio_foreign > threshold and ratio_trust > threshold and ratio_dealer > threshold:
-                    inst_msg = "🔼 三大法人累計買超"
+                    inst_msg = "🔥 三大法人累計買超"
                 elif ratio_foreign < -threshold and ratio_trust < -threshold and ratio_dealer < -threshold:
-                    inst_msg = "🔽 三大法人累計賣超"
+                    inst_msg = "🧊 三大法人累計賣超" # 使用冰塊
                 else:
                     # B. 個別表態
                     msgs = []
@@ -273,18 +273,17 @@ def get_price_rank_info(code, period_str, market):
                     elif ratio_dealer < -threshold: msgs.append("自營賣")
                     
                     if msgs:
-                        # 全賣 -> 藍色向下
+                        # 全賣 -> 冰塊
                         if all("賣" in m for m in msgs):
-                            inst_msg = "🔽 **" + " ".join(msgs) + "**"
-                        # 全買 -> 紅色向上
+                            inst_msg = "🧊 **" + " ".join(msgs) + "**"
+                        # 全買 -> 火焰
                         elif all("買" in m for m in msgs):
-                            inst_msg = "🔼 **" + " ".join(msgs) + "**"
+                            inst_msg = "🔥 **" + " ".join(msgs) + "**"
                         # 有買有賣 -> 循環換手
                         else:
                             inst_msg = "🔄 **" + " ".join(msgs) + "**"
 
         if inst_msg:
-            # 📌 關鍵修正：使用 "｜" 連接，而非 "\n" 換行，確保在同一行顯示
             return f"{base_info} ｜ {inst_msg}"
         else:
             return base_info
@@ -380,6 +379,7 @@ def main():
     if entering_stocks:
         total = len(entering_stocks)
         chunk_size = 10 if total > 15 else 20
+        print(f"📤 發送瀕臨處置 ({total} 檔)...")
         for i in range(0, total, chunk_size):
             chunk = entering_stocks[i : i + chunk_size]
             desc_lines = []
@@ -396,6 +396,7 @@ def main():
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
+        print(f"📤 發送即將出關 ({total} 檔)...")
         for i in range(0, total, chunk_size):
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
@@ -412,6 +413,7 @@ def main():
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
+        print(f"📤 發送處置中 ({total} 檔)...")
         for i in range(0, total, chunk_size):
             chunk = in_jail_stocks[i : i + chunk_size]
             desc_lines = [f"🔒 **{s['code']} {s['name']}** | `{s['period']}`" for s in chunk]
