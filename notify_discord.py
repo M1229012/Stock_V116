@@ -234,7 +234,7 @@ def get_price_rank_info(code, period_str, market):
         base_info = f"{status}｜`前{sign_pre}{pre_jail_pct:.0f}% 中{sign_in}{in_jail_pct:.0f}%`"
 
         # ==========================================
-        # 🔥 新增：法人買賣超判斷 (5% 佔比邏輯 + 冷熱圖示)
+        # 🔥 修正：法人買賣超判斷邏輯 (確保賣超被執行)
         # ==========================================
         inst_msg = ""
         if total_volume_in_jail > 0:
@@ -255,35 +255,43 @@ def get_price_rank_info(code, period_str, market):
                 ratio_dealer = sum_dealer / volume_in_lots
                 threshold = INST_RATIO_THRESHOLD 
 
-                # A. 三大法人共識
+                # A. 三大法人共識判斷
+                # 情況 1: 三大法人全買 -> 火焰
                 if ratio_foreign > threshold and ratio_trust > threshold and ratio_dealer > threshold:
                     inst_msg = "🔥 三大法人累計買超"
+                # 情況 2: 三大法人全賣 -> 冰塊
                 elif ratio_foreign < -threshold and ratio_trust < -threshold and ratio_dealer < -threshold:
-                    inst_msg = "🧊 三大法人累計賣超" # 使用冰塊
+                    inst_msg = "🧊 三大法人累計賣超"
                 else:
-                    # B. 個別表態
+                    # B. 個別表態 (混合狀況)
                     msgs = []
+                    
+                    # 投信 (Trust) - 買或賣都加
                     if ratio_trust > threshold: msgs.append("投信買")
                     elif ratio_trust < -threshold: msgs.append("投信賣")
                     
+                    # 外資 (Foreign) - 買或賣都加
                     if ratio_foreign > threshold: msgs.append("外資買")
                     elif ratio_foreign < -threshold: msgs.append("外資賣")
                     
+                    # 自營商 (Dealer) - 買或賣都加
                     if ratio_dealer > threshold: msgs.append("自營買")
                     elif ratio_dealer < -threshold: msgs.append("自營賣")
                     
                     if msgs:
-                        # 全賣 -> 冰塊
+                        # 邏輯: 
+                        # 如果全部都是"賣" -> 顯示冰塊 🧊
                         if all("賣" in m for m in msgs):
                             inst_msg = "🧊 **" + " ".join(msgs) + "**"
-                        # 全買 -> 火焰
+                        # 如果全部都是"買" -> 顯示火焰 🔥
                         elif all("買" in m for m in msgs):
                             inst_msg = "🔥 **" + " ".join(msgs) + "**"
-                        # 有買有賣 -> 循環換手
+                        # 如果有買有賣 (混和) -> 顯示循環 🔄
                         else:
                             inst_msg = "🔄 **" + " ".join(msgs) + "**"
 
         if inst_msg:
+            # 使用 ｜ 分隔，確保並列顯示
             return f"{base_info} ｜ {inst_msg}"
         else:
             return base_info
