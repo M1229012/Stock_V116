@@ -245,7 +245,7 @@ def get_price_rank_info(code, period_str, market):
         sign_pre = "+" if pre_jail_pct > 0 else ""
         sign_in = "+" if in_jail_pct > 0 else ""
         
-        # 修改：同時回傳「圖示」與「文字」
+        # 回傳「圖示」與「文字」
         if abs(in_jail_pct) <= 5: 
             status_icon = "🧊"
             status_text = "盤整"
@@ -372,14 +372,13 @@ def check_releasing_stocks(sh):
         name = row.get('名稱', '')
         days_left_str = str(row.get('剩餘天數', '99'))
         
-        # 🔥 修改開始：日期格式化 (僅保留 月/日)
+        # 日期格式化 (僅保留 月/日)
         release_date_raw = row.get('出關日期', '')
         dt = parse_roc_date(release_date_raw)
         if dt:
-            release_date = dt.strftime("%m/%d") # 例如 02/02
+            release_date = dt.strftime("%m/%d") 
         else:
             release_date = str(release_date_raw)
-        # 🔥 修改結束
 
         period_str = str(row.get('處置期間', ''))
         market = str(row.get('市場', '上市'))
@@ -388,7 +387,7 @@ def check_releasing_stocks(sh):
         days = int(days_left_str) + 1
         
         if days <= JAIL_EXIT_THRESHOLD:
-            # 取得分離後的數據 (狀態Icon, 狀態文字, 數據, 法人)
+            # 取得分離後的數據
             status_icon, status_text, price_info, inst_info = get_price_rank_info(code, period_str, market)
             
             releasing_list.append({
@@ -434,7 +433,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：C-2 樣式 + 月/日格式 + 說明移至 Footer)
+    # 2. 即將出關 (🔥 修正：使用 L型符號 '└ ' 替代 '> ' 以解決手機版間距問題)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -449,18 +448,17 @@ def main():
                 # Line 1: 圖示 **代號 名稱｜狀態文字**｜天數 (MM/DD)
                 desc_lines.append(f"{s['status_icon']} **{s['code']} {s['name']}｜{s['status_text']}**｜{day_msg} ({s['date']})")
                 
-                # Line 2: 價格數據 + 法人數據
+                # Line 2: 使用 L型符號 '└ ' 取代引用區塊，確保手機版行距緊湊
                 if s['inst_info']:
-                    desc_lines.append(f"> {s['price_info']} ｜ {s['inst_info']}")
+                    desc_lines.append(f"└ {s['price_info']} ｜ {s['inst_info']}")
                 else:
-                    desc_lines.append(f"> {s['price_info']}")
+                    desc_lines.append(f"└ {s['price_info']}")
                 
             embed = {
                 "description": "\n".join(desc_lines),
                 "color": 3066993,
                 "title": f"🔓 關注！{total} 檔股票即將出關"
             }
-            # 說明文字移至 Footer
             if i == 0: 
                 embed["footer"] = {"text": "💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)"}
 
