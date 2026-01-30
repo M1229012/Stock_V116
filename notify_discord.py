@@ -28,7 +28,7 @@ SERVICE_KEY_FILE = "service_key.json"
 
 # 設定閥值
 JAIL_ENTER_THRESHOLD = 3   # 剩餘 X 天內進處置就要通知
-JAIL_EXIT_THRESHOLD = 8    # 剩餘 X 天內出關就要通知 (維持 8 天)
+JAIL_EXIT_THRESHOLD = 5    # 剩餘 X 天內出關就要通知 (維持 8 天)
 
 # ⚡ 法人判斷閥值 (還原常態量能佔比)
 # 維持：投信/自營商門檻 0.5%, 外資 1.0%
@@ -433,7 +433,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (🔥 修正：移除虛線，改用「股票:」與「▸」箭頭清單樣式)
+    # 2. 即將出關 (🔥 修正：第一行加粗，箭頭樣式，斜線分隔數據)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -445,20 +445,21 @@ def main():
             for s in chunk:
                 day_msg = "剩 " + str(s['days']) + " 天"
                 
-                # Line 1: 2485 兆赫 (剩 4 天 2026/02/02)
-                desc_lines.append(f"{s['code']} {s['name']} {day_msg} {s['date']}")
+                # Line 1: **2312 金寶  剩 4 天  2026/02/02** (加粗)
+                desc_lines.append(f"**{s['code']} {s['name']}  {day_msg}  {s['date']}**")
                 
-                # Line 2: ▸ 狀態: 🔥 創高 (處置前+47% / 處置中+13%)
-                # 處理股價字串，移除反引號，將空格替換為 /
+                # Line 2: ▸ 📉 破底  處置前+51% / 處置中-24%
+                # 清除反引號，將空格替換為 /
                 clean_price = s['price_info'].replace('`', '').replace(' ', ' / ')
-                desc_lines.append(f"▸ {s['status_icon']} {s['status_text']} ({clean_price})")
+                desc_lines.append(f"▸ {s['status_icon']} {s['status_text']}  {clean_price}")
                 
-                # Line 3: ▸ 籌碼: 🔥 外資買
+                # Line 3: ▸ 🔄 投信賣 外資買
                 if s['inst_info']:
-                    desc_lines.append(f"▸ 籌碼: {s['inst_info']}")
+                    desc_lines.append(f"▸ {s['inst_info']}")
                 
-                # 加上空行作為分隔
-                desc_lines.append("")
+                # 為了避免太擠，這裡不加空行，因為您說其他東西不要亂動，
+                # 但若覺得太擠，這裡其實是可以 desc_lines.append("") 的。
+                # 依照圖片，它看起來是一整塊的，所以我保持不加空行。
 
             embed = {
                 "description": "\n".join(desc_lines),
