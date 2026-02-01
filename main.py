@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.25 台股注意股系統 (修正長週期累計邏輯 + 營業日出關天數)
+V116.26 台股注意股系統 (修正歷史資料抹除邏輯)
 修正重點：
-1. [修正] get_last_n_non_jail_trade_dates：不再跳過處置期間，確保處置期間的「注意」能被計入 30/60/90 日累計次數。
-2. [修正] 「即將出關監控」天數：改用「營業日」索引計算剩餘天數，避免假日造成誤差。
-3. [保留] 保留所有 V116.24 的爬蟲細節、FinMind 多金鑰、詳細風險判斷條款、Google Sheet 操作。
+1. [修正] 移除 bits.append(0) 的手動抹除：確保 cutoff (上次處置結束日) 之前的注意紀錄也能正確顯示並計入長週期。
+2. [修正] get_last_n_non_jail_trade_dates：完整保留日期序列，不跳過處置期。
+3. [保留] 絕對不省略 V116.24/25 的所有爬蟲、多金鑰、13款詳細風險判定、Sheet 比對邏輯。
 """
 
 import os
@@ -86,7 +86,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.25 台股注意股系統 (Long-cycle & Workday Fix)")
+print(f"🚀 啟動 V116.26 台股注意股系統 (History Backfill Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -417,18 +417,16 @@ def is_excluded(code, d, exclude_map):
 
 def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30, target_date=None):
     """ 
-    [修正重點 1] 為了讓長週期(30/60日)計數準確，
-    在獲取統計序列時，不再過濾掉處置期間的日子。
+    [修正重點] 為了讓長週期(30/60日)計數準確，
+    不再過濾處置期間，保留完整序列以供填充注意次數。
     """
     picked = []
     for d in reversed(cal_dates):
         if d > target_date:
             continue
-        # [修正] 移除原本的 if is_in_jail(...) continue，保留處置期日期以供統計注意次數
         picked.append(d)
         if len(picked) >= n:
             break
-
     return list(reversed(picked))
 
 def get_last_jail_end(stock_id, target_date, jail_map):
@@ -1157,10 +1155,10 @@ def main():
                 print(f"✅ {sheet_title} 無需新增 (所有資料已存在)。")
 
             # ------------------------------------------
-            # [修正重點 2] 即將出關監控：改用「營業日」計算
+            # [修正重點] 即將出關監控：改用「營業日」計算
             # ------------------------------------------
             print("🔍 篩選即將出關股票 (營業日 5 日內)...")
-            cal_dates = get_official_trading_calendar(240) # 預抓日曆供計算
+            cal_dates = get_official_trading_calendar(240) 
             releasing_rows = []
             today_date = TARGET_DATE.date()
             
@@ -1181,12 +1179,9 @@ def main():
                 final_end_date = data['date']
                 row_data = data['row']
                 
-                # 計算今日與結束日之間有多少個營業日
-                # 只有在今日之後的營業日才納入計算
                 remaining_work_days = [d for d in cal_dates if today_date < d <= final_end_date]
                 days_left = len(remaining_work_days)
                 
-                # 若出關日在今日或未來 5 個營業日內
                 if final_end_date >= today_date and 0 <= days_left <= 5:
                     r_list = row_data[export_cols].tolist()
                     r_list.append(str(days_left)) 
@@ -1217,7 +1212,6 @@ def main():
     # ============================
     update_market_monitoring_log(sh)
 
-    # 確保日曆有最新資料
     cal_dates = get_official_trading_calendar(240)
 
     target_trade_date_obj = cal_dates[-1]
@@ -1269,26 +1263,19 @@ def main():
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
-        # 這裡會使用修正後的 get_last_n_non_jail_trade_dates，包含處置期間
         stock_calendar = get_last_n_non_jail_trade_dates(
             code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
-        cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
-
         bits = []; clauses = []
         for d in stock_calendar:
-            d0 = d 
-            
-            # [邏輯區分]
-            # 對於「注意次數統計」：bits 必須精確反應當天是否有公告。
-            # 對於「模擬入獄」：simulate 函式內部會自行處理是否觸發門檻。
-            
+            # [重大修正] 移除原本的 if cutoff and d <= cutoff 手動填 0 邏輯。
+            # 直接從 clause_map 讀取資料，只要「每日紀錄」裡有這檔股票在處置期間被注意的紀錄，bits 就會設為 1。
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
-            
-            # 即使在處置中(is_excluded)，如果有公告注意(c)，bits 也要設為 1
-            if c: bits.append(1); clauses.append(c)
-            else: bits.append(0); clauses.append("")
+            if c: 
+                bits.append(1); clauses.append(c)
+            else: 
+                bits.append(0); clauses.append("")
 
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses, 
@@ -1343,7 +1330,6 @@ def main():
 
         risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
 
-        # 此處 valid_bits 僅用於統計顯示，採用與 simulate 相同的邏輯
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
         for v in reversed(valid_bits):
