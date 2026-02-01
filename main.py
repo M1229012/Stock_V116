@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.26 台股注意股系統 (修正 NameError + 歷史斷層修正 + 營業日出關)
+V116.27 台股注意股系統 (移除處置強制排除邏輯)
 
 修正說明:
-1. [修正] 補回遺失的 `is_excluded` 函式定義，解決 NameError。
-2. [保留] V116.25 所有邏輯：get_last_n_non_jail_trade_dates 不跳過處置日、Main Loop 不手動歸零、即將出關採營業日計算。
+1. [修正] Main Loop: 移除 `is_excluded` 判定。
+   - 原因：原本邏輯會將「處置期間」的所有日期強制設為 0 (安全)，導致期間內的注意紀錄被抹除。
+   - 結果：現在完全依據 `clause_map` (每日公告爬蟲結果) 來決定是否為 1。只要有公告，就算在處置中也會計入。
 """
 
 import os
@@ -86,7 +87,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.26 台股注意股系統 (Fix NameError + Jail History)")
+print(f"🚀 啟動 V116.27 台股注意股系統 (Remove Jail Exclusion Logic)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1330,24 +1331,18 @@ def main():
             code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
-        # ⚡ [移除] 原本的 cutoff 邏輯會將處置期間內的 bits 強制歸零
-        # 現在移除後，只要 clause_map 裡有資料 (代表有被注意)，就會被設為 1
-        # cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
-
         bits = []; clauses = []
         for d in stock_calendar:
             d0 = d 
-            
-            # 移除這段強制歸零
-            # if cutoff and d0 <= cutoff:
-            #     bits.append(0); clauses.append("")
-            #     continue
 
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
-            # 注意：exclude_map 通常是空的或特定不計入日，若你想連處置期間都完全依賴 Log，這裡的 is_excluded 需確認是否符合你的需求。
-            # 目前保留 is_excluded，因為那是針對「特定豁免日」的設計。
-            if is_excluded(code, d, exclude_map):
-                bits.append(0); clauses.append(""); continue
+            
+            # ⚡ [修正] 移除這段「強制排除」邏輯。
+            # 因為 build_exclude_map 會把處置期間都標為 True，
+            # 導致我們無法記錄處置期間內的注意次數。
+            # 移除後，完全依賴 clause_map (爬蟲結果) 來決定是 1 還是 0。
+            # if is_excluded(code, d, exclude_map):
+            #     bits.append(0); clauses.append(""); continue
             
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
