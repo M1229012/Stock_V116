@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.27 台股注意股系統 (移除處置強制排除邏輯)
+V116.28 台股注意股系統 (依照參考網站邏輯：排除處置期間注意)
 
-修正說明:
-1. [修正] Main Loop: 移除 `is_excluded` 判定。
-   - 原因：原本邏輯會將「處置期間」的所有日期強制設為 0 (安全)，導致期間內的注意紀錄被抹除。
-   - 結果：現在完全依據 `clause_map` (每日公告爬蟲結果) 來決定是否為 1。只要有公告，就算在處置中也會計入。
+修正重點：
+1. [修正] Main Loop: 恢復 `is_excluded` 判斷。
+   - 邏輯依據：參考網站截圖顯示「有效累計（已排除處置期間注意股）」。
+   - 修改內容：當日期位於處置期間內，強制 bits=0，不計入 30日/10日 的注意次數累積。
 """
 
 import os
@@ -57,7 +57,7 @@ STATS_HEADERS = [
 # ==========================================
 # 📆 設定區
 # ==========================================
-SHEET_NAME = "台股注意股資料庫_V33"
+SHEET_NAME = "台股注意股資料庫_V34"
 PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
@@ -87,7 +87,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.27 台股注意股系統 (Remove Jail Exclusion Logic)")
+print(f"🚀 啟動 V116.28 台股注意股系統 (Match Logic: Exclude Jail Attention)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -413,7 +413,6 @@ def build_exclude_map(cal_dates, jail_map):
         exclude_map[code] = s
     return exclude_map
 
-# ⚡ [補回] 這是之前漏掉的函式
 def is_excluded(code, d, exclude_map):
     return bool(exclude_map) and (code in exclude_map) and (d in exclude_map[code])
 
@@ -1337,12 +1336,10 @@ def main():
 
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
             
-            # ⚡ [修正] 移除這段「強制排除」邏輯。
-            # 因為 build_exclude_map 會把處置期間都標為 True，
-            # 導致我們無法記錄處置期間內的注意次數。
-            # 移除後，完全依賴 clause_map (爬蟲結果) 來決定是 1 還是 0。
-            # if is_excluded(code, d, exclude_map):
-            #     bits.append(0); clauses.append(""); continue
+            # ⚡ [恢復] 恢復排除邏輯以符合網站截圖「排除處置期間注意股」
+            # 這會導致在處置期間若有注意，會被 bits=0 覆蓋
+            if is_excluded(code, d, exclude_map):
+                bits.append(0); clauses.append(""); continue
             
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
