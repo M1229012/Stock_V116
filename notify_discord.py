@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 # ============================
 # ⚙️ 設定區
 # ============================
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL_TEST = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -49,7 +49,7 @@ def send_discord_webhook(embeds):
 
     try:
         response = requests.post(
-            DISCORD_WEBHOOK_URL, 
+            DISCORD_WEBHOOK_URL_TEST, 
             data=json.dumps(data), 
             headers={"Content-Type": "application/json"}
         )
@@ -303,8 +303,8 @@ def check_releasing_stocks(sh):
 # 🚀 主程式 (修正：註解加上反引號縮小)
 # ============================
 def main():
-    if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL:
-        print("❌ 請先設定 DISCORD_WEBHOOK_URL")
+    if not DISCORD_WEBHOOK_URL_TEST or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL_TEST:
+        print("❌ 請先設定 DISCORD_WEBHOOK_URL_TEST")
         return
 
     utc_now = datetime.utcnow()
