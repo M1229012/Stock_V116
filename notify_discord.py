@@ -13,7 +13,7 @@ from google.oauth2.service_account import Credentials
 # ============================
 # ⚙️ 設定區
 # ============================
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -95,10 +95,10 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (完全照您的版本)
+# 📊 價格數據處理邏輯 (完全遵照 邏輯)
 # ============================
 def get_price_rank_info(code, period_str, market):
-    """依照您提供的邏輯計算處置前 vs 處置中的績效"""
+    """計算處置前 vs 處置中的績效對比"""
     try:
         dates = re.split(r'[~-～]', str(period_str))
         start_date = parse_roc_date(dates[0])
@@ -109,8 +109,10 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 抓取還原 K 線
+        # 📌 抓取還原 K 線 (auto_adjust=True)
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
+        
+        # 📌 補齊分割股導致的 NaN (ffill)
         if not df.empty:
             df = df.ffill() 
         
@@ -119,7 +121,7 @@ def get_price_rank_info(code, period_str, market):
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
-        # 處置前績效 (依您提供的邏輯)
+        # 處置前績效 (同天數對比)
         mask_before = df.index < pd.Timestamp(start_date)
         if not mask_before.any(): 
             pre_pct = 0.0
@@ -131,7 +133,7 @@ def get_price_rank_info(code, period_str, market):
             pre_entry = df.iloc[target_idx]['Open']
             pre_pct = ((jail_base_p - pre_entry) / pre_entry) * 100
 
-        # 處置中績效 (📌 依您提供的邏輯：以第一天開盤價為基準)
+        # 處置中績效 (📌 基準：處置第一天開盤價)
         if df_in_jail.empty: 
             in_pct = 0.0
         else:
@@ -154,10 +156,10 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "數據計算中"
 
 # ============================
-# 🔍 監控邏輯 (排序與分類)
+# 🔍 監控邏輯 (多重排序)
 # ============================
 def check_status_split(sh, releasing_codes):
-    """檢查並分類股票 (多重排序)"""
+    """檢查並分類股票"""
     try:
         ws = sh.worksheet("近30日熱門統計")
         records = ws.get_all_records()
@@ -177,23 +179,21 @@ def check_status_split(sh, releasing_codes):
             ent.append({"code": code, "name": name, "days": d})
             seen.add(code)
     
-    # 📌 排序：天數由短至長，再比股號由小至大
+    # 📌 排序：優先比天數(days)，再比股號(code)
     ent.sort(key=lambda x: (x['days'], x['code']))
 
-    # 📌 排序：出關日期由近至遠，再比股號由小至大
+    # 📌 排序：優先比出關日期(end_date)，再比股號(code)
     def get_end_date(item):
         try:
-            end_date_str = item['period'].split('-')[1]
-            return datetime.strptime(end_date_str, "%Y/%m/%d")
+            return datetime.strptime(item['period'].split('-')[1], "%Y/%m/%d")
         except:
             return datetime.max 
-
     inj.sort(key=lambda x: (get_end_date(x), x['code']))
     
     return {'entering': ent, 'in_jail': inj}
 
 def check_releasing_stocks(sh):
-    """檢查即將出關股票 (多重排序)"""
+    """檢查即將出關股票"""
     try:
         ws = sh.worksheet("即將出關監控")
         records = ws.get_all_records()
@@ -211,7 +211,7 @@ def check_releasing_stocks(sh):
             res.append({"code": code, "name": row.get('名稱', ''), "days": d, "date": dt.strftime("%m/%d") if dt else "??/??", "status": st, "price": pr})
             seen.add(code)
     
-    # 📌 排序：天數由短至長，再比股號由小至大
+    # 📌 排序：優先比天數(days)，再比股號(code)
     res.sort(key=lambda x: (x['days'], x['code']))
     return res
 
