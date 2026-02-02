@@ -89,7 +89,7 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (解決分割與 NaN 問題)
+# 📊 價格數據處理邏輯 (還原 K 線 & NaN 修復)
 # ============================
 def get_price_rank_info(code, period_str, market):
     try:
@@ -102,10 +102,8 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 自動切換還原 K 線抓取
+        # 📌 自動切換還原 K 線抓取，並填補 NaN
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
-        
-        # 📌 針對分割股 NaN 自動填補邏輯
         if not df.empty:
             df = df.ffill() 
         
@@ -138,7 +136,7 @@ def get_price_rank_info(code, period_str, market):
 
         return status, f"處置前 {'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中 {'+' if in_pct > 0 else ''}{in_pct:.1f}%"
     except:
-        return "❓ 未知", "數據計算中"
+        return "❓ 未知", "計算中"
 
 # ============================
 # 🔍 監控邏輯
@@ -182,7 +180,7 @@ def check_releasing_stocks(sh):
         if d <= JAIL_EXIT_THRESHOLD:
             st, pr = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             
-            # 📌 修正出關日：處置最後一天 + 1 天
+            # 出關日修正：+1天
             last_day_dt = parse_roc_date(row.get('出關日期', ''))
             actual_release_dt = last_day_dt + timedelta(days=1) if last_day_dt else None
             
@@ -205,18 +203,19 @@ def main():
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
 
-    # 1. 瀕臨處置 (📌 ## 凸顯)
+    # 1. 瀕臨處置 (回復原始樣式，無標題前綴)
     if stats['entering']:
-        lines = [f"## **{s['code']} {s['name']}** |  `入獄倒數 {s['days']} 天`" for s in stats['entering']]
+        lines = [f"⚠️ **{s['code']} {s['name']}** |  `入獄倒數 {s['days']} 天`" for s in stats['entering']]
         send_discord_webhook([{"title": f"🚨 處置倒數！{len(stats['entering'])} 檔股票瀕臨處置", "description": "\n".join(lines), "color": 15158332}])
 
-    # 2. 即將出關 (📌 ## 凸顯 + 實際出關日)
+    # 2. 即將出關 (圖片樣式 + 股名 ###)
     if rel:
         lines = []
         for s in rel:
-            lines.append(f"## **{s['code']} {s['name']}**")
-            lines.append(f"> `剩 {s['days']} 天`｜`出關日 {s['date']}`")
-            lines.append(f"> {s['status']}  **{s['price']}**")
+            # 股名使用 ###，後面接續剩餘天數與日期
+            lines.append(f"### **{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
+            # 狀態與績效放在第二行，不加空行
+            lines.append(f"{s['status']}  |  {s['price']}")
         
         embed = {
             "title": f"🔓 越關越大尾？{len(rel)} 檔股票即將出關",
@@ -226,9 +225,9 @@ def main():
         }
         send_discord_webhook([embed])
 
-    # 3. 處置中 (📌 ## 凸顯)
+    # 3. 處置中 (回復原始樣式，無標題前綴)
     if stats['in_jail']:
-        lines = [f"## **{s['code']} {s['name']}** |  `{s['period'].replace('2026/', '')}`" for s in stats['in_jail']]
+        lines = [f"🔒 **{s['code']} {s['name']}** |  `{s['period'].replace('2026/', '')}`" for s in stats['in_jail']]
         send_discord_webhook([{"title": f"⛓️ 還能噴嗎？{len(stats['in_jail'])} 檔股票正在處置", "description": "\n".join(lines), "color": 10181046}])
 
 if __name__ == "__main__":
