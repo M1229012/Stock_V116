@@ -121,7 +121,6 @@ def get_price_rank_info(code, period_str, market):
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
-        # 🟢 以下完全還原你原始的計算邏輯
         # 處置前績效 (同天數對比)
         mask_before = df.index < pd.Timestamp(start_date)
         if not mask_before.any(): 
@@ -178,22 +177,18 @@ def check_status_split(sh, releasing_codes):
         elif d <= JAIL_ENTER_THRESHOLD:
             ent.append({"code": code, "name": name, "days": d})
             seen.add(code)
-    
-    # 瀕臨處置排序：天數 -> 代號
+            
+    # 瀕臨處置排序
     ent.sort(key=lambda x: (x['days'], x['code']))
     
-    # 🔵 修正排序邏輯：越快出關 (結束日期越早) 排越上面，再依照股號
-    def get_end_date_str(item):
-        p = item['period']
-        if '-' in p:
-            try:
-                # 取得結束日期 YYYY/MM/DD
-                return p.split('-')[1]
-            except:
-                return "9999/12/31"
-        return "9999/12/31"
-
-    inj.sort(key=lambda x: (get_end_date_str(x), x['code']))
+    # 【新增：正在處置排序】先按時間（越快出關越上面），再按股號
+    def get_inj_sort_key(item):
+        p = item.get('period', '')
+        # 取得結束日期字串 (YYYY/MM/DD) 作為第一排序基準
+        end_date = p.split('-')[1] if '-' in p else "9999/12/31"
+        return (end_date, item['code'])
+    
+    inj.sort(key=get_inj_sort_key)
     
     return {'entering': ent, 'in_jail': inj}
 
@@ -238,7 +233,7 @@ def main():
                 desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
-                # 🔵 文字替換：明日強制入獄 -> 明日開始處置
+                # 修改此處文字：明日強制入獄 -> 明日開始處置
                 msg = "明日開始處置" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
@@ -254,12 +249,16 @@ def main():
             if i == 0:
                 desc_lines.append(f"### 🔓 越關越大尾？{total} 檔股票即將出關\n")
             for s in chunk:
+                # 第一行：名稱與日期
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
+                # 第二行：依照圖片格式 ▸ 資訊
                 desc_lines.append(f"▸ {s['status']} {s['price']}")
+                # 間隔空行
                 desc_lines.append("")
             
+            # 說明文字僅在最後一段訊息結尾，且上方僅留空一行
             if i + chunk_size >= total:
-                if desc_lines[-1] == "": desc_lines.pop()
+                if desc_lines and desc_lines[-1] == "": desc_lines.pop() # 移除最後一個空行
                 desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
