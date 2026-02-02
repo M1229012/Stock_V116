@@ -177,7 +177,22 @@ def check_status_split(sh, releasing_codes):
         elif d <= JAIL_ENTER_THRESHOLD:
             ent.append({"code": code, "name": name, "days": d})
             seen.add(code)
+    
+    # 📌 排序：天數由短至長，再比股號由小至大
     ent.sort(key=lambda x: (x['days'], x['code']))
+    
+    # 📌 排序：出關日期由新到舊 (Desc)，再比股號由小至大 (Asc)
+    def get_end_date(item):
+        try:
+            end_date_str = item['period'].split('-')[1]
+            return datetime.strptime(end_date_str, "%Y/%m/%d")
+        except:
+            return datetime.min # 若解析失敗，設為最小日期排在最後 (因日期是 Desc)
+
+    # 利用 Python 穩定排序：先排次要鍵 (股號 Asc)，再排主要鍵 (日期 Desc)
+    inj.sort(key=lambda x: x['code'])
+    inj.sort(key=get_end_date, reverse=True)
+
     return {'entering': ent, 'in_jail': inj}
 
 def check_releasing_stocks(sh):
