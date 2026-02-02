@@ -95,10 +95,10 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
+# 📊 價格數據處理邏輯 (還原 K 線 & 百分比對比計算)
 # ============================
 def get_price_rank_info(code, period_str, market):
-    """核心計算邏輯：計算處置前 vs 處置中的績效"""
+    """核心計算邏輯：計算處置前 vs 處置中的績效對比"""
     try:
         dates = re.split(r'[~-～]', str(period_str))
         start_date = parse_roc_date(dates[0])
@@ -121,15 +121,15 @@ def get_price_rank_info(code, period_str, market):
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
-        # 處置前績效 (同天數對比)
+        # 處置前績效 (對比處置中的天數)
         mask_before = df.index < pd.Timestamp(start_date)
         if not mask_before.any(): 
             pre_pct = 0.0
         else:
             jail_base_p = df[mask_before]['Close'].iloc[-1]
-            lookback = max(1, len(df_in_jail))
+            jail_days_count = len(df_in_jail) if not df_in_jail.empty else 1
             loc_idx = df.index.get_loc(df[mask_before].index[-1])
-            target_idx = max(0, loc_idx - lookback + 1)
+            target_idx = max(0, loc_idx - jail_days_count + 1)
             pre_entry = df.iloc[target_idx]['Open']
             pre_pct = ((jail_base_p - pre_entry) / pre_entry) * 100
 
@@ -139,7 +139,7 @@ def get_price_rank_info(code, period_str, market):
         else:
             jail_start_entry = df_in_jail['Open'].iloc[0]
             curr_p = df_in_jail['Close'].iloc[-1]
-            in_pct = ((curr_p - in_start_entry) / in_start_entry) * 100
+            in_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
 
         status = "🧊 盤整" if abs(in_pct) <= 5 else ("🔥 創高" if in_pct > 5 else "📉 破底")
         
@@ -150,7 +150,7 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "數據計算中"
 
 # ============================
-# 🔍 監控邏輯
+# 🔍 監控分類邏輯
 # ============================
 def check_status_split(sh, releasing_codes):
     try:
@@ -195,7 +195,7 @@ def check_releasing_stocks(sh):
     return res
 
 # ============================
-# 🚀 主程式
+# 🚀 主程式 (分段邏輯 & ## 標題)
 # ============================
 def main():
     sh = connect_google_sheets()
@@ -204,7 +204,7 @@ def main():
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
 
-    # 1. 瀕臨處置 (## 標題併入)
+    # 1. 瀕臨處置 (10 支分段)
     if stats['entering']:
         total = len(stats['entering'])
         chunk_size = 10 if total > 15 else 20
@@ -220,7 +220,7 @@ def main():
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
             time.sleep(2)
 
-    # 2. 即將出關 (## 標題併入 + 說明僅在最後一段)
+    # 2. 即將出關 (10 支分段 + 說明文字)
     if rel:
         total = len(rel)
         chunk_size = 10 if total > 15 else 20
@@ -233,13 +233,14 @@ def main():
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
                 desc_lines.append(f"{s['status']}  |  {s['price']}\n")
             
+            # 說明文字僅在最後一段訊息，上方留空一行
             if i + chunk_size >= total:
                 desc_lines.append("---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
             time.sleep(2)
 
-    # 3. 處置中 (## 標題併入)
+    # 3. 處置中 (10 支分段)
     if stats['in_jail']:
         total = len(stats['in_jail'])
         chunk_size = 10 if total > 15 else 20
