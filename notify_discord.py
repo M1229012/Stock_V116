@@ -235,7 +235,7 @@ def main():
             
             # 說明文字僅在最後一段訊息，上方留空一行
             if i + chunk_size >= total:
-                desc_lines.append("---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
+                desc_lines.append("------------\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
             time.sleep(2)
