@@ -89,9 +89,6 @@ def get_merged_jail_periods(sh):
     except: return {}
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
-# ============================
-# 📊 價格數據處理邏輯 (還原 K 線 & NaN 修復)
-# ============================
 def get_price_rank_info(code, period_str, market):
     try:
         dates = re.split(r'[~-～]', str(period_str))
@@ -125,9 +122,6 @@ def get_price_rank_info(code, period_str, market):
         return status, f"處置前 {'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中 {'+' if in_pct > 0 else ''}{in_pct:.1f}%"
     except: return "❓ 未知", "數據計算中"
 
-# ============================
-# 🔍 監控邏輯
-# ============================
 def check_status_split(sh, releasing_codes):
     try:
         ws = sh.worksheet("近30日熱門統計")
@@ -170,9 +164,6 @@ def check_releasing_stocks(sh):
     res.sort(key=lambda x: (x['days'], x['code']))
     return res
 
-# ============================
-# 🚀 主程式
-# ============================
 def main():
     sh = connect_google_sheets()
     if not sh: return
@@ -180,10 +171,10 @@ def main():
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
 
-    # 1. 瀕臨處置 (📌 唯二保留 Embed Title 的部分)
+    # 1. 瀕臨處置 (分段邏輯恢復)
     if stats['entering']:
         total = len(stats['entering'])
-        chunk_size = 20
+        chunk_size = 10 if total > 15 else 20
         for i in range(0, total, chunk_size):
             chunk = stats['entering'][i : i + chunk_size]
             desc_lines = [f"⚠️ **{s['code']} {s['name']}** |  `入獄倒數 {s['days']} 天`" for s in chunk]
@@ -193,39 +184,43 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 2. 即將出關 (📌 移除 Embed Title，標題併入內容，顯示說明)
+    # 2. 即將出關 (分段邏輯恢復 + 說明僅在最後一段)
     if rel:
         total = len(rel)
-        chunk_size = 15
+        chunk_size = 10 if total > 15 else 20
         for i in range(0, total, chunk_size):
             chunk = rel[i : i + chunk_size]
             desc_lines = []
-            if i == 0:
-                desc_lines.append(f"**🔓 越關越大尾？{total} 檔股票即將出關**\n")
             for s in chunk:
-                desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
+                desc_lines.append(f"### **{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
                 desc_lines.append(f"{s['status']}  |  {s['price']}\n")
             
-            # 📌 說明僅在此部分顯示
-            desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
+            # 說明文字僅顯示在該類別的最後一段訊息
+            if i + chunk_size >= total:
+                desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
-            send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
+            embed = {"description": "\n".join(desc_lines), "color": 3066993}
+            if i == 0:
+                embed["title"] = f"🔓 越關越大尾？{total} 檔股票即將出關"
+            
+            send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中 (📌 移除 Embed Title，標題併入內容)
+    # 3. 處置中 (分段邏輯恢復)
     if stats['in_jail']:
         total = len(stats['in_jail'])
-        chunk_size = 20
+        chunk_size = 10 if total > 15 else 20
         for i in range(0, total, chunk_size):
             chunk = stats['in_jail'][i : i + chunk_size]
             desc_lines = []
-            if i == 0:
-                desc_lines.append(f"**⛓️ 還能噴嗎？{total} 檔股票正在處置**\n")
             for s in chunk:
                 period_display = s['period'].replace('2026/', '').replace('-', '-')
                 desc_lines.append(f"🔒 **{s['code']} {s['name']}** |  `{period_display}`")
             
-            send_discord_webhook([{"description": "\n".join(desc_lines), "color": 10181046}])
+            embed = {"description": "\n".join(desc_lines), "color": 10181046}
+            if i == 0:
+                embed["title"] = f"⛓️ 還能噴嗎？{total} 檔股票正在處置"
+            send_discord_webhook([embed])
             time.sleep(2)
 
 if __name__ == "__main__":
