@@ -132,7 +132,7 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 修正：auto_adjust=True 使用還原 K 線，避免 NaN 問題
+        # 📌 auto_adjust=True 使用還原 K 線，解決分割股票導致 NaN 的問題
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
         if df.empty:
@@ -219,14 +219,14 @@ def check_status_split(sh, releasing_codes):
             entering_list.append({"code": code, "name": name, "days": days})
             seen_codes.add(code)
     
-    # 📌 排序修正：先依天數，再依股號
+    # 📌 排序：先依日期（天數），再依股號
     entering_list.sort(key=lambda x: (x['days'], x['code']))
     
     def get_end_date(item):
         try: return datetime.strptime(item['period'].split('-')[1], "%Y/%m/%d")
         except: return datetime.max 
     
-    # 📌 排序修正：先依日期，再依股號
+    # 📌 排序：先依日期（結束日），再依股號
     in_jail_list.sort(key=lambda x: (get_end_date(x), x['code']))
     return {'entering': entering_list, 'in_jail': in_jail_list}
 
@@ -263,7 +263,7 @@ def check_releasing_stocks(sh):
             })
             seen_codes.add(code)
             
-    # 📌 排序修正：先依天數，再依股號
+    # 📌 排序：先依日期（剩餘天數），再依股號
     releasing_list.sort(key=lambda x: (x['days'], x['code']))
     return releasing_list
 
@@ -284,7 +284,7 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # 1. 瀕臨處置 (按日期+股號排序)
+    # 1. 瀕臨處置
     if entering_stocks:
         total = len(entering_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -300,7 +300,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (按日期+股號排序，格式優化)
+    # 2. 即將出關 (格式修正：狀態與價格合併同一行)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -308,7 +308,7 @@ def main():
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
             
-            # 📌 僅第一段訊息顯示說明標題，分行 (同天數對比)
+            # 📌 僅第一段顯示標題與分行說明
             if i == 0:
                 desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天`\n`(同天數對比)`\n" + "─" * 15)
             
@@ -316,21 +316,19 @@ def main():
                 day_msg = f"剩 {s['days']} 天"
                 # 首行加粗
                 desc_lines.append(f"**{s['code']} {s['name']} | {day_msg}   {s['date']}**")
-                # 數據跳下一行顯示
-                desc_lines.append(f"▸ {s['status']}")
-                desc_lines.append(f"▸ `{s['price_info']}`")
+                # 📌 修正：狀態圖示文字與數據合併在同一行顯示
+                desc_lines.append(f"▸ {s['status']}   `{s['price_info']}`")
                 # 加入空行 spacer
                 desc_lines.append("")
 
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
-            # 📌 僅第一段發送標題
             if i == 0:
                 embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
             
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中 (按日期+股號排序)
+    # 3. 處置中
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
