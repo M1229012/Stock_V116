@@ -179,7 +179,6 @@ def get_price_rank_info(code, period_str, market):
         else:
             status = "📉 破底"
         
-        # 📌 保留「處置前」與「處置中」完整字樣
         price_data = f"處置前{sign_pre}{pre_jail_pct:.1f}% / 處置中{sign_in}{in_jail_pct:.1f}%"
         return status, price_data
         
@@ -283,7 +282,7 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # 1. 瀕臨處置 (統一純淨流排版)
+    # 1. 瀕臨處置 (📌 修正：每支股票間不留空行)
     if entering_stocks:
         total = len(entering_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -294,13 +293,12 @@ def main():
                 icon = "🔥" if s['days'] == 1 else "⚠️"
                 msg = "明日開始處置" if s['days'] == 1 else f"最快 {s['days']} 天進處置"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** ─ {msg}")
-                desc_lines.append("") # 增加適度距離感
             embed = {"description": "\n".join(desc_lines), "color": 15158332}
             if i == 0: embed["title"] = f"🚨 注意！{total} 檔股票瀕臨處置"
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (統一純淨流排版，不省略字樣)
+    # 2. 即將出關 (📌 維持現狀：保留空行與完整字樣)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -314,18 +312,16 @@ def main():
             for s in chunk:
                 day_msg = f"剩 {s['days']} 天"
                 display_date = s['date'].replace("2026/", "")
-                # 📌 標題行：股號 名稱 ─ 剩餘資訊
                 desc_lines.append(f"**{s['code']} {s['name']}** ─ {day_msg} ({display_date})")
-                # 📌 數據行：圖示 處置前 / 處置中
                 desc_lines.append(f"{s['status']} 處置前{s['price_info'].split('處置前')[1]}")
-                desc_lines.append("")
+                desc_lines.append("") # 維持空行間隔
 
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
             if i == 0: embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中 (統一純淨流排版)
+    # 3. 處置中 (📌 修正：每支股票間不留空行)
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -335,7 +331,7 @@ def main():
             for s in chunk:
                 period_display = s['period'].replace('2026/', '').replace('-', ' ➟ ')
                 desc_lines.append(f"🔒 **{s['code']} {s['name']}** ─ {period_display}")
-                desc_lines.append("")
+            
             embed = {"description": "\n".join(desc_lines), "color": 10181046}
             if i == 0: embed["title"] = f"⛓️ 監控中！{total} 檔股票正在處置"
             send_discord_webhook([embed])
