@@ -98,7 +98,7 @@ def get_merged_jail_periods(sh):
 # 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
 # ============================
 def get_price_rank_info(code, period_str, market):
-    """核心計算邏輯：計算處置前 vs 處置中的績效對比"""
+    """計算處置前 vs 處置中的績效對比"""
     try:
         dates = re.split(r'[~-～]', str(period_str))
         start_date = parse_roc_date(dates[0])
@@ -109,10 +109,10 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 強制使用還原 K 線 (auto_adjust=True)
+        # 📌 抓取還原 K 線 (auto_adjust=True)
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
-        # 📌 針對分割股自動補齊 (ffill)
+        # 📌 補齊分割股導致的 NaN (ffill)
         if not df.empty:
             df = df.ffill() 
         
@@ -139,11 +139,16 @@ def get_price_rank_info(code, period_str, market):
         else:
             jail_start_entry = df_in_jail['Open'].iloc[0]
             curr_p = df_in_jail['Close'].iloc[-1]
-            in_pct = ((curr_p - in_start_entry) / in_start_entry) * 100
+            in_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
 
-        status = "🧊 盤整" if abs(in_pct) <= 5 else ("🔥 創高" if in_pct > 5 else "📉 破底")
+        # 判斷狀態圖示與文字
+        if abs(in_pct) <= 5: 
+            status = "🧊 盤整"
+        elif in_pct > 5: 
+            status = "🔥 創高"
+        else: 
+            status = "📉 破底"
         
-        # 📌 依照 image_0efd41 移除處置前/中與 + 號間的空格
         price_result = f"處置前{'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中{'+' if in_pct > 0 else ''}{in_pct:.1f}%"
         return status, price_result
     except Exception as e:
@@ -151,7 +156,7 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "數據計算中"
 
 # ============================
-# 🔍 監控分類邏輯
+# 🔍 監控邏輯 (排序與分類)
 # ============================
 def check_status_split(sh, releasing_codes):
     try:
@@ -231,17 +236,16 @@ def main():
             if i == 0:
                 desc_lines.append(f"## 🔓 越關越大尾？{total} 檔股票即將出關\n")
             for s in chunk:
-                # 第一行：股名資訊
+                # 第一行：名稱與日期
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
-                # 📌 第二行：依照 image_0efd41 調整為 ▸ 前綴格式
+                # 第二行：依照圖片格式 ▸ 資訊
                 desc_lines.append(f"▸ {s['status']} {s['price']}")
-                # 支與支間留空行
+                # 間隔空行
                 desc_lines.append("")
             
-            # 說明文字僅在最後一段訊息，上方留空一行
+            # 說明文字僅在最後一段訊息結尾，且上方僅留空一行
             if i + chunk_size >= total:
-                # 移除最後一個多餘空行後補上說明
-                if desc_lines[-1] == "": desc_lines.pop()
+                if desc_lines[-1] == "": desc_lines.pop() # 移除最後一個空行
                 desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
