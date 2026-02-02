@@ -95,7 +95,7 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (還原 K 線 & 百分比對比計算)
+# 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """核心計算邏輯：計算處置前 vs 處置中的績效對比"""
@@ -109,10 +109,10 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 還原 K 線抓取 (auto_adjust=True)
+        # 📌 強制使用還原 K 線 (auto_adjust=True)
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
-        # 📌 補齊 NaN (分割股修復)
+        # 📌 針對分割股自動補齊 (ffill)
         if not df.empty:
             df = df.ffill() 
         
@@ -121,7 +121,7 @@ def get_price_rank_info(code, period_str, market):
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         
-        # 處置前績效 (對比處置中的天數)
+        # 處置前績效 (同天數對比)
         mask_before = df.index < pd.Timestamp(start_date)
         if not mask_before.any(): 
             pre_pct = 0.0
@@ -139,11 +139,12 @@ def get_price_rank_info(code, period_str, market):
         else:
             jail_start_entry = df_in_jail['Open'].iloc[0]
             curr_p = df_in_jail['Close'].iloc[-1]
-            in_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
+            in_pct = ((curr_p - in_start_entry) / in_start_entry) * 100
 
         status = "🧊 盤整" if abs(in_pct) <= 5 else ("🔥 創高" if in_pct > 5 else "📉 破底")
         
-        price_result = f"處置前 {'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中 {'+' if in_pct > 0 else ''}{in_pct:.1f}%"
+        # 📌 依照 image_0efd41 移除處置前/中與 + 號間的空格
+        price_result = f"處置前{'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中{'+' if in_pct > 0 else ''}{in_pct:.1f}%"
         return status, price_result
     except Exception as e:
         print(f"⚠️ 失敗 ({code}): {e}")
@@ -204,7 +205,7 @@ def main():
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
 
-    # 1. 瀕臨處置 (10 支分段)
+    # 1. 瀕臨處置 (10 支分段 + ## 標題)
     if stats['entering']:
         total = len(stats['entering'])
         chunk_size = 10 if total > 15 else 20
@@ -212,15 +213,15 @@ def main():
             chunk = stats['entering'][i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
+                desc_lines.append(f"## 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
-                msg = "明日強制入獄" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
+                msg = "明日強制入獄" if s['days'] == 1 else f"入獄倒數 {s['days']} 天"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
             time.sleep(2)
 
-    # 2. 即將出關 (10 支分段 + 說明文字)
+    # 2. 即將出關 (10 支分段 + ## 標題 + 說明文字)
     if rel:
         total = len(rel)
         chunk_size = 10 if total > 15 else 20
@@ -228,19 +229,25 @@ def main():
             chunk = rel[i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"### 🔓 越關越大尾？{total} 檔股票即將出關\n")
+                desc_lines.append(f"## 🔓 越關越大尾？{total} 檔股票即將出關\n")
             for s in chunk:
+                # 第一行：股名資訊
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
-                desc_lines.append(f"{s['status']}  |  {s['price']}\n")
+                # 📌 第二行：依照 image_0efd41 調整為 ▸ 前綴格式
+                desc_lines.append(f"▸ {s['status']} {s['price']}")
+                # 支與支間留空行
+                desc_lines.append("")
             
             # 說明文字僅在最後一段訊息，上方留空一行
             if i + chunk_size >= total:
-                desc_lines.append("------------\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
+                # 移除最後一個多餘空行後補上說明
+                if desc_lines[-1] == "": desc_lines.pop()
+                desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
             time.sleep(2)
 
-    # 3. 處置中 (10 支分段)
+    # 3. 處置中 (10 支分段 + ## 標題)
     if stats['in_jail']:
         total = len(stats['in_jail'])
         chunk_size = 10 if total > 15 else 20
@@ -248,7 +255,7 @@ def main():
             chunk = stats['in_jail'][i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"### ⛓️ 還能噴嗎？{total} 檔股票正在處置\n")
+                desc_lines.append(f"## ⛓️ 還能噴嗎？{total} 檔股票正在處置\n")
             for s in chunk:
                 pd_display = s['period'].replace('2026/', '').replace('-', '-')
                 desc_lines.append(f"🔒 **{s['code']} {s['name']}** |  `{pd_display}`")
