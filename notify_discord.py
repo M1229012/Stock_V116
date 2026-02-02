@@ -238,7 +238,7 @@ def main():
                 desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
-                msg = "明日開始處置" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
+                msg = "明日強制入獄" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
             time.sleep(2)
