@@ -218,7 +218,7 @@ def main():
             chunk = stats['entering'][i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"## 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
+                desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
                 msg = "明日強制入獄" if s['days'] == 1 else f"入獄倒數 {s['days']} 天"
@@ -234,7 +234,7 @@ def main():
             chunk = rel[i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"## 🔓 越關越大尾？{total} 檔股票即將出關\n")
+                desc_lines.append(f"### 🔓 越關越大尾？{total} 檔股票即將出關\n")
             for s in chunk:
                 # 第一行：名稱與日期
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
@@ -259,7 +259,7 @@ def main():
             chunk = stats['in_jail'][i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"## ⛓️ 還能噴嗎？{total} 檔股票正在處置\n")
+                desc_lines.append(f"### ⛓️ 還能噴嗎？{total} 檔股票正在處置\n")
             for s in chunk:
                 pd_display = s['period'].replace('2026/', '').replace('-', '-')
                 desc_lines.append(f"🔒 **{s['code']} {s['name']}** |  `{pd_display}`")
