@@ -13,7 +13,7 @@ from google.oauth2.service_account import Credentials
 # ============================
 # ⚙️ 設定區
 # ============================
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -178,20 +178,21 @@ def check_status_split(sh, releasing_codes):
             ent.append({"code": code, "name": name, "days": d})
             seen.add(code)
     
-    # 📌 排序：天數由短至長，再比股號由小至大
+    # 瀕臨處置排序：天數(小->大) -> 股號
     ent.sort(key=lambda x: (x['days'], x['code']))
     
-    # 📌 排序：出關日期由新到舊 (Desc)，再比股號由小至大 (Asc)
-    def get_end_date(item):
+    # 處置中排序：出關日期(近->遠) -> 股號(小->大)
+    def inj_sort_key(item):
+        p = item['period']
         try:
-            end_date_str = item['period'].split('-')[1]
-            return datetime.strptime(end_date_str, "%Y/%m/%d")
+            # period 格式為 YYYY/MM/DD-YYYY/MM/DD，取後面的結束日期
+            end_str = p.split('-')[1]
+            return (datetime.strptime(end_str, "%Y/%m/%d"), item['code'])
         except:
-            return datetime.min # 若解析失敗，設為最小日期排在最後 (因日期是 Desc)
+            # 若解析失敗或日期未知，排到最後
+            return (datetime.max, item['code'])
 
-    # 利用 Python 穩定排序：先排次要鍵 (股號 Asc)，再排主要鍵 (日期 Desc)
-    inj.sort(key=lambda x: x['code'])
-    inj.sort(key=get_end_date, reverse=True)
+    inj.sort(key=inj_sort_key)
 
     return {'entering': ent, 'in_jail': inj}
 
@@ -236,7 +237,7 @@ def main():
                 desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
-                msg = "明日強制入獄" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
+                msg = "明日開始處置" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
             time.sleep(2)
