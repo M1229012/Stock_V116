@@ -110,7 +110,6 @@ def get_merged_jail_periods(sh):
 
     final_map = {}
     for code, dates in jail_map.items():
-        # 這裡維持 YYYY/MM/DD 以便後續 sorting 解析，僅在最後發送時 replace 掉年份
         fmt_str = f"{dates['start'].strftime('%Y/%m/%d')}-{dates['end'].strftime('%Y/%m/%d')}"
         final_map[code] = fmt_str
     return final_map
@@ -133,7 +132,7 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 auto_adjust=True 使用還原 K 線，避免分割股票導致 NaN
+        # 📌 auto_adjust=True 使用還原 K 線，避免 NaN
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
         if df.empty:
@@ -188,7 +187,7 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "計算失敗"
 
 # ============================
-# 🔍 分類與監控邏輯 (依日期後股號排序)
+# 🔍 分類與監控邏輯 (排序修正)
 # ============================
 def check_status_split(sh, releasing_codes):
     """檢查並分類股票"""
@@ -220,7 +219,7 @@ def check_status_split(sh, releasing_codes):
             entering_list.append({"code": code, "name": name, "days": days})
             seen_codes.add(code)
     
-    # 📌 排序：先依日期（天數），再依股號
+    # 📌 排序：先依天數，再依股號
     entering_list.sort(key=lambda x: (x['days'], x['code']))
     
     def get_end_date(item):
@@ -301,7 +300,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (移除2026/、說明分行、合併顯示)
+    # 2. 即將出關 (📌 套用樣式 2：簡潔括號型)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -309,16 +308,14 @@ def main():
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
             
-            # 📌 第一段顯示標題，說明分行顯示 (同天數對比)
             if i == 0:
                 desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天`\n`(同天數對比)`\n" + "─" * 15)
             
             for s in chunk:
-                day_msg = f"剩 {s['days']} 天"
-                # 📌 移除 2026/ 顯示
+                # 📌 樣式 2 排版
                 display_date = s['date'].replace("2026/", "")
-                desc_lines.append(f"**{s['code']} {s['name']} | {day_msg}   {display_date}**")
-                # 狀態與數據合併同一行
+                desc_lines.append(f"**{s['code']} {s['name']}**【 ⏳ 剩 **{s['days']}** 天｜**{display_date}** 】")
+                # 狀態與數據合併
                 desc_lines.append(f"▸ {s['status']}   `{s['price_info']}`")
                 desc_lines.append("")
 
@@ -329,14 +326,18 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中 (移除2026/、依日期後股號排序)
+    # 3. 處置中 (📌 套用樣式 2：等寬流修正)
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
         for i in range(0, total, chunk_size):
             chunk = in_jail_stocks[i : i + chunk_size]
-            # 📌 移除 2026/ 顯示
-            desc_lines = [f"🔒 **{s['code']} {s['name']}** | `{s['period'].replace('2026/', '')}`" for s in chunk]
+            desc_lines = []
+            for s in chunk:
+                # 📌 樣式 2 排版：🔒 代號 名稱｜MM/DD ➟ MM/DD
+                period_display = s['period'].replace('2026/', '').replace('-', ' ➟ ')
+                desc_lines.append(f"🔒 **{s['code']} {s['name']}**｜{period_display}")
+            
             embed = {"description": "\n".join(desc_lines), "color": 10181046}
             if i == 0: embed["title"] = f"⛓️ 監控中！{total} 檔股票正在處置"
             send_discord_webhook([embed])
