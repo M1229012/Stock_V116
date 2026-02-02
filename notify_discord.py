@@ -132,7 +132,7 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 auto_adjust=True 使用還原 K 線，解決分割股票導致 NaN 的問題
+        # 📌 auto_adjust=True 解決分割股票導致 NaN 的問題
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
         if df.empty:
@@ -177,6 +177,7 @@ def get_price_rank_info(code, period_str, market):
         else:
             status = "📉 破底"
         
+        # 📌 維持不省略字樣
         price_data = f"處置前{sign_pre}{pre_jail_pct:.1f}% / 處置中{sign_in}{in_jail_pct:.1f}%"
         return status, price_data
         
@@ -279,7 +280,7 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # 1. 瀕臨處置 (📌 更新標題 + 灰底 + 加寬間距)
+    # 1. 瀕臨處置 (📌 標題更新)
     if entering_stocks:
         total = len(entering_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -293,12 +294,11 @@ def main():
             
             embed = {"description": "\n".join(desc_lines), "color": 15158332}
             if i == 0: 
-                # 📌 套用您指定的最強標題
-                embed["title"] = f"🚨 入獄倒數！{total} 檔標的瀕臨處置：誰能越關越大尾？"
+                embed["title"] = f"🚨 處置倒數！{total} 檔股票瀕臨處置"
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關
+    # 2. 即將出關 (📌 標題更新 + 股名粗體強化)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -312,18 +312,19 @@ def main():
             for s in chunk:
                 day_msg = f"剩 {s['days']} 天"
                 display_date = s['date'].replace("2026/", "")
+                # 📌 確保股名粗體以凸顯視覺感
                 desc_lines.append(f"**{s['code']} {s['name']}** |  {day_msg} ({display_date})")
                 desc_lines.append(f"{s['status']} 處置前{s['price_info'].split('處置前')[1]}")
                 desc_lines.append("")
 
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
             if i == 0:
-                embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
+                embed["title"] = f"🔓 越關越大尾？{total} 檔股票即將出關"
             
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中
+    # 3. 處置中 (📌 標題更新)
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -335,7 +336,8 @@ def main():
                 desc_lines.append(f"🔒 **{s['code']} {s['name']}** |  `{period_display}`")
             
             embed = {"description": "\n".join(desc_lines), "color": 10181046}
-            if i == 0: embed["title"] = f"⛓️ 監控中！{total} 檔股票正在處置"
+            if i == 0: 
+                embed["title"] = f"⛓️ 還能噴嗎？{total} 檔股票正在處置"
             send_discord_webhook([embed])
             time.sleep(2)
 
