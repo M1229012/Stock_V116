@@ -232,7 +232,7 @@ def main():
             
             # 📌 說明僅在最後一段訊息結尾
             if i + chunk_size >= total:
-                desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
+                desc_lines.append("---------\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
             if i == 0:
