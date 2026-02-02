@@ -314,7 +314,7 @@ def main():
             for s in chunk:
                 # 📌 樣式 2 排版
                 display_date = s['date'].replace("2026/", "")
-                desc_lines.append(f"**{s['code']} {s['name']}**【 ⏳ 剩 **{s['days']}** 天｜**{display_date}** 】")
+                desc_lines.append(f"**{s['code']} {s['name']}**【 剩 **{s['days']}** 天｜**{display_date}** 】")
                 # 狀態與數據合併
                 desc_lines.append(f"▸ {s['status']}   `{s['price_info']}`")
                 desc_lines.append("")
