@@ -6,6 +6,7 @@ import re
 import time
 import yfinance as yf
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
@@ -115,7 +116,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📊 價格數據處理邏輯 (還原 K 線修正)
+# 📊 價格數據處理邏輯 (還原 K 線 & NaN 自動修復)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """計算處置期間數據，並回傳格式化資料"""
@@ -132,18 +133,23 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 auto_adjust=True 解決分割股票導致 NaN 的問題
+        # 📌 預設使用還原 K 線抓取 (解決分割股票問題)
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
-        if df.empty:
-            alt_suffix = ".TW" if suffix == ".TWO" else ".TWO"
-            df = yf.Ticker(f"{code}{alt_suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
-            if df.empty: return "❓ 未知", "無股價"
+        # 📌 自動判斷 NaN：若抓取失敗或出現 NaN，嘗試補齊或重新切換還原模式
+        if df.empty or df['Close'].isnull().any():
+            df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True, back_adjust=True)
+        
+        # 針對分割當日可能出現的 NaN 進行前項填補
+        df = df.ffill()
+
+        if df.empty: return "❓ 未知", "無股價"
 
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         jail_days_count = len(df_in_jail) if not df_in_jail.empty else 0
 
+        # 處置前績效
         mask_before_jail = df.index < pd.Timestamp(start_date)
         if not mask_before_jail.any(): 
             pre_jail_pct = 0.0
@@ -160,6 +166,7 @@ def get_price_rank_info(code, period_str, market):
             else:
                 pre_jail_pct = 0.0
 
+        # 處置中績效
         if df_in_jail.empty: 
             in_jail_pct = 0.0
         else:
@@ -177,7 +184,6 @@ def get_price_rank_info(code, period_str, market):
         else:
             status = "📉 破底"
         
-        # 📌 維持不省略字樣
         price_data = f"處置前{sign_pre}{pre_jail_pct:.1f}% / 處置中{sign_in}{in_jail_pct:.1f}%"
         return status, price_data
         
@@ -280,7 +286,7 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # 1. 瀕臨處置 (📌 標題更新)
+    # 1. 瀕臨處置
     if entering_stocks:
         total = len(entering_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -298,7 +304,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (📌 標題更新 + 股名粗體強化)
+    # 2. 即將出關 (📌 股名粗體 & 字體放大修正)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -312,9 +318,10 @@ def main():
             for s in chunk:
                 day_msg = f"剩 {s['days']} 天"
                 display_date = s['date'].replace("2026/", "")
-                # 📌 確保股名粗體以凸顯視覺感
-                desc_lines.append(f"**{s['code']} {s['name']}** |  {day_msg} ({display_date})")
-                desc_lines.append(f"{s['status']} 處置前{s['price_info'].split('處置前')[1]}")
+                # 📌 使用 ### 標題語法讓股名在 Discord 中顯示得更大且粗體
+                desc_lines.append(f"### **{s['code']} {s['name']}**")
+                desc_lines.append(f"> {day_msg} ({display_date})")
+                desc_lines.append(f"{s['status']}  |  處置前{s['price_info'].split('處置前')[1]}")
                 desc_lines.append("")
 
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
@@ -324,7 +331,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中 (📌 標題更新)
+    # 3. 處置中
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
