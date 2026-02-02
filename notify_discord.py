@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
 # ============================
-# ⚙️ 設定區
+# ⚙️ 設定區 (保留第一段設定)
 # ============================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 SHEET_NAME = "台股注意股資料庫_V33"
@@ -95,7 +95,7 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
+# 📊 價格數據處理邏輯 (完全使用第二段提供的版本)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """計算處置前 vs 處置中的績效對比"""
@@ -156,7 +156,7 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "數據計算中"
 
 # ============================
-# 🔍 監控邏輯 (排序與分類)
+# 🔍 監控邏輯 (保留第一段的進階排序與分類)
 # ============================
 def check_status_split(sh, releasing_codes):
     """檢查並分類股票 (多重排序)"""
@@ -182,7 +182,7 @@ def check_status_split(sh, releasing_codes):
     # 📌 排序：天數由短至長，再比股號由小至大
     ent.sort(key=lambda x: (x['days'], x['code']))
 
-    # 📌 排序：出關日期由近至遠，再比股號由小至大
+    # 📌 排序：出關日期由近至遠，再比股號由小至大 (保留第一段邏輯)
     def get_end_date(item):
         try:
             end_date_str = item['period'].split('-')[1]
@@ -218,7 +218,7 @@ def check_releasing_stocks(sh):
     return res
 
 # ============================
-# 🚀 主程式 (分段邏輯 & ### 標題)
+# 🚀 主程式 (保留第一段的 ### 標題與分段邏輯)
 # ============================
 def main():
     sh = connect_google_sheets()
