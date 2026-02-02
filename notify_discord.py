@@ -214,7 +214,7 @@ def main():
             desc_lines = [f"⚠️ **{s['code']} {s['name']}** |  `入獄倒數 {s['days']} 天`" for s in chunk]
             embed = {"description": "\n".join(desc_lines), "color": 15158332}
             if i == 0: 
-                embed["title"] = f"#🚨 處置倒數！{total} 檔股票瀕臨處置"
+                # 🚨 處置倒數！{total} 檔股票瀕臨處置
             send_discord_webhook([embed])
             time.sleep(2)
 
@@ -236,7 +236,7 @@ def main():
             
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
             if i == 0:
-                embed["title"] = f"#🔓 越關越大尾？{total} 檔股票即將出關"
+                # 🔓 越關越大尾？{total} 檔股票即將出關
             send_discord_webhook([embed])
             time.sleep(2)
 
@@ -253,7 +253,7 @@ def main():
             
             embed = {"description": "\n".join(desc_lines), "color": 10181046}
             if i == 0:
-                embed["title"] = f"#⛓️ 還能噴嗎？{total} 檔股票正在處置"
+                # ⛓️ 還能噴嗎？{total} 檔股票正在處置
             send_discord_webhook([embed])
             time.sleep(2)
 
