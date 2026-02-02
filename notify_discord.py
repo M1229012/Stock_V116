@@ -132,7 +132,7 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 auto_adjust=True 使用還原 K 線，解決分割股票 NaN 問題
+        # 📌 auto_adjust=True 使用還原 K 線，解決分割股票導致 NaN 的問題
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
         if df.empty:
@@ -144,6 +144,7 @@ def get_price_rank_info(code, period_str, market):
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         jail_days_count = len(df_in_jail) if not df_in_jail.empty else 0
 
+        # 處置前績效
         mask_before_jail = df.index < pd.Timestamp(start_date)
         if not mask_before_jail.any(): 
             pre_jail_pct = 0.0
@@ -160,6 +161,7 @@ def get_price_rank_info(code, period_str, market):
             else:
                 pre_jail_pct = 0.0
 
+        # 處置中績效
         if df_in_jail.empty: 
             in_jail_pct = 0.0
         else:
@@ -185,7 +187,7 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "計算失敗"
 
 # ============================
-# 🔍 分類與監控邏輯 (依日期後股號排序)
+# 🔍 分類與監控邏輯 (排序修正)
 # ============================
 def check_status_split(sh, releasing_codes):
     """檢查並分類股票"""
@@ -217,12 +219,14 @@ def check_status_split(sh, releasing_codes):
             entering_list.append({"code": code, "name": name, "days": days})
             seen_codes.add(code)
     
+    # 📌 排序：先依日期（天數），再依股號
     entering_list.sort(key=lambda x: (x['days'], x['code']))
     
     def get_end_date(item):
         try: return datetime.strptime(item['period'].split('-')[1], "%Y/%m/%d")
         except: return datetime.max 
     
+    # 📌 排序：先依日期（結束日），再依股號
     in_jail_list.sort(key=lambda x: (get_end_date(x), x['code']))
     return {'entering': entering_list, 'in_jail': in_jail_list}
 
@@ -259,6 +263,7 @@ def check_releasing_stocks(sh):
             })
             seen_codes.add(code)
             
+    # 📌 排序：先依日期（剩餘天數），再依股號
     releasing_list.sort(key=lambda x: (x['days'], x['code']))
     return releasing_list
 
@@ -279,7 +284,7 @@ def main():
     entering_stocks = status_data['entering']
     in_jail_stocks = status_data['in_jail']
 
-    # 1. 瀕臨處置 (📌 改回 | 分隔，每支不留空行)
+    # 1. 瀕臨處置 (📌 修正：增大間距，數據灰底區隔)
     if entering_stocks:
         total = len(entering_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -289,13 +294,14 @@ def main():
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
                 msg = "明日開始處置" if s['days'] == 1 else f"最快 {s['days']} 天進處置"
-                desc_lines.append(f"{icon} **{s['code']} {s['name']}** | {msg}")
+                # 📌 修正：分隔符加寬，msg 套用灰底
+                desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             embed = {"description": "\n".join(desc_lines), "color": 15158332}
             if i == 0: embed["title"] = f"🚨 注意！{total} 檔股票瀕臨處置"
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (📌 維持現狀：保留空行、狀態數據合併一行)
+    # 2. 即將出關 (📌 修正：增大第一行間距)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -309,16 +315,19 @@ def main():
             for s in chunk:
                 day_msg = f"剩 {s['days']} 天"
                 display_date = s['date'].replace("2026/", "")
-                desc_lines.append(f"**{s['code']} {s['name']}** | {day_msg} ({display_date})")
+                # 📌 修正：分隔符加寬
+                desc_lines.append(f"**{s['code']} {s['name']}** |  {day_msg} ({display_date})")
                 desc_lines.append(f"{s['status']} 處置前{s['price_info'].split('處置前')[1]}")
                 desc_lines.append("")
 
             embed = {"description": "\n".join(desc_lines), "color": 3066993}
-            if i == 0: embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
+            if i == 0:
+                embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
+            
             send_discord_webhook([embed])
             time.sleep(2)
 
-    # 3. 處置中 (📌 改回 | 分隔，每支不留空行)
+    # 3. 處置中 (📌 修正：增大間距，日期區間灰底區隔)
     if in_jail_stocks:
         total = len(in_jail_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -326,9 +335,9 @@ def main():
             chunk = in_jail_stocks[i : i + chunk_size]
             desc_lines = []
             for s in chunk:
-                # 📌 MM/DD-MM/DD 格式
                 period_display = s['period'].replace('2026/', '').replace('-', '-')
-                desc_lines.append(f"🔒 **{s['code']} {s['name']}** | {period_display}")
+                # 📌 修正：分隔符加寬，日期區間套用灰底
+                desc_lines.append(f"🔒 **{s['code']} {s['name']}** |  `{period_display}`")
             
             embed = {"description": "\n".join(desc_lines), "color": 10181046}
             if i == 0: embed["title"] = f"⛓️ 監控中！{total} 檔股票正在處置"
