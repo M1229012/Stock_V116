@@ -95,10 +95,10 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
+# 📊 價格數據處理邏輯 (還原 K 線 & 修正百分比計算)
 # ============================
 def get_price_rank_info(code, period_str, market):
-    """計算處置前 vs 處置中的績效對比"""
+    """計算處置前 vs 處置中的績效對比 (修正為連貫邏輯)"""
     try:
         dates = re.split(r'[~-～]', str(period_str))
         start_date = parse_roc_date(dates[0])
@@ -109,10 +109,10 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 抓取還原 K 線 (auto_adjust=True)
+        # 📌 抓取還原 K 線 (auto_adjust=True)
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         
-        # 補齊分割股導致的 NaN (ffill)
+        # 📌 補齊分割股導致的 NaN (ffill)
         if not df.empty:
             df = df.ffill() 
         
@@ -125,21 +125,19 @@ def get_price_rank_info(code, period_str, market):
         mask_before = df.index < pd.Timestamp(start_date)
         if not mask_before.any(): 
             pre_pct = 0.0
+            in_pct = 0.0
         else:
-            jail_base_p = df[mask_before]['Close'].iloc[-1]
+            # 📌 關鍵基準點：處置前最後一天的收盤價
+            jail_prev_close = df[mask_before]['Close'].iloc[-1]
             jail_days_count = len(df_in_jail) if not df_in_jail.empty else 1
             loc_idx = df.index.get_loc(df[mask_before].index[-1])
             target_idx = max(0, loc_idx - jail_days_count + 1)
             pre_entry = df.iloc[target_idx]['Open']
-            pre_pct = ((jail_base_p - pre_entry) / pre_entry) * 100
+            pre_pct = ((jail_prev_close - pre_entry) / pre_entry) * 100
 
-        # 處置中績效
-        if df_in_jail.empty: 
-            in_pct = 0.0
-        else:
-            jail_start_entry = df_in_jail['Open'].iloc[0]
-            curr_p = df_in_jail['Close'].iloc[-1]
-            in_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
+            # 📌 處置中績效：改以「處置前一天的收盤價」為基準，捕捉跳空缺口
+            curr_p = df_in_jail['Close'].iloc[-1] if not df_in_jail.empty else jail_prev_close
+            in_pct = ((curr_p - jail_prev_close) / jail_prev_close) * 100
 
         # 判斷狀態圖示與文字
         if abs(in_pct) <= 5: 
@@ -159,7 +157,7 @@ def get_price_rank_info(code, period_str, market):
 # 🔍 監控邏輯 (排序與分類)
 # ============================
 def check_status_split(sh, releasing_codes):
-    """檢查並分類股票 (包含正在處置的多重排序)"""
+    """檢查並分類股票 (包含多重排序)"""
     try:
         ws = sh.worksheet("近30日熱門統計")
         records = ws.get_all_records()
@@ -179,13 +177,12 @@ def check_status_split(sh, releasing_codes):
             ent.append({"code": code, "name": name, "days": d})
             seen.add(code)
     
-    # 📌 瀕臨處置排序：優先比天數（由短至長），天數相同比股號（由小至大）
+    # 📌 處置倒數排序：優先比天數，天數相同比股號
     ent.sort(key=lambda x: (x['days'], x['code']))
 
-    # 📌 正在處置排序：優先比出關日期（日期越近排越前），日期相同比股號（由小至大）
+    # 📌 正在處置排序：優先比日期，日期相同比股號
     def get_end_date(item):
         try:
-            # period 格式為 "2026/02/02-2026/02/13"
             end_date_str = item['period'].split('-')[1]
             return datetime.strptime(end_date_str, "%Y/%m/%d")
         except:
@@ -214,7 +211,7 @@ def check_releasing_stocks(sh):
             res.append({"code": code, "name": row.get('名稱', ''), "days": d, "date": dt.strftime("%m/%d") if dt else "??/??", "status": st, "price": pr})
             seen.add(code)
     
-    # 📌 即將出關排序：優先比天數（由短至長），天數相同比股號（由小至大）
+    # 📌 即將出關排序：優先比天數，天數相同比股號
     res.sort(key=lambda x: (x['days'], x['code']))
     return res
 
@@ -228,7 +225,7 @@ def main():
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
 
-    # 1. 瀕臨處置 (10 支分段 + ### 標題)
+    # 1. 處置倒數 (10 支分段 + ### 標題)
     if stats['entering']:
         total = len(stats['entering'])
         chunk_size = 10 if total > 15 else 20
@@ -239,7 +236,7 @@ def main():
                 desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
-                msg = "明日強制入獄" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
+                msg = "明日開始處置" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
             time.sleep(2)
@@ -254,16 +251,12 @@ def main():
             if i == 0:
                 desc_lines.append(f"### 🔓 越關越大尾？{total} 檔股票即將出關\n")
             for s in chunk:
-                # 第一行：名稱與日期
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
-                # 第二行：依照樣式 ▸ 資訊
                 desc_lines.append(f"▸ {s['status']} {s['price']}")
-                # 間隔空行
                 desc_lines.append("")
             
-            # 說明文字僅在最後一段訊息結尾，且上方僅留空一行
             if i + chunk_size >= total:
-                if desc_lines[-1] == "": desc_lines.pop() # 移除最後一個空行
+                if desc_lines[-1] == "": desc_lines.pop()
                 desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
