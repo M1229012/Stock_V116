@@ -95,7 +95,7 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (完全照您的版本複製)
+# 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """計算處置前 vs 處置中的績效對比"""
@@ -133,7 +133,7 @@ def get_price_rank_info(code, period_str, market):
             pre_entry = df.iloc[target_idx]['Open']
             pre_pct = ((jail_base_p - pre_entry) / pre_entry) * 100
 
-        # 處置中績效 (📌 完完全全照您的邏輯：以第一天開盤價為基準)
+        # 處置中績效
         if df_in_jail.empty: 
             in_pct = 0.0
         else:
