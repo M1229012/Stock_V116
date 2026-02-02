@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
 # ============================
-# ⚙️ 設定區 (保留第一段設定)
+# ⚙️ 設定區
 # ============================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 SHEET_NAME = "台股注意股資料庫_V33"
@@ -95,7 +95,7 @@ def get_merged_jail_periods(sh):
     return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
 
 # ============================
-# 📊 價格數據處理邏輯 (完全使用第二段提供的版本)
+# 📊 價格數據處理邏輯 (還原 K 線 & 百分比計算)
 # ============================
 def get_price_rank_info(code, period_str, market):
     """計算處置前 vs 處置中的績效對比"""
@@ -156,10 +156,9 @@ def get_price_rank_info(code, period_str, market):
         return "❓ 未知", "數據計算中"
 
 # ============================
-# 🔍 監控邏輯 (保留第一段的進階排序與分類)
+# 🔍 監控邏輯 (排序與分類)
 # ============================
 def check_status_split(sh, releasing_codes):
-    """檢查並分類股票 (多重排序)"""
     try:
         ws = sh.worksheet("近30日熱門統計")
         records = ws.get_all_records()
@@ -178,24 +177,10 @@ def check_status_split(sh, releasing_codes):
         elif d <= JAIL_ENTER_THRESHOLD:
             ent.append({"code": code, "name": name, "days": d})
             seen.add(code)
-    
-    # 📌 排序：天數由短至長，再比股號由小至大
     ent.sort(key=lambda x: (x['days'], x['code']))
-
-    # 📌 排序：出關日期由近至遠，再比股號由小至大 (保留第一段邏輯)
-    def get_end_date(item):
-        try:
-            end_date_str = item['period'].split('-')[1]
-            return datetime.strptime(end_date_str, "%Y/%m/%d")
-        except:
-            return datetime.max 
-
-    inj.sort(key=lambda x: (get_end_date(x), x['code']))
-    
     return {'entering': ent, 'in_jail': inj}
 
 def check_releasing_stocks(sh):
-    """檢查即將出關股票 (多重排序)"""
     try:
         ws = sh.worksheet("即將出關監控")
         records = ws.get_all_records()
@@ -212,13 +197,11 @@ def check_releasing_stocks(sh):
             dt = parse_roc_date(row.get('出關日期', ''))
             res.append({"code": code, "name": row.get('名稱', ''), "days": d, "date": dt.strftime("%m/%d") if dt else "??/??", "status": st, "price": pr})
             seen.add(code)
-    
-    # 📌 排序：天數由短至長，再比股號由小至大
     res.sort(key=lambda x: (x['days'], x['code']))
     return res
 
 # ============================
-# 🚀 主程式 (保留第一段的 ### 標題與分段邏輯)
+# 🚀 主程式 (分段邏輯 & ## 標題)
 # ============================
 def main():
     sh = connect_google_sheets()
@@ -227,7 +210,7 @@ def main():
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
 
-    # 1. 處置倒數 (10 支分段 + ### 標題)
+    # 1. 瀕臨處置 (10 支分段 + ## 標題)
     if stats['entering']:
         total = len(stats['entering'])
         chunk_size = 10 if total > 15 else 20
@@ -243,7 +226,7 @@ def main():
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
             time.sleep(2)
 
-    # 2. 即將出關 (10 支分段 + ### 標題 + 說明文字)
+    # 2. 即將出關 (10 支分段 + ## 標題 + 說明文字)
     if rel:
         total = len(rel)
         chunk_size = 10 if total > 15 else 20
@@ -255,11 +238,12 @@ def main():
             for s in chunk:
                 # 第一行：名稱與日期
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
-                # 第二行：依照樣式 ▸ 資訊
+                # 第二行：依照圖片格式 ▸ 資訊
                 desc_lines.append(f"▸ {s['status']} {s['price']}")
                 # 間隔空行
                 desc_lines.append("")
             
+            # 說明文字僅在最後一段訊息結尾，且上方僅留空一行
             if i + chunk_size >= total:
                 if desc_lines[-1] == "": desc_lines.pop() # 移除最後一個空行
                 desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
@@ -267,7 +251,7 @@ def main():
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
             time.sleep(2)
 
-    # 3. 正在處置 (10 支分段 + ### 標題)
+    # 3. 處置中 (10 支分段 + ## 標題)
     if stats['in_jail']:
         total = len(stats['in_jail'])
         chunk_size = 10 if total > 15 else 20
