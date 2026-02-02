@@ -173,7 +173,7 @@ def get_merged_jail_periods(sh):
     return final_map
 
 # ============================
-# 📌 核心邏輯
+# 📌 核心數據邏輯
 # ============================
 def get_price_rank_info(code, period_str, market):
     """
@@ -190,7 +190,7 @@ def get_price_rank_info(code, period_str, market):
         suffix = ".TWO" if "上櫃" in str(market) or "TPEx" in str(market) else ".TW"
         ticker = f"{code}{suffix}"
         
-        # 📌 修正：auto_adjust=True 使用還原 K 線，避免 NaN 問題
+        # 📌 修正：auto_adjust=True 解決分割股票導致 NaN 的問題
         df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         if df.empty:
             alt_suffix = ".TW" if suffix == ".TWO" else ".TWO"
@@ -215,7 +215,6 @@ def get_price_rank_info(code, period_str, market):
         else:
             days_to_avg = min(20, len(df_before_jail))
             pre_jail_avg_volume = df_before_jail['Volume'].tail(days_to_avg).mean()
-
             jail_base_date = df_before_jail.index[-1]
             jail_base_price = df.loc[jail_base_date]['Close']
             lookback_days = max(1, jail_days_count)
@@ -258,7 +257,6 @@ def get_price_rank_info(code, period_str, market):
                 sum_foreign = inst_df['外資買賣超'].sum()
                 sum_trust = inst_df['投信買賣超'].sum()
                 sum_dealer = inst_df['自營商買賣超'].sum()
-                
                 benchmark_lots = (pre_jail_avg_volume * jail_days_count) / 1000
                 if benchmark_lots == 0: benchmark_lots = 1 
 
@@ -300,6 +298,9 @@ def get_price_rank_info(code, period_str, market):
         print(f"⚠️ 失敗: {e}")
         return "❓", "未知", "Error", ""
 
+# ============================
+# 🔍 分類與監控邏輯
+# ============================
 def check_status_split(sh, releasing_codes):
     try:
         ws = sh.worksheet("近30日熱門統計")
@@ -329,11 +330,15 @@ def check_status_split(sh, releasing_codes):
             entering_list.append({"code": code, "name": name, "days": days})
             seen_codes.add(code)
     
-    entering_list.sort(key=lambda x: x['days'])
+    # 📌 排序修正：先依照天數，再依照股號
+    entering_list.sort(key=lambda x: (x['days'], x['code']))
+    
     def get_end_date(item):
         try: return datetime.strptime(item['period'].split('-')[1], "%Y/%m/%d")
         except: return datetime.max 
-    in_jail_list.sort(key=get_end_date)
+    
+    # 📌 排序修正：先依照日期，再依照股號
+    in_jail_list.sort(key=lambda x: (get_end_date(x), x['code']))
     return {'entering': entering_list, 'in_jail': in_jail_list}
 
 def check_releasing_stocks(sh):
@@ -371,9 +376,14 @@ def check_releasing_stocks(sh):
                 "inst_info": inst_info    
             })
             seen_codes.add(code)
-    releasing_list.sort(key=lambda x: x['days'])
+            
+    # 📌 排序修正：先依照天數，再依照股號
+    releasing_list.sort(key=lambda x: (x['days'], x['code']))
     return releasing_list
 
+# ============================
+# 🚀 主程式
+# ============================
 def main():
     if not DISCORD_WEBHOOK_URL_TEST or "你的_DISCORD_WEBHOOK" in DISCORD_WEBHOOK_URL_TEST:
         print("❌ 請先設定 DISCORD_WEBHOOK_URL")
@@ -404,7 +414,7 @@ def main():
             send_discord_webhook([embed])
             time.sleep(2) 
 
-    # 2. 即將出關 (優化換行與標題邏輯)
+    # 2. 即將出關 (🔥 修正：分段無標題、數據換行、股號排序、空行間隔)
     if releasing_stocks:
         total = len(releasing_stocks)
         chunk_size = 10 if total > 15 else 20
@@ -412,33 +422,31 @@ def main():
             chunk = releasing_stocks[i : i + chunk_size]
             desc_lines = []
             
-            # 第一段訊息才顯示說明欄位
+            # 📌 僅第一段訊息顯示說明標題
             if i == 0:
                 desc_lines.append("`💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)`\n" + "─" * 15)
             
             for s in chunk:
-                day_msg = "剩 " + str(s['days']) + " 天"
-                # 第一行：加粗代號、名稱與日期
+                day_msg = f"剩 {s['days']} 天"
+                
+                # 第一行：加粗基本資訊
                 desc_lines.append(f"**{s['code']} {s['name']} | {day_msg}   {s['date']}**")
                 
-                # 📌 修正：動態數據跳下一行顯示，並使用箭頭標記
+                # 第二行：狀態圖示與文字
                 desc_lines.append(f"▸ {s['status_icon']} {s['status_text']}")
+                
+                # 第三行：📌 修正：對比數據跳行顯示
                 desc_lines.append(f"▸ `{s['price_info']}`")
                 
+                # 第四行：法人資訊
                 if s['inst_info']:
                     desc_lines.append(f"▸ {s['inst_info']}")
                 
-                # 加入空行 spacer
+                # 📌 修正：加入空行 Spacer
                 desc_lines.append("")
 
-            embed = {
-                "description": "\n".join(desc_lines),
-                "color": 3066993
-            }
-            # 📌 修正：僅第一段發送標題
-            if i == 0:
-                embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
-
+            embed = {"description": "\n".join(desc_lines), "color": 3066993}
+            if i == 0: embed["title"] = f"🔓 關注！{total} 檔股票即將出關"
             send_discord_webhook([embed])
             time.sleep(2)
 
