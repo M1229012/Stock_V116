@@ -174,16 +174,18 @@ def get_price_rank_info(code, period_str, market):
 
         in_pct = ((df_in_jail['Close'].iloc[-1] - df_in_jail['Open'].iloc[0]) / df_in_jail['Open'].iloc[0] * 100) if not df_in_jail.empty else 0.0
 
+        # 📌 依照您的要求更新狀態詞彙
         if in_pct > 15:
-            status = "👑 妖股誕生"
+            status_icon, status_text = "👑", "妖股誕生"
         elif in_pct > 5:
-            status = "🔥 強勢突圍"
+            status_icon, status_text = "🔥", "強勢突圍"
         elif in_pct < -15:
-            status = "💀 慘絕人寰"
+            status_icon, status_text = "💀", "慘絕人寰"
         elif in_pct < -5:
-            status = "📉 走勢疲軟"
+            status_icon, status_text = "📉", "走勢疲軟"
         else:
-            status = "🧊 橫盤冷卻"
+            status_icon, status_text = "🧊", "橫盤冷卻"
+
         price_data = f"處置前{'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中{'+' if in_pct > 0 else ''}{in_pct:.1f}%"
 
         # 法人判斷
