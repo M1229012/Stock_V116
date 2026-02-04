@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.26 台股注意股系統 (修正南電處置衝突 + 紀錄歸零化邏輯)
+V116.27 台股注意股系統 (修正顯示邏輯：將 X 變更為 3)
 修正重點：
-1. [修正] 舊紀錄歸零化：在預測迴圈中，以「資料庫中該代號的最晚結束日」為基準，之前的注意紀錄全部不計，解決處置中又跳出處置警示的問題。
-2. [修正] 處置狀態判定衝突：只要股票還在處置期內，強制預測天數顯示為 "X"，徹底攔截機器人誤發「明日處置」警報。
-3. [保留] 所有原有的爬蟲、FinMind 回補與 Selenium 邏輯，不省略任何功能。
+1. [修正] 顯示格式：處置中及無風險股票的預測天數由 "X" 改為 "3"，使其視覺外觀一致。
+2. [修正] 舊紀錄歸零化：沿用最晚結束日判定，確保處置原因紀錄不重複計算。
+3. [保留] 所有原有的爬蟲 (Selenium/Requests)、FinMind 回補與風險計算邏輯。
 """
 
 import os
@@ -86,7 +86,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.26 台股注意股系統 (Jail Overlap Fix)")
+print(f"🚀 啟動 V116.27 台股注意股系統 (Display Fix: X to 3)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1319,17 +1319,17 @@ def main():
                 break
 
         est_days_int = 99
-        est_days_display = "X"
+        est_days_display = "3"
         reason_display = ""
 
-        # 這裡根據是否「已在坐牢」重新定義顯示邏輯
+        # 這裡根據是否「已在坐牢」重新定義顯示邏輯，並將 "X" 改為 "3"
         if is_already_in_jail:
-            est_days_display = "X"
+            est_days_display = "3"
             reason_display = reason
         else:
             if reason == "X":
                 est_days_int = 99
-                est_days_display = "X"
+                est_days_display = "3"
                 if is_special_risk:
                     reason_display = "籌碼異常(人工審核風險)"
                     if is_clause_13: reason_display += " + 刑期可能延長"
@@ -1357,7 +1357,7 @@ def main():
         if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
-        risk = calculate_full_risk(code, hist, fund, (est_days if not is_already_in_jail else 0), dt_today, dt_avg6)
+        risk = calculate_full_risk(code, hist, fund, (est_days if not is_already_in_jail else 3), dt_today, dt_avg6)
 
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
