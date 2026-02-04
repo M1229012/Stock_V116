@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.25 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 + 修正預測斷層 + 修正分類錯置 + 修正處置回溯Bug)
+V116.26 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 + 修正預測斷層 + 修正分類錯置 + 修正處置回溯Bug + 修正即將出關資料源)
 修正重點：
 1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄，取「最晚結束日期」。
 2. [修正] 處置股爬蟲與寫入邏輯：
@@ -13,6 +13,7 @@ V116.25 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 
    - 當股票處於處置中或剛出關時，抓取歷史天數時會強制在「該次處置開始日」前截斷，
      避免回頭抓到導致進去關的舊注意次數，造成剛出關就誤判高風險。
 6. [修正] 即將出關風險判定：即將出關股 est_days 強制設為 3，避免因 est_days=0 被誤判為高風險。
+7. [修正] 即將出關資料源 (本次修正)：改為讀取 Google Sheet 完整總表來計算即將出關名單，確保不漏掉爬蟲當下未抓到的股票。
 """
 
 import os
@@ -94,7 +95,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.25 台股注意股系統 (Jail Logic Fix)")
+print(f"🚀 啟動 V116.26 台股注意股系統 (Jail Logic Fix + Full Source Check)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1195,15 +1196,15 @@ def main():
         # 改為呼叫同步版 Pipeline
         df_jail_90 = run_jail_crawler_pipeline_sync()
         
+        # 2. Update Master Sheet "處置股90日明細"
+        sheet_title = "處置股90日明細"
+        export_cols = ["市場", "代號", "名稱", "處置期間"]
+        ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
+
         if not df_jail_90.empty:
             # 1. 寫入總表 (改用比對新增邏輯，避免清除舊資料)
             df_jail_unique = df_jail_90.drop_duplicates(subset=["代號", "處置期間"])
-            sheet_title = "處置股90日明細"
             print(f"💾 正在寫入 Google Sheet: {sheet_title} (新增模式)...")
-            export_cols = ["市場", "代號", "名稱", "處置期間"]
-            
-            # 取得 Sheet 物件
-            ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
             
             # 讀取現有資料以進行比對
             existing_rows = ws_jail.get_all_values()
@@ -1232,68 +1233,70 @@ def main():
                 print(f"✅ {sheet_title} 更新完成！成功新增 {new_count} 筆新處置資料。")
             else:
                 print(f"✅ {sheet_title} 無需新增 (所有資料已存在)。")
-
-            # 2. [新增] 篩選「即將出關」 (剩餘 0~5 天)
-            # 邏輯優化：若有二次處置，需取「最晚」的結束日期
-            print("🔍 篩選即將出關股票 (5日內)...")
-            releasing_rows = []
-            today_date = TARGET_DATE.date()
-            
-            # (A) 建立每檔股票的「最晚結束日期」對應表
-            stock_latest_end = {} # {code: {'date': max_end_date, 'row': row_data}}
-
-            for idx, row in df_jail_90.iterrows():
-                try:
-                    p = str(row["處置期間"]).strip()
-                    sd_date, ed_date = parse_jail_period(p)
-                    if ed_date:
-                        code = str(row["代號"]).strip()
-                        # 若尚未記錄 或 當前紀錄比記錄中的晚 -> 更新
-                        if code not in stock_latest_end or ed_date > stock_latest_end[code]['date']:
-                            stock_latest_end[code] = {
-                                'date': ed_date,
-                                'row': row
-                            }
-                except: pass
-
-            # (B) 檢查每檔股票的「最終結束日」是否在 5 天內
-            # 排序：按結束日期
-            sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
-
-            for code, data in sorted_stocks:
-                final_end_date = data['date']
-                row_data = data['row']
-                
-                days_left = (final_end_date - today_date).days
-                
-                # 只有當「最終結束日」真的快到了，才算即將出關
-                if 0 <= days_left <= 5:
-                    r_list = row_data[export_cols].tolist()
-                    r_list.append(str(days_left)) # 增加「剩餘天數」
-                    r_list.append(final_end_date.strftime("%Y-%m-%d")) # 增加「出關日」
-                    releasing_rows.append(r_list)
-                    
-                    # 🔥 [新增] 記錄這支股票，防止稍後被分類回「處置中」
-                    releasing_codes_map[code] = days_left
-
-            sheet_title_release = "即將出關監控"
-            cols_release = export_cols + ["剩餘天數", "出關日期"]
-            ws_release = get_or_create_ws(sh, sheet_title_release, headers=cols_release)
-            ws_release.clear()
-            
-            if releasing_rows:
-                ws_release.append_row(cols_release, value_input_option='USER_ENTERED')
-                ws_release.append_rows(releasing_rows, value_input_option='USER_ENTERED')
-                print(f"✅ 已寫入 {len(releasing_rows)} 檔至「{sheet_title_release}」")
-            else:
-                ws_release.append_row(["目前無 5 日內即將出關股票"], value_input_option='USER_ENTERED')
-                print("⚠️ 目前無符合條件的即將出關股。")
-
         else:
-            print("⚠️ 查無處置股資料，跳過寫入。")
+            print("⚠️ 查無新處置股資料，僅讀取現有紀錄。")
+
+        # 3. [FIX] Read BACK from Master Sheet to calculate "Soon to Release"
+        # 修正：不依賴 df_jail_90 (今日爬蟲結果)，改為讀取完整資料庫
+        print("🔍 重新讀取完整資料庫篩選即將出關股票 (5日內)...")
+        
+        all_jail_data = ws_jail.get_all_values() # 讀取所有資料 (含剛寫入的)
+        # 預期 Header: 市場, 代號, 名稱, 處置期間
+        
+        releasing_rows = []
+        today_date = TARGET_DATE.date()
+        stock_latest_end = {}
+        
+        if len(all_jail_data) > 1:
+            for r in all_jail_data[1:]:
+                # r[0]=市場, r[1]=代號, r[2]=名稱, r[3]=處置期間
+                if len(r) < 4: continue
+                
+                code = str(r[1]).strip()
+                if not code: continue
+                
+                period = str(r[3]).strip()
+                sd_date, ed_date = parse_jail_period(period)
+                
+                if ed_date:
+                    # 邏輯：找出每檔股票的「最晚結束日期」
+                    if code not in stock_latest_end or ed_date > stock_latest_end[code]['date']:
+                        stock_latest_end[code] = {
+                            'date': ed_date,
+                            'row_list': r[:4] # 保存原始資料列
+                        }
+
+        # 篩選邏輯
+        sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
+        
+        for code, data in sorted_stocks:
+            final_end_date = data['date']
+            days_left = (final_end_date - today_date).days
+            
+            if 0 <= days_left <= 5:
+                # 準備寫入的資料：[市場, 代號, 名稱, 處置期間, 剩餘天數, 出關日期]
+                r_list = data['row_list'][:]
+                r_list.append(str(days_left))
+                r_list.append(final_end_date.strftime("%Y-%m-%d"))
+                
+                releasing_rows.append(r_list)
+                releasing_codes_map[code] = days_left
+
+        sheet_title_release = "即將出關監控"
+        cols_release = export_cols + ["剩餘天數", "出關日期"]
+        ws_release = get_or_create_ws(sh, sheet_title_release, headers=cols_release)
+        ws_release.clear()
+        
+        if releasing_rows:
+            ws_release.append_row(cols_release, value_input_option='USER_ENTERED')
+            ws_release.append_rows(releasing_rows, value_input_option='USER_ENTERED')
+            print(f"✅ 已寫入 {len(releasing_rows)} 檔至「{sheet_title_release}」")
+        else:
+            ws_release.append_row(["目前無 5 日內即將出關股票"], value_input_option='USER_ENTERED')
+            print("⚠️ 目前無符合條件的即將出關股。")
             
     except Exception as e:
-        print(f"❌ 處置股爬蟲任務失敗: {e}")
+        print(f"❌ 處置股爬蟲或處理任務失敗: {e}")
 
     # ============================
     # 後續執行風險計算與監控
