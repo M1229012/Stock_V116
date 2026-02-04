@@ -12,6 +12,7 @@ V116.25 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 
    - 修正 `get_last_n_non_jail_trade_dates`，加入「一罪不二罰」斷點。
    - 當股票處於處置中或剛出關時，抓取歷史天數時會強制在「該次處置開始日」前截斷，
      避免回頭抓到導致進去關的舊注意次數，造成剛出關就誤判高風險。
+6. [修正] 即將出關風險判定：即將出關股 est_days 強制設為 3，避免因 est_days=0 被誤判為高風險。
 """
 
 import os
@@ -1390,7 +1391,8 @@ def main():
         if code in releasing_codes_map:
             d_left = releasing_codes_map[code]
             reason = f"即將出關 (剩{d_left}天)" 
-            # 這裡保持 est_days 為 0，因為技術上它還在坐牢，但 "reason" 改變後，機器人讀取時可識別
+            est_days = 3 # 強制設為3，避免被判斷為高風險(est_days=0)
+            # 這裡 est_days 設為 3，後續 est_days_int 也會是 3，風險等級將判定為「低」
 
         latest_ids = parse_clause_ids_strict(clauses[-1] if clauses else "")
         is_special_risk = is_special_risk_day(latest_ids)
