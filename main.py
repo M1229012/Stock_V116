@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-V116.24 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 + 修正預測斷層 + 修正分類錯置)
+V116.26 台股注意股系統 (修正南電處置衝突 + 紀錄歸零化邏輯)
 修正重點：
-1. [修正] 「即將出關監控」邏輯優化：改為「先同步資料庫、後判斷出關」。
-   從資料庫讀取該代號的所有處置紀錄並取「最終結束日」，徹底解決「處置延長」卻出現在出關區的錯誤。
-2. [修正] 處置股爬蟲與寫入邏輯：確保抓到「今日公告、明天生效」的未來處置股。
-3. [修正] 預測天數邏輯：加入 safe_cal_dates 機制，避免盤中/公告前因補 0 而切斷連續違規紀錄。
-4. [修正] 分類錯置問題：在產生熱門統計表時，加入「即將出關」名單比對。
+1. [修正] 舊紀錄歸零化：在預測迴圈中，以「資料庫中該代號的最晚結束日」為基準，之前的注意紀錄全部不計，解決處置中又跳出處置警示的問題。
+2. [修正] 處置狀態判定衝突：只要股票還在處置期內，強制預測天數顯示為 "X"，徹底攔截機器人誤發「明日處置」警報。
+3. [保留] 所有原有的爬蟲、FinMind 回補與 Selenium 邏輯，不省略任何功能。
 """
 
 import os
@@ -88,7 +86,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.24 台股注意股系統 (Jail Release Logic Fix)")
+print(f"🚀 啟動 V116.26 台股注意股系統 (Jail Overlap Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1279,12 +1277,15 @@ def main():
             code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
-        cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
+        # 🔥🔥🔥 修正核心：根據「資料庫最晚結束日」歸零舊紀錄 🔥🔥🔥
+        all_ends = [ed for sd, ed in jail_map.get(code, [])]
+        max_jail_end = max(all_ends) if all_ends else date(1900, 1, 1)
 
         bits = []; clauses = []
         for d in stock_calendar:
-            d0 = d 
-            if cutoff and d0 <= cutoff:
+            # 只要是在「任何一筆處置」結束日之前的紀錄，一律清除
+            # 這樣能確保導致「目前處置」的那三次注意紀錄不會被計入下一次預測
+            if d <= max_jail_end:
                 bits.append(0); clauses.append("")
                 continue
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
@@ -1301,10 +1302,13 @@ def main():
             enable_safe_filter=False
         )
         
-        # 修正統計表中的狀態：若在出關名單，則覆寫 reason
+        # 🔥🔥🔥 強制狀態攔截：若股票正在出關倒數，預測天數鎖定為 99 以防機器人報錯 🔥🔥🔥
+        is_already_in_jail = False
         if code in releasing_codes_map:
             d_left = releasing_codes_map[code]
-            reason = f"即將出關 (剩{d_left}天)" 
+            est_days = 99 
+            reason = f"處置中 (剩{d_left}天出關)"
+            is_already_in_jail = True
 
         latest_ids = parse_clause_ids_strict(clauses[-1] if clauses else "")
         is_special_risk = is_special_risk_day(latest_ids)
@@ -1318,24 +1322,29 @@ def main():
         est_days_display = "X"
         reason_display = ""
 
-        if reason == "X":
-            est_days_int = 99
+        # 這裡根據是否「已在坐牢」重新定義顯示邏輯
+        if is_already_in_jail:
             est_days_display = "X"
-            if is_special_risk:
-                reason_display = "籌碼異常(人工審核風險)"
-                if is_clause_13: reason_display += " + 刑期可能延長"
-        elif est_days == 0:
-            est_days_int = 0
-            est_days_display = "0"
             reason_display = reason
         else:
-            est_days_int = int(est_days)
-            est_days_display = str(est_days_int)
-            reason_display = reason
-            if is_special_risk:
-                reason_display += " | ⚠️留意人工處置風險"
-            if is_clause_13:
-                reason_display += " (若進處置將關12天)"
+            if reason == "X":
+                est_days_int = 99
+                est_days_display = "X"
+                if is_special_risk:
+                    reason_display = "籌碼異常(人工審核風險)"
+                    if is_clause_13: reason_display += " + 刑期可能延長"
+            elif est_days == 0:
+                est_days_int = 0
+                est_days_display = "0"
+                reason_display = reason
+            else:
+                est_days_int = int(est_days)
+                est_days_display = str(est_days_int)
+                reason_display = reason
+                if is_special_risk:
+                    reason_display += " | ⚠️留意人工處置風險"
+                if is_clause_13:
+                    reason_display += " (若進處置將關12天)"
 
         hist = fetch_history_data(ticker_code)
         if hist.empty:
@@ -1348,7 +1357,7 @@ def main():
         if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
-        risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
+        risk = calculate_full_risk(code, hist, fund, (est_days if not is_already_in_jail else 0), dt_today, dt_avg6)
 
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
