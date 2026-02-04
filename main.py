@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-V116.28 台股注意股系統 (修正舊紀錄重複計算 + 顯示 3 天邏輯)
+V116.25 台股注意股系統 (修正即將出關邏輯 + 預抓明日處置股 + 修正預測斷層 + 修正分類錯置 + 修正處置回溯Bug)
 修正重點：
-1. [修正] 紀錄結清邏輯：在計算預測天數時，以該股票在資料庫中「最晚的結束日期」為基準。
-   基準日以前的所有注意紀錄（包含導致本次處置的那三次）一律歸零，徹底解決南電重複判斷舊紀錄的問題。
-2. [修正] 顯示格式：依照要求，處置中及無風險股票的預測天數統一顯示為 "3"，不再顯示 "X"。
-3. [保留] 所有原有的爬蟲 (Selenium/Requests)、FinMind 回補與風險計算邏輯，不省略任何功能。
+1. [修正] 「即將出關監控」邏輯優化：針對同一檔股票有多筆處置紀錄，取「最晚結束日期」。
+2. [修正] 處置股爬蟲與寫入邏輯：
+   - 爬蟲搜尋截止日往後推 30 天，確保能抓到「今日公告、明天生效」的未來處置股。
+   - 寫入 Google Sheet 改為「比對後新增」(Append)，不清除既有資料。
+3. [修正] 預測天數邏輯：加入 safe_cal_dates 機制，避免盤中/公告前因補 0 而切斷連續違規紀錄。
+4. [修正] 分類錯置問題：在產生熱門統計表時，加入「即將出關」名單比對，避免已進入出關區的股票被覆寫為普通處置股。
+5. [CRITICAL FIX] 處置回溯邏輯修正 (南電條款)：
+   - 修正 `get_last_n_non_jail_trade_dates`，加入「一罪不二罰」斷點。
+   - 當股票處於處置中或剛出關時，抓取歷史天數時會強制在「該次處置開始日」前截斷，
+     避免回頭抓到導致進去關的舊注意次數，造成剛出關就誤判高風險。
 """
 
 import os
@@ -73,7 +79,7 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 # 回補參數
 MAX_BACKFILL_TRADING_DAYS = 40   
-VERIFY_RECENT_DAYS = 2                 
+VERIFY_RECENT_DAYS = 2                
 
 # ==========================================
 # 🔑 FinMind 金鑰設定
@@ -87,7 +93,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.28 台股注意股系統 (Clean Record Fix)")
+print(f"🚀 啟動 V116.25 台股注意股系統 (Jail Logic Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -417,21 +423,54 @@ def is_excluded(code, d, exclude_map):
     return bool(exclude_map) and (code in exclude_map) and (d in exclude_map[code])
 
 def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=None, n=30, target_date=None):
-    last_jail_end = date(1900, 1, 1)
+    """
+    修正後的抓取歷史天數邏輯：
+    1. 避開所有在 exclude_map 中的日子 (既有邏輯)。
+    2. 加入「截斷牆」機制 (修正邏輯)：
+       - 如果該股票有「已經結束的處置」，則該處置的 End Date 是一個牆 (last_jail_end)。
+       - 如果該股票有「正在進行或剛結束的處置」(South China Logic)，
+         則該處置的 **Start Date** 是一個更重要的牆。
+         因為一罪不二罰，導致這次處置的累積次數已經被消費掉了，
+         所以我們不能回頭去抓這次處置開始日之前的任何資料。
+    """
+    cutoff_date = date(1900, 1, 1)
 
     if jail_map and stock_id in jail_map:
+        # 1. 舊邏輯：找出過去已經結束的處置結束日
         past_jail_ends = [e for (s, e) in jail_map[stock_id] if e < target_date]
         if past_jail_ends:
-            last_jail_end = max(past_jail_ends)
+            cutoff_date = max(cutoff_date, max(past_jail_ends))
+
+        # 2. [修正重點]：找出最近一次處置的「開始日」
+        # 如果股票目前正在坐牢，或者剛剛出關，
+        # 我們必須確保抓取的歷史資料「不會越過」這次坐牢的開始日。
+        recent_jail_starts = [s for (s, e) in jail_map[stock_id] if s <= target_date]
+        if recent_jail_starts:
+            latest_start = max(recent_jail_starts)
+            
+            # 如果最近這個處置的開始日，比舊的結束日還晚，那這個開始日就是最新的截斷點
+            # 任何早於此開始日( < latest_start) 的資料都應視為無效 (已消費)
+            # 邏輯：迴圈是 if d <= cutoff_date: break
+            # 我們希望 d < latest_start 時 break
+            # 所以設定 cutoff_date = latest_start - 1天
+            potential_cutoff = latest_start - timedelta(days=1)
+            
+            if potential_cutoff > cutoff_date:
+                cutoff_date = potential_cutoff
 
     picked = []
     for d in reversed(cal_dates):
-        if d <= last_jail_end:
+        # 截斷檢查：如果日期早於或等於截斷點，就停止往前抓
+        if d <= cutoff_date:
             break
+
         if exclude_map and is_excluded(stock_id, d, exclude_map):
             continue
+        
+        # 雙重檢查
         if jail_map and is_in_jail(stock_id, d, jail_map):
             continue
+            
         picked.append(d)
         if len(picked) >= n:
             break
@@ -940,6 +979,8 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
     """
     print(f"  [上櫃] 啟動 Requests 爬蟲 (新版官網 API)... {s_date} ~ {e_date}")
     
+    # 依照使用者的邏輯修正：結束日期強制往後推 30 天
+    # 確保抓到「今日公布、下週才開始處置」的股票
     real_end_date = e_date + timedelta(days=30)
     
     sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
@@ -964,8 +1005,10 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
     clean_data = []
     
     try:
+        # 1. Get Cookie
         sess.get(url, headers=headers) 
         
+        # 2. Post
         r = sess.post(url, data=payload, headers=headers, timeout=10)
         
         if r.status_code == 200:
@@ -975,6 +1018,7 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
                 print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料...")
                 
                 for row in rows:
+                    # 1: Date, 2: Code, 3: Name(HTML), 5: Period
                     if len(row) < 6: continue
                     c_code = str(row[2]).strip()
                     c_name_raw = str(row[3]).strip()
@@ -1012,17 +1056,22 @@ def fetch_twse_selenium_90d(s_date, e_date):
         driver.get(url)
         wait = WebDriverWait(driver, 20)
         
+        # 1. 填寫日期
         driver.execute_script(f"""
             document.querySelector('input[name="startDate"]').value = "{sd_str}";
             document.querySelector('input[name="endDate"]').value = "{ed_str}";
         """)
         
+        # 2. 點擊查詢
         search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
         search_btn.click()
         
+        # 3. 等待表格出現
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
         time.sleep(3)
         
+        # 4. 解析表格
+        # 上市表格結構通常比較標準，直接抓取
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
         print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
         
@@ -1030,6 +1079,9 @@ def fetch_twse_selenium_90d(s_date, e_date):
             try:
                 cols = row.find_elements(By.TAG_NAME, "td")
                 if len(cols) >= 7:
+                    # Index 2: Code
+                    # Index 3: Name
+                    # Index 6: Period
                     c_code = cols[2].text.strip()
                     c_name = cols[3].text.strip()
                     c_period = cols[6].text.strip()
@@ -1058,14 +1110,18 @@ def fetch_twse_selenium_90d(s_date, e_date):
 
 def run_jail_crawler_pipeline_sync():
     """ 整合上市櫃近 90 日處置股爬蟲流程 (同步版) """
+    # [修正] 這裡將結束日期強制往後推 30 天，讓爬蟲可以搜尋到「未來」的處置開始日
+    # 例如：1/12 搜尋，若設定 e_date=1/12，可能抓不到 1/13 開始的處置
+    # 設定 e_date=2/11，就能抓到 1/13 開始的資料
     end_date = TARGET_DATE.date() + timedelta(days=30)
     start_date = TARGET_DATE.date() - timedelta(days=150)
     
     print(f"🎯 啟動全市場處置股抓取 (TWSE: Selenium / TPEx: Requests)")
     print(f"🔎 搜尋範圍 (含未來預告): {start_date} ~ {end_date}")
 
-    df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date) 
-    df_twse = fetch_twse_selenium_90d(start_date, end_date) 
+    # 依序執行
+    df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date) # 改用 Requests
+    df_twse = fetch_twse_selenium_90d(start_date, end_date) # 維持 Selenium
     
     all_dfs = []
     if not df_tpex.empty: all_dfs.append(df_tpex)
@@ -1073,7 +1129,6 @@ def run_jail_crawler_pipeline_sync():
 
     if all_dfs:
         print("\n🔄 合併處置股資料中...")
-        final_df = pd.DataFrame()
         final_df = pd.concat(all_dfs, ignore_index=True)
         
         final_df["Code"] = final_df["Code"].astype(str).str.strip()
@@ -1106,6 +1161,7 @@ def run_jail_crawler_pipeline_sync():
 
         final_df["SortDate"] = final_df["Period"].apply(parse_sort_date)
         final_df.sort_values(by=["SortDate", "Code"], ascending=[False, True], inplace=True)
+        # final_df.drop_duplicates(subset=["Code", "Period"], inplace=True) # 移除這行，保留所有紀錄以供後續比對
         final_df.drop(columns=["SortDate"], inplace=True)
 
         final_df.rename(columns={
@@ -1128,93 +1184,115 @@ def main():
     if not sh: return
 
     print("\n" + "="*50)
-    print("🚀 啟動處置股資料同步與監控 (修正南電舊紀錄結清邏輯)...")
+    print("🚀 啟動額外任務：抓取近 90 日處置股清單 (含未來處置)...")
     print("="*50)
     
+    # 建立一個 Map 來儲存「即將出關」的股票代號與剩餘天數，用於解決分類錯置
     releasing_codes_map = {} 
 
     try:
-        # 1. 執行爬蟲
-        df_jail_new_scraped = run_jail_crawler_pipeline_sync()
+        # 改為呼叫同步版 Pipeline
+        df_jail_90 = run_jail_crawler_pipeline_sync()
         
-        sheet_title = "處置股90日明細"
-        export_cols = ["市場", "代號", "名稱", "處置期間"]
-        ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
-
-        if not df_jail_new_scraped.empty:
-            # 2. 先將新抓到的資料寫入資料庫 (Append 模式)
-            print(f"💾 同步最新處置資料至「{sheet_title}」...")
-            df_jail_unique_new = df_jail_new_scraped.drop_duplicates(subset=["代號", "處置期間"])
+        if not df_jail_90.empty:
+            # 1. 寫入總表 (改用比對新增邏輯，避免清除舊資料)
+            df_jail_unique = df_jail_90.drop_duplicates(subset=["代號", "處置期間"])
+            sheet_title = "處置股90日明細"
+            print(f"💾 正在寫入 Google Sheet: {sheet_title} (新增模式)...")
+            export_cols = ["市場", "代號", "名稱", "處置期間"]
             
+            # 取得 Sheet 物件
+            ws_jail = get_or_create_ws(sh, sheet_title, headers=export_cols)
+            
+            # 讀取現有資料以進行比對
             existing_rows = ws_jail.get_all_values()
             existing_keys = set()
-            if len(existing_rows) > 1:
+            if len(existing_rows) > 1: # 若有資料 (排除 header)
                 for r in existing_rows[1:]:
                     if len(r) >= 4:
+                        # 組合 Key: 代號_處置期間
                         k = f"{str(r[1]).strip()}_{str(r[3]).strip()}" 
                         existing_keys.add(k)
             
             rows_to_append = []
-            for idx, row in df_jail_unique_new.iterrows():
+            new_count = 0
+            for idx, row in df_jail_unique.iterrows():
                 code = str(row["代號"]).strip()
                 period = str(row["處置期間"]).strip()
-                if f"{code}_{period}" not in existing_keys:
+                check_key = f"{code}_{period}"
+                
+                if check_key not in existing_keys:
                     rows_to_append.append([row["市場"], code, row["名稱"], period])
+                    existing_keys.add(check_key) # 防止本次批次內重複
+                    new_count += 1
             
             if rows_to_append:
                 ws_jail.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-                print(f"✅ 成功新增 {len(rows_to_append)} 筆新處置紀錄。")
+                print(f"✅ {sheet_title} 更新完成！成功新增 {new_count} 筆新處置資料。")
             else:
-                print("✅ 處置資料庫已是最新，無需更新。")
+                print(f"✅ {sheet_title} 無需新增 (所有資料已存在)。")
 
-        # 3. 🔥 讀取完整處置名單來判斷「即將出關」 🔥
-        full_jail_map = get_jail_map_from_sheet(sh)
-        
-        print("🔍 根據完整資料庫篩選即將出關股票 (5日內)...")
-        releasing_rows = []
-        today_date = TARGET_DATE.date()
-
-        # 從工作表讀取最新的代號/名稱對應 (用於顯示)
-        all_jail_details = ws_jail.get_all_records()
-        code_to_meta = {str(r['代號']): r for r in all_jail_details}
-
-        for code, periods in full_jail_map.items():
-            # 取這檔股票所有處置紀錄中「最晚」的結束日期
-            final_end_date = max([ed for sd, ed in periods])
+            # 2. [新增] 篩選「即將出關」 (剩餘 0~5 天)
+            # 邏輯優化：若有二次處置，需取「最晚」的結束日期
+            print("🔍 篩選即將出關股票 (5日內)...")
+            releasing_rows = []
+            today_date = TARGET_DATE.date()
             
-            days_left = (final_end_date - today_date).days
-            
-            # 只有當「最終結束日」真的在 0~5 天內，才視為即將出關
-            if 0 <= days_left <= 5:
-                meta = code_to_meta.get(code, {})
-                r_list = [
-                    meta.get('市場', '未知'),
-                    code,
-                    meta.get('名稱', '未知'),
-                    # 顯示這檔股票最新的處置期間字串
-                    sorted(periods, key=lambda x: x[1])[-1][0].strftime("%Y/%m/%d") + "～" + final_end_date.strftime("%Y/%m/%d"),
-                    str(days_left),
-                    final_end_date.strftime("%Y-%m-%d")
-                ]
-                releasing_rows.append(r_list)
-                releasing_codes_map[code] = days_left
+            # (A) 建立每檔股票的「最晚結束日期」對應表
+            stock_latest_end = {} # {code: {'date': max_end_date, 'row': row_data}}
 
-        # 4. 更新「即將出關監控」工作表
-        sheet_title_release = "即將出關監控"
-        cols_release = export_cols + ["剩餘天數", "出關日期"]
-        ws_release = get_or_create_ws(sh, sheet_title_release, headers=cols_release)
-        ws_release.clear()
-        
-        if releasing_rows:
-            ws_release.append_row(cols_release, value_input_option='USER_ENTERED')
-            ws_release.append_rows(releasing_rows, value_input_option='USER_ENTERED')
-            print(f"✅ 已寫入 {len(releasing_rows)} 檔至「{sheet_title_release}」")
+            for idx, row in df_jail_90.iterrows():
+                try:
+                    p = str(row["處置期間"]).strip()
+                    sd_date, ed_date = parse_jail_period(p)
+                    if ed_date:
+                        code = str(row["代號"]).strip()
+                        # 若尚未記錄 或 當前紀錄比記錄中的晚 -> 更新
+                        if code not in stock_latest_end or ed_date > stock_latest_end[code]['date']:
+                            stock_latest_end[code] = {
+                                'date': ed_date,
+                                'row': row
+                            }
+                except: pass
+
+            # (B) 檢查每檔股票的「最終結束日」是否在 5 天內
+            # 排序：按結束日期
+            sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
+
+            for code, data in sorted_stocks:
+                final_end_date = data['date']
+                row_data = data['row']
+                
+                days_left = (final_end_date - today_date).days
+                
+                # 只有當「最終結束日」真的快到了，才算即將出關
+                if 0 <= days_left <= 5:
+                    r_list = row_data[export_cols].tolist()
+                    r_list.append(str(days_left)) # 增加「剩餘天數」
+                    r_list.append(final_end_date.strftime("%Y-%m-%d")) # 增加「出關日」
+                    releasing_rows.append(r_list)
+                    
+                    # 🔥 [新增] 記錄這支股票，防止稍後被分類回「處置中」
+                    releasing_codes_map[code] = days_left
+
+            sheet_title_release = "即將出關監控"
+            cols_release = export_cols + ["剩餘天數", "出關日期"]
+            ws_release = get_or_create_ws(sh, sheet_title_release, headers=cols_release)
+            ws_release.clear()
+            
+            if releasing_rows:
+                ws_release.append_row(cols_release, value_input_option='USER_ENTERED')
+                ws_release.append_rows(releasing_rows, value_input_option='USER_ENTERED')
+                print(f"✅ 已寫入 {len(releasing_rows)} 檔至「{sheet_title_release}」")
+            else:
+                ws_release.append_row(["目前無 5 日內即將出關股票"], value_input_option='USER_ENTERED')
+                print("⚠️ 目前無符合條件的即將出關股。")
+
         else:
-            ws_release.append_row(["目前無 5 日內即將出關股票"], value_input_option='USER_ENTERED')
-            print("⚠️ 目前無符合條件的即將出關股。")
+            print("⚠️ 查無處置股資料，跳過寫入。")
             
     except Exception as e:
-        print(f"❌ 處置股同步任務失敗: {e}")
+        print(f"❌ 處置股爬蟲任務失敗: {e}")
 
     # ============================
     # 後續執行風險計算與監控
@@ -1250,8 +1328,8 @@ def main():
         key = (str(r['代號']), str(r['日期']))
         clause_map[key] = merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
-    # 這裡重新取一次最新 jail_map 用於風險計算
     jail_map = get_jail_map_from_sheet(sh)
+    
     exclude_map = build_exclude_map(cal_dates, jail_map)
 
     start_dt_str = cal_dates[-90].strftime("%Y-%m-%d")
@@ -1261,9 +1339,13 @@ def main():
     precise_db = load_precise_db_from_sheet(sh)
     rows_stats = []
 
+    # ==========================================
+    # ⚡ [修正] 建立安全日曆：確保不放入尚未公告的「未來/今日」日期
+    # 避免因為資料還沒出來，被當作「安全(0)」而切斷連續違規紀錄
+    # ==========================================
     safe_cal_dates = [d for d in cal_dates if d <= target_trade_date_obj]
 
-    print(f"🔍 掃描 {len(target_stocks)} 檔股票風險狀態...")
+    print(f"🔍 掃描 {len(target_stocks)} 檔股票...")
     for idx, code in enumerate(target_stocks):
         code = str(code).strip()
         name = df_log[df_log['代號']==code]['名稱'].iloc[-1] if not df_log[df_log['代號']==code].empty else "未知"
@@ -1273,26 +1355,25 @@ def main():
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
 
+        # ⚡ [修正] 這裡使用 safe_cal_dates，避免盤中「補0」造成的斷層
         stock_calendar = get_last_n_non_jail_trade_dates(
             code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
-        # 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥
-        # 修正核心：根據「資料庫最晚結束日」歸零舊紀錄
-        # 這會確保導致目前南電處置的那三次注意紀錄在預測時被徹底忽略。
-        # 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥
-        all_ends = [ed for sd, ed in jail_map.get(code, [])]
-        max_jail_end = max(all_ends) if all_ends else date(1900, 1, 1)
+        cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
 
         bits = []; clauses = []
         for d in stock_calendar:
-            # 只要日期在處置結束日(含)之前，紀錄一律洗成 0
-            if d <= max_jail_end:
+            d0 = d 
+            
+            if cutoff and d0 <= cutoff:
                 bits.append(0); clauses.append("")
                 continue
+
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
             if is_excluded(code, d, exclude_map):
                 bits.append(0); clauses.append(""); continue
+            
             if c: bits.append(1); clauses.append(c)
             else: bits.append(0); clauses.append("")
 
@@ -1304,44 +1385,44 @@ def main():
             enable_safe_filter=False
         )
         
-        # 🔥 修正分類權限：不論結果，只要正在處置，優先顯示處置狀態 🔥
-        is_already_in_jail = False
+        # 🔥🔥🔥 [修正關鍵] 強制覆寫已進入「即將出關」名單的股票狀態 🔥🔥🔥
+        # 避免這些股票在「熱門統計」表中顯示為單純的「處置中」，導致機器人重複抓取或分類錯誤
         if code in releasing_codes_map:
             d_left = releasing_codes_map[code]
-            # 這裡覆寫理由，讓它在熱門統計表中維持「處置中」的資訊
-            reason = f"處置中 (剩{d_left}天出關)"
-            is_already_in_jail = True
+            reason = f"即將出關 (剩{d_left}天)" 
+            # 這裡保持 est_days 為 0，因為技術上它還在坐牢，但 "reason" 改變後，機器人讀取時可識別
 
         latest_ids = parse_clause_ids_strict(clauses[-1] if clauses else "")
         is_special_risk = is_special_risk_day(latest_ids)
-        is_clause_13 = any(13 in parse_clause_ids_strict(c) for c in clauses)
+        is_clause_13 = False
+        for c in clauses:
+            if 13 in parse_clause_ids_strict(c):
+                is_clause_13 = True
+                break
 
-        # ==========================================
-        # 🔥 顯示邏輯判定 (根據要求：處置/安全皆顯示為 "3")
-        # ==========================================
-        est_days_display = "3" # 預設顯示 3
+        est_days_int = 99
+        est_days_display = "X"
         reason_display = ""
 
-        if is_already_in_jail:
-            # 處置中：天數顯示 3，理由顯示剩餘天數
-            est_days_display = "3"
+        if reason == "X":
+            est_days_int = 99
+            est_days_display = "X"
+            if is_special_risk:
+                reason_display = "籌碼異常(人工審核風險)"
+                if is_clause_13: reason_display += " + 刑期可能延長"
+        elif est_days == 0:
+            est_days_int = 0
+            est_days_display = "0"
             reason_display = reason
         else:
-            if est_days == 0:
-                # 真正觸發明天處置 (即 est_days 為 0) 才顯示 0
-                est_days_display = "0"
-                reason_display = reason
-            elif reason == "X" or est_days == 99:
-                # 安全狀態：天數顯示 3
-                est_days_display = "3"
-                reason_display = ""
-            else:
-                # 其他預測天數 (1, 2 天等)：正常顯示數字
-                est_days_display = str(est_days)
-                reason_display = reason
-                if is_special_risk: reason_display += " | ⚠️留意人工風險"
+            est_days_int = int(est_days)
+            est_days_display = str(est_days_int)
+            reason_display = reason
+            if is_special_risk:
+                reason_display += " | ⚠️留意人工處置風險"
+            if is_clause_13:
+                reason_display += " (若進處置將關12天)"
 
-        # 基礎資訊獲取
         hist = fetch_history_data(ticker_code)
         if hist.empty:
             alt_s = '.TWO' if suffix=='.TW' else '.TW'
@@ -1349,16 +1430,19 @@ def main():
             if not hist.empty: ticker_code = f"{code}{alt_s}"
 
         fund = fetch_stock_fundamental(code, ticker_code, precise_db)
+
         dt_today, dt_avg6 = None, None
         if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
-        # 計算風險
-        risk = calculate_full_risk(code, hist, fund, (est_days if not is_already_in_jail else 99), dt_today, dt_avg6)
+        risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
 
-        # 整理統計數據
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
-        streak = sum(1 for v in reversed(valid_bits) if v)
+        streak = 0
+        for v in reversed(valid_bits):
+            if v: streak+=1
+            else: break
+
         status_30 = "".join(map(str, valid_bits)).zfill(30)
 
         def safe(v):
@@ -1368,7 +1452,9 @@ def main():
             except: pass
             return str(v)
 
-        last_date_val = stock_calendar[-1].strftime("%Y-%m-%d") if stock_calendar else ""
+        last_date_val = ""
+        if stock_calendar:
+            last_date_val = stock_calendar[-1].strftime("%Y-%m-%d")
 
         row = [
             f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
@@ -1383,12 +1469,12 @@ def main():
         if (idx+1)%10==0: time.sleep(1)
 
     if rows_stats:
-        print("💾 更新「近30日熱門統計」工作表...")
+        print("💾 更新統計表...")
         ws_stats = get_or_create_ws(sh, "近30日熱門統計", headers=STATS_HEADERS)
         ws_stats.clear()
         ws_stats.append_row(STATS_HEADERS, value_input_option='USER_ENTERED')
         ws_stats.append_rows(rows_stats, value_input_option='USER_ENTERED')
-        print("✅ 系統運作完成")
+        print("✅ 完成")
 
 if __name__ == "__main__":
     main()
