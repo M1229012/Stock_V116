@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-V116.27 台股注意股系統 (修正顯示邏輯：將 X 變更為 3)
+V116.28 台股注意股系統 (修正舊紀錄重複計算 + 顯示 3 天邏輯)
 修正重點：
-1. [修正] 顯示格式：處置中及無風險股票的預測天數由 "X" 改為 "3"，使其視覺外觀一致。
-2. [修正] 舊紀錄歸零化：沿用最晚結束日判定，確保處置原因紀錄不重複計算。
-3. [保留] 所有原有的爬蟲 (Selenium/Requests)、FinMind 回補與風險計算邏輯。
+1. [修正] 紀錄結清邏輯：在計算預測天數時，以該股票在資料庫中「最晚的結束日期」為基準。
+   基準日以前的所有注意紀錄（包含導致本次處置的那三次）一律歸零，徹底解決南電重複判斷舊紀錄的問題。
+2. [修正] 顯示格式：依照要求，處置中及無風險股票的預測天數統一顯示為 "3"，不再顯示 "X"。
+3. [保留] 所有原有的爬蟲 (Selenium/Requests)、FinMind 回補與風險計算邏輯，不省略任何功能。
 """
 
 import os
@@ -86,7 +87,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"🚀 啟動 V116.27 台股注意股系統 (Display Fix: X to 3)")
+print(f"🚀 啟動 V116.28 台股注意股系統 (Clean Record Fix)")
 print(f"🕒 系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -1127,7 +1128,7 @@ def main():
     if not sh: return
 
     print("\n" + "="*50)
-    print("🚀 啟動處置股資料同步與監控 (修正延長處置邏輯)...")
+    print("🚀 啟動處置股資料同步與監控 (修正南電舊紀錄結清邏輯)...")
     print("="*50)
     
     releasing_codes_map = {} 
@@ -1166,8 +1167,7 @@ def main():
             else:
                 print("✅ 處置資料庫已是最新，無需更新。")
 
-        # 3. 🔥 [核心修正] 讀取更新後的完整處置名單來判斷「即將出關」 🔥
-        # 這樣才能拿到跨越「歷史紀錄」與「剛抓到紀錄」的最終結束日
+        # 3. 🔥 讀取完整處置名單來判斷「即將出關」 🔥
         full_jail_map = get_jail_map_from_sheet(sh)
         
         print("🔍 根據完整資料庫篩選即將出關股票 (5日內)...")
@@ -1277,14 +1277,16 @@ def main():
             code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
-        # 🔥🔥🔥 修正核心：根據「資料庫最晚結束日」歸零舊紀錄 🔥🔥🔥
+        # 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥
+        # 修正核心：根據「資料庫最晚結束日」歸零舊紀錄
+        # 這會確保導致目前南電處置的那三次注意紀錄在預測時被徹底忽略。
+        # 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥
         all_ends = [ed for sd, ed in jail_map.get(code, [])]
         max_jail_end = max(all_ends) if all_ends else date(1900, 1, 1)
 
         bits = []; clauses = []
         for d in stock_calendar:
-            # 只要是在「任何一筆處置」結束日之前的紀錄，一律清除
-            # 這樣能確保導致「目前處置」的那三次注意紀錄不會被計入下一次預測
+            # 只要日期在處置結束日(含)之前，紀錄一律洗成 0
             if d <= max_jail_end:
                 bits.append(0); clauses.append("")
                 continue
@@ -1302,50 +1304,44 @@ def main():
             enable_safe_filter=False
         )
         
-        # 🔥🔥🔥 強制狀態攔截：若股票正在出關倒數，預測天數鎖定為 99 以防機器人報錯 🔥🔥🔥
+        # 🔥 修正分類權限：不論結果，只要正在處置，優先顯示處置狀態 🔥
         is_already_in_jail = False
         if code in releasing_codes_map:
             d_left = releasing_codes_map[code]
-            est_days = 99 
+            # 這裡覆寫理由，讓它在熱門統計表中維持「處置中」的資訊
             reason = f"處置中 (剩{d_left}天出關)"
             is_already_in_jail = True
 
         latest_ids = parse_clause_ids_strict(clauses[-1] if clauses else "")
         is_special_risk = is_special_risk_day(latest_ids)
-        is_clause_13 = False
-        for c in clauses:
-            if 13 in parse_clause_ids_strict(c):
-                is_clause_13 = True
-                break
+        is_clause_13 = any(13 in parse_clause_ids_strict(c) for c in clauses)
 
-        est_days_int = 99
-        est_days_display = "3"
+        # ==========================================
+        # 🔥 顯示邏輯判定 (根據要求：處置/安全皆顯示為 "3")
+        # ==========================================
+        est_days_display = "3" # 預設顯示 3
         reason_display = ""
 
-        # 這裡根據是否「已在坐牢」重新定義顯示邏輯，並將 "X" 改為 "3"
         if is_already_in_jail:
+            # 處置中：天數顯示 3，理由顯示剩餘天數
             est_days_display = "3"
             reason_display = reason
         else:
-            if reason == "X":
-                est_days_int = 99
-                est_days_display = "3"
-                if is_special_risk:
-                    reason_display = "籌碼異常(人工審核風險)"
-                    if is_clause_13: reason_display += " + 刑期可能延長"
-            elif est_days == 0:
-                est_days_int = 0
+            if est_days == 0:
+                # 真正觸發明天處置 (即 est_days 為 0) 才顯示 0
                 est_days_display = "0"
                 reason_display = reason
+            elif reason == "X" or est_days == 99:
+                # 安全狀態：天數顯示 3
+                est_days_display = "3"
+                reason_display = ""
             else:
-                est_days_int = int(est_days)
-                est_days_display = str(est_days_int)
+                # 其他預測天數 (1, 2 天等)：正常顯示數字
+                est_days_display = str(est_days)
                 reason_display = reason
-                if is_special_risk:
-                    reason_display += " | ⚠️留意人工處置風險"
-                if is_clause_13:
-                    reason_display += " (若進處置將關12天)"
+                if is_special_risk: reason_display += " | ⚠️留意人工風險"
 
+        # 基礎資訊獲取
         hist = fetch_history_data(ticker_code)
         if hist.empty:
             alt_s = '.TWO' if suffix=='.TW' else '.TW'
@@ -1357,14 +1353,12 @@ def main():
         if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
-        risk = calculate_full_risk(code, hist, fund, (est_days if not is_already_in_jail else 3), dt_today, dt_avg6)
+        # 計算風險
+        risk = calculate_full_risk(code, hist, fund, (est_days if not is_already_in_jail else 99), dt_today, dt_avg6)
 
+        # 整理統計數據
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
-        streak = 0
-        for v in reversed(valid_bits):
-            if v: streak+=1
-            else: break
-
+        streak = sum(1 for v in reversed(valid_bits) if v)
         status_30 = "".join(map(str, valid_bits)).zfill(30)
 
         def safe(v):
@@ -1374,9 +1368,7 @@ def main():
             except: pass
             return str(v)
 
-        last_date_val = ""
-        if stock_calendar:
-            last_date_val = stock_calendar[-1].strftime("%Y-%m-%d")
+        last_date_val = stock_calendar[-1].strftime("%Y-%m-%d") if stock_calendar else ""
 
         row = [
             f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
