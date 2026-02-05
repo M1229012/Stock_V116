@@ -82,7 +82,6 @@ jobs:
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
         python main.py
-        python stock_release_tracker.py
 
     # ✅ 優化: 執行後強制清理敏感檔案
     - name: Cleanup Service Key
