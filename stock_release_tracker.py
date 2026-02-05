@@ -5,6 +5,7 @@ import numpy as np
 import re
 import time
 import os
+import sys
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
@@ -12,7 +13,7 @@ from gspread.exceptions import WorksheetNotFound
 # ============================
 # ⚙️ 設定區
 # ============================
-SHEET_NAME = "台股注意股資料庫_V33"  # 來源與目標都是這個檔案
+SHEET_NAME = "台股注意股資料庫_V33"
 SOURCE_WORKSHEET = "處置股90日明細"
 DEST_WORKSHEET = "處置股出關記錄"
 
@@ -54,20 +55,52 @@ def determine_status(pre_pct, in_pct):
     elif in_pct < -5: return "📉 走勢疲軟"
     else: return "🧊 多空膠著"
 
-def fetch_stock_data(code, start_date, jail_end_date):
+def get_ticker_list(code, market=""):
+    """
+    根據市場別與股號決定嘗試的順序，減少 404 錯誤
+    """
+    code = str(code)
+    # 1. 明確指定市場
+    if "上櫃" in market or "TPEx" in market:
+        return [f"{code}.TWO", f"{code}.TW"]
+    if "上市" in market:
+        return [f"{code}.TW", f"{code}.TWO"]
+    
+    # 2. 若市場未知，根據股號開頭簡單猜測 (常見上櫃開頭)
+    # 3, 4, 5, 6, 8 開頭很多是上櫃，先試 .TWO 可以減少紅字錯誤
+    if code and code[0] in ['3', '4', '5', '6', '8']:
+        return [f"{code}.TWO", f"{code}.TW"]
+    
+    # 3. 預設先試上市
+    return [f"{code}.TW", f"{code}.TWO"]
+
+def fetch_stock_data(code, start_date, jail_end_date, market=""):
     """抓取歷史股價並計算狀態與出關後走勢"""
     try:
         fetch_start = start_date - timedelta(days=60)
         fetch_end = jail_end_date + timedelta(days=40) 
         
-        # 判斷市場別 (簡單判斷)
-        ticker = f"{code}.TW"
-        df = yf.Ticker(ticker).history(start=fetch_start, end=fetch_end, auto_adjust=True)
-        if df.empty:
-            ticker = f"{code}.TWO"
-            df = yf.Ticker(ticker).history(start=fetch_start, end=fetch_end, auto_adjust=True)
+        # 取得建議的後綴清單
+        tickers_to_try = get_ticker_list(code, market)
         
-        if df.empty: return None
+        df = pd.DataFrame()
+        used_ticker = ""
+
+        # 嘗試抓取 (靜默模式，盡量減少錯誤輸出)
+        for ticker in tickers_to_try:
+            try:
+                # 使用 yfinance 的 shared 錯誤處理機制或是直接捕捉
+                temp_df = yf.Ticker(ticker).history(start=fetch_start, end=fetch_end, auto_adjust=True)
+                if not temp_df.empty:
+                    df = temp_df
+                    used_ticker = ticker
+                    break
+            except Exception:
+                continue
+        
+        if df.empty:
+            # print(f"  ⚠️ 找不到股價資料: {code}")
+            return None
 
         df.index = df.index.tz_localize(None)
         df = df.ffill()
@@ -132,7 +165,7 @@ def fetch_stock_data(code, start_date, jail_end_date):
         }
 
     except Exception as e:
-        print(f"⚠️ 數據抓取錯誤 {code}: {e}")
+        print(f"⚠️ 數據計算錯誤 {code}: {e}")
         return None
 
 # ============================
@@ -141,11 +174,10 @@ def fetch_stock_data(code, start_date, jail_end_date):
 def main():
     print("🚀 開始執行處置股出關記錄更新...")
     
-    # 1. 連線資料庫 (同一個檔案)
+    # 1. 連線資料庫
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
 
-    # 2. 取得或建立工作表
     try:
         ws_source = sh.worksheet(SOURCE_WORKSHEET)
     except WorksheetNotFound:
@@ -160,35 +192,39 @@ def main():
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
         ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=20)
-        ws_dest.append_row(header) # 寫入標題
+        ws_dest.append_row(header)
 
-    # 3. 讀取現有記錄
+    # 2. 讀取現有記錄
     existing_records = ws_dest.get_all_records()
     existing_map = {} 
     
-    # 建立現有資料索引
     for i, row in enumerate(existing_records):
         rid = str(row.get('股號', ''))
         rdate = str(row.get('出關日期', ''))
         d10 = str(row.get('D+10', '')).strip()
         if rid:
-            key = f"{rid}_{rdate}" # 如果出關日期是空的，這把 key 可能不準，但通常都有
+            key = f"{rid}_{rdate}"
             existing_map[key] = {
                 'data': row,
                 'done': bool(d10)
             }
 
-    # 4. 讀取處置名單並處理
+    # 3. 讀取處置名單
     source_data = ws_source.get_all_records()
     processed_list = []
     today = datetime.now()
 
     print(f"🔍 掃描 {len(source_data)} 筆處置紀錄...")
 
+    # 為了避免 Log 太多，計算一下進度
+    total_count = 0
+    update_count = 0
+
     for row in source_data:
         code = str(row.get('代號', '')).replace("'", "").strip()
         name = row.get('名稱', '')
         period = str(row.get('處置期間', '')).strip()
+        market = str(row.get('市場', '')) # 嘗試讀取市場欄位
         
         if not code or not period: continue
         
@@ -199,42 +235,45 @@ def main():
         e_date = parse_roc_date(dates[1])
         
         if not s_date or not e_date: continue
-        if e_date > today: continue # 未來的不處理
+        if e_date > today: continue 
 
-        print(f"處理: {code} {name} (處置結束: {e_date.strftime('%Y-%m-%d')})...")
+        # 這裡不印出每一筆，只印出真正要處理的
         
-        # 這裡會花時間去 yfinance 抓，確保資料最新
-        result = fetch_stock_data(code, s_date, e_date)
+        # 執行抓取
+        # 傳入 market 參數以優化抓取
+        result = fetch_stock_data(code, s_date, e_date, market)
+        
         if not result:
-            print(f"  ⚠️ 無法抓取數據，跳過")
+            # 只有抓不到資料才印出來，且不中斷
+            # print(f"⚠️ 跳過 {code} {name} (無資料)") 
             continue
             
         release_date_str = result['release_date']
         key = f"{code}_{release_date_str}"
         
-        # 如果已存在且 D+10 已填滿，用舊資料 (保留手動修改的彈性)
         if key in existing_map and existing_map[key]['done']:
             old_row = existing_map[key]['data']
-            # 依照 header順序重建 list
             row_vals = [old_row.get(h, "") for h in header]
             processed_list.append(row_vals)
         else:
-            # 新資料或更新
             row_data = [
                 release_date_str, code, name, result['status'],
                 result['pre_pct'], result['in_pct'], result['acc_pct']
             ] + result['daily_trends']
             processed_list.append(row_data)
-            print(f"  ✨ 更新數據: {result['status']}")
-            time.sleep(1) # 避免太快被擋
+            update_count += 1
+            print(f"  ✨ 更新: {code} {name} | {result['status']}")
+            time.sleep(0.5) # 稍微加速
 
-    # 5. 排序與寫入
-    processed_list.sort(key=lambda x: x[0], reverse=True) # 依日期排序
+        total_count += 1
+
+    # 4. 寫入
+    processed_list.sort(key=lambda x: x[0], reverse=True)
     final_output = [header] + processed_list
     
     ws_dest.clear()
     ws_dest.update(final_output)
-    print(f"🎉 完成！已更新 '{DEST_WORKSHEET}' 工作表。")
+    print(f"🎉 完成！共掃描 {total_count} 筆，本次更新 {update_count} 筆。")
 
 if __name__ == "__main__":
     main()
