@@ -209,7 +209,7 @@ def check_releasing_stocks(sh):
         days_str = str(row.get('剩餘天數', '99'))
         if not days_str.isdigit(): continue
         d = int(days_str) + 1
-        if d < JAIL_EXIT_THRESHOLD:
+        if d <= JAIL_EXIT_THRESHOLD:
             st, pr = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             dt = parse_roc_date(row.get('出關日期', ''))
             res.append({"code": code, "name": row.get('名稱', ''), "days": d, "date": dt.strftime("%m/%d") if dt else "??/??", "status": st, "price": pr})
