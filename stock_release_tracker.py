@@ -72,7 +72,7 @@ def get_ticker_list(code, market=""):
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
     """抓取歷史股價並計算狀態與出關後走勢 (擴充至 D+20)"""
     try:
-        # 抓取範圍擴大，確保有足夠的交易日計算到 D+20 (約需 30-40 自然日)
+        # 抓取範圍擴大，確保有足夠的交易日計算到 D+20
         fetch_start = start_date - timedelta(days=60)
         fetch_end = jail_end_date + timedelta(days=60) 
         
@@ -130,7 +130,6 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         accumulated_pct = 0.0
         base_price = jail_end_price if jail_end_price != 0 else (df_after['Open'].iloc[0] if not df_after.empty else 0)
 
-        # 擴充循環至 20 天
         track_days = 20
         for i in range(track_days):
             if i < len(df_after):
@@ -185,9 +184,6 @@ def main():
     header_days = [f"D+{i+1}" for i in range(20)]
     header = header_base + header_days
     
-    # 欄位總數計算: 7 (基本) + 20 (天數) = 27 欄
-    # 右側統計需要額外空間，設定 60 欄以策安全
-
     try:
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
@@ -201,12 +197,10 @@ def main():
     
     if len(raw_rows) > 1:
         for row in raw_rows[1:]:
-            if len(row) < 7: continue # 至少要有基本資料
+            if len(row) < 7: continue 
             rdate = str(row[0])
             rid = str(row[1])
             
-            # 判斷是否完成 D+20 (檢查最後一欄是否有值)
-            # index 26 是 D+20
             d_last_idx = 6 + 20 
             d_last = ""
             if len(row) > d_last_idx:
@@ -232,9 +226,14 @@ def main():
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
     track_days = 20
     
-    # 統計容器擴充至 20 天
+    # 統計容器
     daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(track_days)] for s in status_order}
     summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
+    
+    # === 新增：每5日區間統計容器 ===
+    # 用來存儲累積到 D+5, D+10, D+15, D+20 的所有樣本數據
+    interval_checkpoints = [5, 10, 15, 20]
+    interval_data = {s: {cp: [] for cp in interval_checkpoints} for s in status_order}
 
     today = datetime.now()
     print(f"🔍 掃描 {len(source_data)} 筆處置紀錄...")
@@ -281,10 +280,10 @@ def main():
         
         processed_list.append(row_vals)
 
-        # --- 統計邏輯 (基於回歸後的原始標準 5%/15%) ---
-        stat_status = row_vals[3] # 狀態在 index 3
+        # --- 統計邏輯 ---
+        stat_status = row_vals[3] 
         
-        # 累積漲幅 (D+20)
+        # 1. 累積漲幅 (D+20) & 2. 每日詳細 (D+1 ~ D+20)
         acc_pct_str = row_vals[6]
         if stat_status in summary_stats:
             summary_stats[stat_status]['count'] += 1
@@ -294,20 +293,38 @@ def main():
                 if acc_val > 0: summary_stats[stat_status]['wins'] += 1
             except: pass
             
-        # 每日詳細 (D+1 ~ D+20)
         if stat_status in daily_stats:
+            # 為了計算區間累積，我們需要追蹤這支股票的「累積複利」
+            # 我們從 row_vals 讀取 D+1 ~ D+20 的每日 %，然後計算累積
+            
+            current_compound = 1.0 # 初始本金
+            
             for day_idx in range(track_days):
-                # D+1 在 index 7
                 col_idx = 7 + day_idx
                 if col_idx < len(row_vals):
                     val_str = row_vals[col_idx]
                     if val_str:
                         try:
-                            val = float(val_str.replace('%', '').replace('+', ''))
+                            # 每日漲跌 %
+                            daily_val = float(val_str.replace('%', '').replace('+', ''))
+                            
+                            # 1. 更新每日平均與勝率統計
                             daily_stats[stat_status][day_idx]['count'] += 1
-                            daily_stats[stat_status][day_idx]['sum'] += val
-                            if val > 0:
+                            daily_stats[stat_status][day_idx]['sum'] += daily_val
+                            if daily_val > 0:
                                 daily_stats[stat_status][day_idx]['wins'] += 1
+                                
+                            # 2. 計算複利累積
+                            # 公式: (1 + r1) * (1 + r2) ...
+                            current_compound *= (1 + daily_val / 100)
+                            
+                            # 3. 檢查是否為 5, 10, 15, 20 的節點
+                            current_day = day_idx + 1
+                            if current_day in interval_checkpoints:
+                                # 累積報酬率 %
+                                cumulative_return = (current_compound - 1) * 100
+                                interval_data[stat_status][current_day].append(cumulative_return)
+                                
                         except: pass
         
         total_count += 1
@@ -315,12 +332,12 @@ def main():
     # 4. 排序
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
-    # 5. === 建構右側統計區 (D+20版) ===
-    print("📊 計算 D+20 統計數據 (右側)...")
+    # 5. === 建構右側統計區 (包含每5日統計) ===
+    print("📊 計算 D+20 與 區間統計數據...")
     
     right_side_rows = []
     
-    # 1. 總覽表格
+    # --- 表格 1: 總覽 ---
     right_side_rows.append(["", "📊 狀態總覽 (原始標準5%/15%)", "個股數", "D+20勝率", "D+20平均", "", "", "", ""])
     for s in status_order:
         t = summary_stats[s]['count']
@@ -333,8 +350,8 @@ def main():
 
     days_header = [f"D+{i+1}" for i in range(track_days)]
 
-    # 2. 每日平均漲跌幅
-    right_side_rows.append(["", "📈 平均漲跌幅 (D+20)"] + days_header)
+    # --- 表格 2: 每日平均 ---
+    right_side_rows.append(["", "📈 平均漲跌幅 (每日)"] + days_header)
     for s in status_order:
         row_vals = ["", s]
         for d in range(track_days):
@@ -348,8 +365,8 @@ def main():
 
     right_side_rows.append([""] * (2 + track_days)) 
 
-    # 3. 每日勝率
-    right_side_rows.append(["", "🏆 每日勝率 (D+20)"] + days_header)
+    # --- 表格 3: 每日勝率 ---
+    right_side_rows.append(["", "🏆 每日勝率 (每日)"] + days_header)
     for s in status_order:
         row_vals = ["", s]
         for d in range(track_days):
@@ -360,6 +377,42 @@ def main():
             else:
                 row_vals.append("-")
         right_side_rows.append(row_vals)
+        
+    right_side_rows.append([""] * (2 + track_days)) 
+
+    # --- 表格 4: 每5日累計勝率 (新增) ---
+    interval_header = ["D+5", "D+10", "D+15", "D+20"]
+    right_side_rows.append(["", "🏆 每5日累計勝率"] + interval_header)
+    
+    for s in status_order:
+        row_vals = ["", s]
+        for cp in interval_checkpoints:
+            data_list = interval_data[s][cp]
+            if data_list:
+                wins = sum(1 for x in data_list if x > 0)
+                total = len(data_list)
+                wr = (wins / total * 100)
+                row_vals.append(f"{wr:.1f}%")
+            else:
+                row_vals.append("-")
+        right_side_rows.append(row_vals)
+
+    right_side_rows.append([""] * (2 + 4))
+
+    # --- 表格 5: 每5日累計漲跌 (新增) ---
+    right_side_rows.append(["", "📈 每5日累計漲跌"] + interval_header)
+    
+    for s in status_order:
+        row_vals = ["", s]
+        for cp in interval_checkpoints:
+            data_list = interval_data[s][cp]
+            if data_list:
+                avg = sum(data_list) / len(data_list)
+                row_vals.append(f"{avg:+.1f}%")
+            else:
+                row_vals.append("-")
+        right_side_rows.append(row_vals)
+
 
     # 6. === 合併 ===
     # 左側有 27 欄 (0~26)
@@ -380,7 +433,6 @@ def main():
         else:
             right_part = [""] * (3 + track_days)
         
-        # 中間加一個空欄位分隔 (第 28 欄, Index 27)
         final_output.append(left_part + [""] + right_part)
 
     # 寫入 Sheet
@@ -388,13 +440,13 @@ def main():
     ws_dest.update(final_output)
 
     # 7. === 設定條件格式 ===
-    print("🎨 更新條件格式化與勝率高低標記 (D+20範圍)...")
+    print("🎨 更新條件格式化 (包含新表格)...")
 
-    # 左側數據範圍: Col 4 (E) ~ Col 26 (AA) -> Index 4 ~ 26
-    # 右側數據範圍: Start from Index 28 (AC) -> To end
+    # 左側範圍: Col 4 (E) ~ Col 27 (AA)
+    # 右側範圍: Col 29 (AC) ~ End
     ranges = [
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 27},
-        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 28, "endColumnIndex": 50}
+        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 28, "endColumnIndex": 60}
     ]
 
     header_rule = {
@@ -441,23 +493,21 @@ def main():
 
     requests = [header_rule, positive_rule, negative_rule]
 
-    # --- 標記最高/最低 (針對 D+1 ~ D+20) ---
+    # --- 標記最高/最低 (針對 D+1 ~ D+20 的每日勝率) ---
     win_rate_start_row = -1
     for idx, row in enumerate(final_output):
-        # 尋找右側的勝率標題
-        if len(row) > 28 and "🏆 每日勝率" in str(row[29]): # Index 29 是標題開始
+        if len(row) > 28 and "🏆 每日勝率 (每日)" in str(row[29]):
             win_rate_start_row = idx
             break
     
     if win_rate_start_row != -1:
-        # 每日數據從 Index 30 開始 (AC+2 = AE)
         start_col = 30
         end_col = 30 + track_days
         
         for col_idx in range(start_col, end_col): 
             col_values = []
             valid_rows = []
-            for r in range(1, 6): # 5種狀態
+            for r in range(1, 6): 
                 row_idx = win_rate_start_row + r
                 if row_idx < len(final_output):
                     val_str = final_output[row_idx][col_idx]
