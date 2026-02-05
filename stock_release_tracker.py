@@ -118,8 +118,6 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         df_after = df[df.index > pd.Timestamp(jail_end_date)]
         
         # --- 修正日期顯示邏輯 ---
-        # 如果有抓到出關後的資料，使用第一筆資料的日期
-        # 如果沒抓到 (代表剛出關或明天出關)，直接預設為處置結束日 + 1 天
         if not df_after.empty:
             release_date_str = df_after.index[0].strftime("%Y/%m/%d")
         else:
@@ -178,6 +176,7 @@ def main():
         print(f"❌ 找不到來源工作表 '{SOURCE_WORKSHEET}'")
         return
 
+    # 原本的 Header (17欄)
     header = ["出關日期", "股號", "股名", "狀態", "處置前%", "處置中%", "累積漲跌幅", 
               "D+1", "D+2", "D+3", "D+4", "D+5", "D+6", "D+7", "D+8", "D+9", "D+10"]
 
@@ -185,7 +184,7 @@ def main():
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
-        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=20)
+        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=25) # 增加欄位數
         ws_dest.append_row(header)
 
     # 2. 讀取現有記錄
@@ -254,19 +253,68 @@ def main():
 
         total_count += 1
 
-    # 4. 寫入資料
+    # 4. 排序
     processed_list.sort(key=lambda x: x[0], reverse=True)
-    final_output = [header] + processed_list
     
+    # 5. === 計算統計數據 (準備放到右側) ===
+    print("📊 計算勝率統計 (將放置於右側)...")
+    
+    status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
+    stats = {s: {'count': 0, 'wins': 0} for s in status_order}
+    
+    for row in processed_list:
+        status = row[3] # 狀態在 index 3
+        acc_pct_str = row[6] # 累積漲跌幅在 index 6
+        
+        if status in stats:
+            stats[status]['count'] += 1
+            try:
+                acc_val = float(acc_pct_str.replace('%', '').replace('+', ''))
+                if acc_val > 0:
+                    stats[status]['wins'] += 1
+            except:
+                pass 
+    
+    # 準備統計表的每一列數據
+    stats_rows = []
+    for s in status_order:
+        total = stats[s]['count']
+        wins = stats[s]['wins']
+        win_rate = (wins / total * 100) if total > 0 else 0.0
+        stats_rows.append(["", s, total, f"{win_rate:.1f}%"]) # 第一個空字串是為了與左邊表格隔開一欄
+    
+    # 6. === 合併左側數據與右側統計 ===
+    # 擴充標題
+    final_header = header + ["", "📊 狀態統計", "個股數量", "出關勝率"]
+    
+    final_output = [final_header]
+    
+    # 決定總行數 (取較大者，避免資料被切掉)
+    max_rows = max(len(processed_list), len(stats_rows))
+    
+    for i in range(max_rows):
+        # 取得左側資料 (若無則補空)
+        if i < len(processed_list):
+            left_part = processed_list[i]
+        else:
+            left_part = [""] * 17 # 補足左側 17 欄空值
+            
+        # 取得右側統計 (若無則補空)
+        if i < len(stats_rows):
+            right_part = stats_rows[i]
+        else:
+            right_part = ["", "", "", ""]
+            
+        final_output.append(left_part + right_part)
+
+    # 寫入 Sheet
     ws_dest.clear()
     ws_dest.update(final_output)
 
-    # 5. === 設定條件格式 (背景顏色) ===
-    # E欄 (index 4) 到 Q欄 (index 16)
-    # 規則：包含 "+" 為紅色，包含 "-" 為綠色
+    # 7. === 設定條件格式 (背景顏色) ===
     print("🎨 更新條件格式化 (紅/綠色)...")
     
-    # 紅色背景 (正數)
+    # 紅色背景 (正數) - 範圍 E~Q 欄
     positive_rule = {
         "addConditionalFormatRule": {
             "rule": {
@@ -280,7 +328,7 @@ def main():
         }
     }
 
-    # 綠色背景 (負數)
+    # 綠色背景 (負數) - 範圍 E~Q 欄
     negative_rule = {
         "addConditionalFormatRule": {
             "rule": {
@@ -294,7 +342,6 @@ def main():
         }
     }
 
-    # 批次發送格式化請求
     try:
         sh.batch_update({"requests": [positive_rule, negative_rule]})
     except Exception as e:
