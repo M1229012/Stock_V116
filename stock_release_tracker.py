@@ -184,7 +184,7 @@ def main():
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
-        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=25) # 增加欄位數
+        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=30) # 擴增欄位以容納每日統計
         ws_dest.append_row(header)
 
     # 2. 讀取現有記錄
@@ -257,63 +257,107 @@ def main():
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
     # 5. === 計算統計數據 (準備放到右側) ===
-    print("📊 計算勝率與平均漲跌幅統計...")
+    print("📊 計算每日勝率與趨勢統計...")
     
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
-    # 統計結構：次數、勝場、累積漲幅總和
-    stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
     
+    # 統計結構: 每個狀態 -> 10天的數據
+    # structure: stats[status][day_index] = {'sum': 0.0, 'wins': 0, 'count': 0}
+    daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(10)] for s in status_order}
+    
+    # 總體統計 (D+10)
+    summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
+
     for row in processed_list:
         status = row[3] # 狀態在 index 3
-        acc_pct_str = row[6] # 累積漲跌幅在 index 6
-        
-        if status in stats:
-            stats[status]['count'] += 1
+        # D+10 總體
+        acc_pct_str = row[6]
+        if status in summary_stats:
+            summary_stats[status]['count'] += 1
             try:
                 acc_val = float(acc_pct_str.replace('%', '').replace('+', ''))
-                # 累加數值用於計算平均
-                stats[status]['total_pct'] += acc_val
-                
-                # 計算勝率
-                if acc_val > 0:
-                    stats[status]['wins'] += 1
-            except:
-                pass 
+                summary_stats[status]['total_pct'] += acc_val
+                if acc_val > 0: summary_stats[status]['wins'] += 1
+            except: pass
+
+        # 每日詳細 (D+1 ~ D+10 在 index 7 ~ 16)
+        if status in daily_stats:
+            for day_idx in range(10):
+                val_str = row[7 + day_idx]
+                if val_str:
+                    try:
+                        val = float(val_str.replace('%', '').replace('+', ''))
+                        daily_stats[status][day_idx]['count'] += 1
+                        daily_stats[status][day_idx]['sum'] += val
+                        if val > 0:
+                            daily_stats[status][day_idx]['wins'] += 1
+                    except: pass
+
+    # --- 建構右側統計區 ---
+    right_side_rows = []
     
-    # 準備統計表的每一列數據
-    stats_rows = []
+    # 1. 總覽表格
+    right_side_rows.append(["", "📊 狀態總覽", "個股數", "D+10勝率", "D+10平均", "", "", "", "", "", "", ""])
     for s in status_order:
-        total = stats[s]['count']
-        wins = stats[s]['wins']
-        total_pct = stats[s]['total_pct']
-        
-        win_rate = (wins / total * 100) if total > 0 else 0.0
-        avg_pct = (total_pct / total) if total > 0 else 0.0
-        
-        # 新增第五欄：平均漲跌幅
-        stats_rows.append(["", s, total, f"{win_rate:.1f}%", f"{avg_pct:+.1f}%"])
+        t = summary_stats[s]['count']
+        w = summary_stats[s]['wins']
+        avg = summary_stats[s]['total_pct'] / t if t > 0 else 0
+        wr = (w / t * 100) if t > 0 else 0
+        right_side_rows.append(["", s, t, f"{wr:.1f}%", f"{avg:+.1f}%", "", "", "", "", "", "", ""])
+
+    right_side_rows.append([""] * 12) # 空一行
+
+    # 2. 每日平均漲跌幅走勢
+    days_header = [f"D+{i+1}" for i in range(10)]
+    right_side_rows.append(["", "📈 平均漲跌幅走勢"] + days_header)
     
+    for s in status_order:
+        row_vals = ["", s]
+        for d in range(10):
+            data = daily_stats[s][d]
+            if data['count'] > 0:
+                avg = data['sum'] / data['count']
+                row_vals.append(f"{avg:+.1f}%")
+            else:
+                row_vals.append("-")
+        right_side_rows.append(row_vals)
+
+    right_side_rows.append([""] * 12) # 空一行
+
+    # 3. 每日勝率走勢
+    right_side_rows.append(["", "🏆 每日勝率走勢"] + days_header)
+    
+    for s in status_order:
+        row_vals = ["", s]
+        for d in range(10):
+            data = daily_stats[s][d]
+            if data['count'] > 0:
+                wr = (data['wins'] / data['count']) * 100
+                row_vals.append(f"{wr:.1f}%")
+            else:
+                row_vals.append("-")
+        right_side_rows.append(row_vals)
+
     # 6. === 合併左側數據與右側統計 ===
-    # 擴充標題 (增加 "平均漲跌幅")
-    final_header = header + ["", "📊 狀態統計", "個股數量", "出關勝率", "平均漲跌幅"]
-    
+    # 擴充左側標題以對齊 (原本17欄)
+    final_header = header + [""] * 12 # 預留右側空間標題列
     final_output = [final_header]
     
     # 決定總行數
-    max_rows = max(len(processed_list), len(stats_rows))
+    max_rows = max(len(processed_list), len(right_side_rows))
     
     for i in range(max_rows):
-        # 取得左側資料
+        # 左側
         if i < len(processed_list):
             left_part = processed_list[i]
         else:
             left_part = [""] * 17 
             
-        # 取得右側統計
-        if i < len(stats_rows):
-            right_part = stats_rows[i]
+        # 右側 (從 S 欄開始，前面留空 1 欄 R)
+        if i < len(right_side_rows):
+            right_part = right_side_rows[i]
         else:
-            right_part = ["", "", "", "", ""]
+            right_part = [""] * 12
             
         final_output.append(left_part + right_part)
 
@@ -324,11 +368,17 @@ def main():
     # 7. === 設定條件格式 (背景顏色) ===
     print("🎨 更新條件格式化 (紅/綠色)...")
     
-    # 紅色背景 (正數) - 範圍 E~Q 欄
+    # 範圍 E~Q 欄 (左側數據) AND T~AD 欄 (右側統計數據)
+    # T欄是 index 19
+    ranges = [
+        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17},
+        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 19, "endColumnIndex": 30}
+    ]
+
     positive_rule = {
         "addConditionalFormatRule": {
             "rule": {
-                "ranges": [{"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17}],
+                "ranges": ranges,
                 "booleanRule": {
                     "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "+"}]},
                     "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}
@@ -338,11 +388,10 @@ def main():
         }
     }
 
-    # 綠色背景 (負數) - 範圍 E~Q 欄
     negative_rule = {
         "addConditionalFormatRule": {
             "rule": {
-                "ranges": [{"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17}],
+                "ranges": ranges,
                 "booleanRule": {
                     "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "-"}]},
                     "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}}
