@@ -1273,7 +1273,7 @@ def main():
             final_end_date = data['date']
             days_left = (final_end_date - today_date).days
             
-            if 0 <= days_left <= 5:
+            if 0 <= days_left <= 4:
                 # 準備寫入的資料：[市場, 代號, 名稱, 處置期間, 剩餘天數, 出關日期]
                 r_list = data['row_list'][:]
                 r_list.append(str(days_left))
