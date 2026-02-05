@@ -184,23 +184,40 @@ def main():
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
-        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=30) # 擴增欄位以容納每日統計
+        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=30) 
         ws_dest.append_row(header)
 
     # 2. 讀取現有記錄
-    existing_records = ws_dest.get_all_records()
+    # ⚠️ 修改：改用 get_all_values() 避免 header 重複 (空白欄位) 導致報錯
+    raw_rows = ws_dest.get_all_values()
     existing_map = {} 
     
-    for i, row in enumerate(existing_records):
-        rid = str(row.get('股號', ''))
-        rdate = str(row.get('出關日期', ''))
-        d10 = str(row.get('D+10', '')).strip()
-        if rid:
-            key = f"{rid}_{rdate}"
-            existing_map[key] = {
-                'data': row,
-                'done': bool(d10)
-            }
+    if len(raw_rows) > 1:
+        # 跳過第一行標題
+        for row in raw_rows[1:]:
+            # 確保欄位數足夠 (至少要有左側數據區)
+            if len(row) < 17: continue
+
+            # 對應 header 索引: [0]=出關日期, [1]=股號, [16]=D+10
+            rdate = str(row[0])
+            rid = str(row[1])
+            d10 = str(row[16]).strip()
+            
+            if rid:
+                key = f"{rid}_{rdate}"
+                
+                # 為了相容後面的 old_row.get() 邏輯，手動轉成 dict
+                row_dict = {}
+                for idx, h in enumerate(header):
+                    if idx < len(row):
+                        row_dict[h] = row[idx]
+                    else:
+                        row_dict[h] = ""
+                
+                existing_map[key] = {
+                    'data': row_dict,
+                    'done': bool(d10)
+                }
 
     # 3. 讀取處置名單
     source_data = ws_source.get_all_records()
@@ -424,9 +441,6 @@ def main():
     if win_rate_start_row != -1:
         # 資料列為 win_rate_start_row + 1 到 + 5 (共5種狀態)
         # 欄位為 19 (T欄, D+1) 到 28 (AC欄, D+10)
-        
-        # 準備儲存格式化請求
-        format_cells_requests = []
         
         for col_idx in range(19, 29): # 針對每一天 (D+1 ~ D+10)
             col_values = []
