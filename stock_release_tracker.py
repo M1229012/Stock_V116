@@ -56,22 +56,14 @@ def determine_status(pre_pct, in_pct):
     else: return "🧊 多空膠著"
 
 def get_ticker_list(code, market=""):
-    """
-    根據市場別與股號決定嘗試的順序，減少 404 錯誤
-    """
+    """根據市場別與股號決定嘗試的順序，減少 404 錯誤"""
     code = str(code)
-    # 1. 明確指定市場
     if "上櫃" in market or "TPEx" in market:
         return [f"{code}.TWO", f"{code}.TW"]
     if "上市" in market:
         return [f"{code}.TW", f"{code}.TWO"]
-    
-    # 2. 若市場未知，根據股號開頭簡單猜測 (常見上櫃開頭)
-    # 3, 4, 5, 6, 8 開頭很多是上櫃，先試 .TWO 可以減少紅字錯誤
     if code and code[0] in ['3', '4', '5', '6', '8']:
         return [f"{code}.TWO", f"{code}.TW"]
-    
-    # 3. 預設先試上市
     return [f"{code}.TW", f"{code}.TWO"]
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
@@ -80,26 +72,19 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         fetch_start = start_date - timedelta(days=60)
         fetch_end = jail_end_date + timedelta(days=40) 
         
-        # 取得建議的後綴清單
         tickers_to_try = get_ticker_list(code, market)
-        
         df = pd.DataFrame()
-        used_ticker = ""
-
-        # 嘗試抓取 (靜默模式，盡量減少錯誤輸出)
+        
         for ticker in tickers_to_try:
             try:
-                # 使用 yfinance 的 shared 錯誤處理機制或是直接捕捉
                 temp_df = yf.Ticker(ticker).history(start=fetch_start, end=fetch_end, auto_adjust=True)
                 if not temp_df.empty:
                     df = temp_df
-                    used_ticker = ticker
                     break
             except Exception:
                 continue
         
         if df.empty:
-            # print(f"  ⚠️ 找不到股價資料: {code}")
             return None
 
         df.index = df.index.tz_localize(None)
@@ -132,6 +117,15 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         # === 2. 計算出關後 D+1 ~ D+10 ===
         df_after = df[df.index > pd.Timestamp(jail_end_date)]
         
+        # --- 修正日期顯示邏輯 ---
+        # 如果有抓到出關後的資料，使用第一筆資料的日期
+        # 如果沒抓到 (代表剛出關或明天出關)，直接預設為處置結束日 + 1 天
+        if not df_after.empty:
+            release_date_str = df_after.index[0].strftime("%Y/%m/%d")
+        else:
+            release_date_str = (jail_end_date + timedelta(days=1)).strftime("%Y/%m/%d")
+        # ----------------------
+
         post_data = []
         accumulated_pct = 0.0
         base_price = jail_end_price if jail_end_price != 0 else (df_after['Open'].iloc[0] if not df_after.empty else 0)
@@ -161,7 +155,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
             "in_pct": f"{in_pct:+.1f}%",
             "acc_pct": f"{accumulated_pct:+.1f}%",
             "daily_trends": post_data,
-            "release_date": df_after.index[0].strftime("%Y/%m/%d") if not df_after.empty else "未知"
+            "release_date": release_date_str
         }
 
     except Exception as e:
@@ -216,7 +210,6 @@ def main():
 
     print(f"🔍 掃描 {len(source_data)} 筆處置紀錄...")
 
-    # 為了避免 Log 太多，計算一下進度
     total_count = 0
     update_count = 0
 
@@ -224,7 +217,7 @@ def main():
         code = str(row.get('代號', '')).replace("'", "").strip()
         name = row.get('名稱', '')
         period = str(row.get('處置期間', '')).strip()
-        market = str(row.get('市場', '')) # 嘗試讀取市場欄位
+        market = str(row.get('市場', ''))
         
         if not code or not period: continue
         
@@ -237,15 +230,9 @@ def main():
         if not s_date or not e_date: continue
         if e_date > today: continue 
 
-        # 這裡不印出每一筆，只印出真正要處理的
-        
-        # 執行抓取
-        # 傳入 market 參數以優化抓取
         result = fetch_stock_data(code, s_date, e_date, market)
         
         if not result:
-            # 只有抓不到資料才印出來，且不中斷
-            # print(f"⚠️ 跳過 {code} {name} (無資料)") 
             continue
             
         release_date_str = result['release_date']
@@ -263,16 +250,56 @@ def main():
             processed_list.append(row_data)
             update_count += 1
             print(f"  ✨ 更新: {code} {name} | {result['status']}")
-            time.sleep(0.5) # 稍微加速
+            time.sleep(0.5)
 
         total_count += 1
 
-    # 4. 寫入
+    # 4. 寫入資料
     processed_list.sort(key=lambda x: x[0], reverse=True)
     final_output = [header] + processed_list
     
     ws_dest.clear()
     ws_dest.update(final_output)
+
+    # 5. === 設定條件格式 (背景顏色) ===
+    # E欄 (index 4) 到 Q欄 (index 16)
+    # 規則：包含 "+" 為紅色，包含 "-" 為綠色
+    print("🎨 更新條件格式化 (紅/綠色)...")
+    
+    # 紅色背景 (正數)
+    positive_rule = {
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": [{"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17}],
+                "booleanRule": {
+                    "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "+"}]},
+                    "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}
+                }
+            },
+            "index": 0
+        }
+    }
+
+    # 綠色背景 (負數)
+    negative_rule = {
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": [{"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17}],
+                "booleanRule": {
+                    "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "-"}]},
+                    "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}}
+                }
+            },
+            "index": 1
+        }
+    }
+
+    # 批次發送格式化請求
+    try:
+        sh.batch_update({"requests": [positive_rule, negative_rule]})
+    except Exception as e:
+        print(f"⚠️ 格式化設定失敗 (可能是權限或版本問題): {e}")
+
     print(f"🎉 完成！共掃描 {total_count} 筆，本次更新 {update_count} 筆。")
 
 if __name__ == "__main__":
