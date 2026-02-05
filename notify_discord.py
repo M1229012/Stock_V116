@@ -18,7 +18,7 @@ SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 JAIL_ENTER_THRESHOLD = 3   
-JAIL_EXIT_THRESHOLD = 4    
+JAIL_EXIT_THRESHOLD = 5    
 
 # ============================
 # 🛠️ 工具函式
