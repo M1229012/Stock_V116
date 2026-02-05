@@ -257,10 +257,11 @@ def main():
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
     # 5. === 計算統計數據 (準備放到右側) ===
-    print("📊 計算勝率統計 (將放置於右側)...")
+    print("📊 計算勝率與平均漲跌幅統計...")
     
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
-    stats = {s: {'count': 0, 'wins': 0} for s in status_order}
+    # 統計結構：次數、勝場、累積漲幅總和
+    stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
     
     for row in processed_list:
         status = row[3] # 狀態在 index 3
@@ -270,6 +271,10 @@ def main():
             stats[status]['count'] += 1
             try:
                 acc_val = float(acc_pct_str.replace('%', '').replace('+', ''))
+                # 累加數值用於計算平均
+                stats[status]['total_pct'] += acc_val
+                
+                # 計算勝率
                 if acc_val > 0:
                     stats[status]['wins'] += 1
             except:
@@ -280,30 +285,35 @@ def main():
     for s in status_order:
         total = stats[s]['count']
         wins = stats[s]['wins']
+        total_pct = stats[s]['total_pct']
+        
         win_rate = (wins / total * 100) if total > 0 else 0.0
-        stats_rows.append(["", s, total, f"{win_rate:.1f}%"]) # 第一個空字串是為了與左邊表格隔開一欄
+        avg_pct = (total_pct / total) if total > 0 else 0.0
+        
+        # 新增第五欄：平均漲跌幅
+        stats_rows.append(["", s, total, f"{win_rate:.1f}%", f"{avg_pct:+.1f}%"])
     
     # 6. === 合併左側數據與右側統計 ===
-    # 擴充標題
-    final_header = header + ["", "📊 狀態統計", "個股數量", "出關勝率"]
+    # 擴充標題 (增加 "平均漲跌幅")
+    final_header = header + ["", "📊 狀態統計", "個股數量", "出關勝率", "平均漲跌幅"]
     
     final_output = [final_header]
     
-    # 決定總行數 (取較大者，避免資料被切掉)
+    # 決定總行數
     max_rows = max(len(processed_list), len(stats_rows))
     
     for i in range(max_rows):
-        # 取得左側資料 (若無則補空)
+        # 取得左側資料
         if i < len(processed_list):
             left_part = processed_list[i]
         else:
-            left_part = [""] * 17 # 補足左側 17 欄空值
+            left_part = [""] * 17 
             
-        # 取得右側統計 (若無則補空)
+        # 取得右側統計
         if i < len(stats_rows):
             right_part = stats_rows[i]
         else:
-            right_part = ["", "", "", ""]
+            right_part = ["", "", "", "", ""]
             
         final_output.append(left_part + right_part)
 
