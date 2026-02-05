@@ -13,7 +13,7 @@ from google.oauth2.service_account import Credentials
 # ============================
 # ⚙️ 設定區
 # ============================
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -141,14 +141,19 @@ def get_price_rank_info(code, period_str, market):
             curr_p = df_in_jail['Close'].iloc[-1]
             in_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
 
-        # 判斷狀態圖示與文字
-        if abs(in_pct) <= 5: 
-            status = "🧊 盤整"
-        elif in_pct > 5: 
-            status = "🔥 創高"
-        else: 
-            status = "📉 破底"
+        # 判斷狀態圖示與文字 (修改後邏輯)
+        if in_pct > 15:
+            status_icon, status_text = "👑", "妖股誕生"
+        elif in_pct > 5:
+            status_icon, status_text = "🔥", "強勢突圍"
+        elif in_pct < -15:
+            status_icon, status_text = "💀", "人去樓空"
+        elif in_pct < -5:
+            status_icon, status_text = "📉", "走勢疲軟"
+        else:
+            status_icon, status_text = "🧊", "多空膠著"
         
+        status = f"{status_icon} {status_text}"
         price_result = f"處置前{'+' if pre_pct > 0 else ''}{pre_pct:.1f}% / 處置中{'+' if in_pct > 0 else ''}{in_pct:.1f}%"
         return status, price_result
     except Exception as e:
