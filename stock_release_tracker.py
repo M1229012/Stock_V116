@@ -261,11 +261,7 @@ def main():
     
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
     
-    # 統計結構: 每個狀態 -> 10天的數據
-    # structure: stats[status][day_index] = {'sum': 0.0, 'wins': 0, 'count': 0}
     daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(10)] for s in status_order}
-    
-    # 總體統計 (D+10)
     summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
 
     for row in processed_list:
@@ -339,21 +335,17 @@ def main():
         right_side_rows.append(row_vals)
 
     # 6. === 合併左側數據與右側統計 ===
-    # 擴充左側標題以對齊 (原本17欄)
     final_header = header + [""] * 12 # 預留右側空間標題列
     final_output = [final_header]
     
-    # 決定總行數
     max_rows = max(len(processed_list), len(right_side_rows))
     
     for i in range(max_rows):
-        # 左側
         if i < len(processed_list):
             left_part = processed_list[i]
         else:
             left_part = [""] * 17 
             
-        # 右側 (從 S 欄開始，前面留空 1 欄 R)
         if i < len(right_side_rows):
             right_part = right_side_rows[i]
         else:
@@ -366,15 +358,32 @@ def main():
     ws_dest.update(final_output)
 
     # 7. === 設定條件格式 (背景顏色) ===
-    print("🎨 更新條件格式化 (紅/綠色)...")
-    
-    # 範圍 E~Q 欄 (左側數據) AND T~AD 欄 (右側統計數據)
-    # T欄是 index 19
+    print("🎨 更新條件格式化與勝率高低標記...")
+
+    # 範圍定義
     ranges = [
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17},
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 19, "endColumnIndex": 30}
     ]
 
+    # --- 規則 0: 標題列區隔 (D+ 開頭的格子用橘色) ---
+    header_rule = {
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": ranges,
+                "booleanRule": {
+                    "condition": {"type": "TEXT_STARTS_WITH", "values": [{"userEnteredValue": "D+"}]},
+                    "format": {
+                        "backgroundColor": {"red": 1.0, "green": 0.9, "blue": 0.7}, # 淺橘色
+                        "textFormat": {"bold": True}
+                    }
+                }
+            },
+            "index": 0 # 最優先
+        }
+    }
+
+    # --- 規則 1: 正數 (紅色) ---
     positive_rule = {
         "addConditionalFormatRule": {
             "rule": {
@@ -384,10 +393,11 @@ def main():
                     "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}
                 }
             },
-            "index": 0
+            "index": 1
         }
     }
 
+    # --- 規則 2: 負數 (綠色) ---
     negative_rule = {
         "addConditionalFormatRule": {
             "rule": {
@@ -397,12 +407,82 @@ def main():
                     "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}}
                 }
             },
-            "index": 1
+            "index": 2
         }
     }
 
+    requests = [header_rule, positive_rule, negative_rule]
+
+    # --- 找出「每日勝率走勢」的表格位置，標記最高(紅)/最低(綠) ---
+    # 1. 找到 "🏆 每日勝率走勢" 所在的列
+    win_rate_start_row = -1
+    for idx, row in enumerate(final_output):
+        if len(row) > 18 and row[18] == "🏆 每日勝率走勢":
+            win_rate_start_row = idx
+            break
+    
+    if win_rate_start_row != -1:
+        # 資料列為 win_rate_start_row + 1 到 + 5 (共5種狀態)
+        # 欄位為 19 (T欄, D+1) 到 28 (AC欄, D+10)
+        
+        # 準備儲存格式化請求
+        format_cells_requests = []
+        
+        for col_idx in range(19, 29): # 針對每一天 (D+1 ~ D+10)
+            col_values = []
+            valid_rows = []
+            
+            # 讀取該欄位 5 個狀態的數值
+            for r in range(1, 6):
+                row_idx = win_rate_start_row + r
+                if row_idx < len(final_output):
+                    val_str = final_output[row_idx][col_idx]
+                    try:
+                        val = float(val_str.replace('%', ''))
+                        col_values.append(val)
+                        valid_rows.append(row_idx)
+                    except:
+                        col_values.append(-1.0) # 無效值
+                        valid_rows.append(row_idx)
+            
+            # 找出最大與最小值 (忽略 -1)
+            valid_vals = [v for v in col_values if v != -1.0]
+            if valid_vals:
+                max_val = max(valid_vals)
+                min_val = min(valid_vals)
+                
+                for i, val in enumerate(col_values):
+                    if val == -1.0: continue
+                    
+                    bg_color = None
+                    if val == max_val:
+                        bg_color = {"red": 1.0, "green": 0.8, "blue": 0.8} # 紅色 (最高)
+                    elif val == min_val:
+                        bg_color = {"red": 0.8, "green": 1.0, "blue": 0.8} # 綠色 (最低)
+                    
+                    if bg_color:
+                        # 增加一般格式化請求 (Standard Format)
+                        req = {
+                            "repeatCell": {
+                                "range": {
+                                    "sheetId": ws_dest.id,
+                                    "startRowIndex": valid_rows[i],
+                                    "endRowIndex": valid_rows[i] + 1,
+                                    "startColumnIndex": col_idx,
+                                    "endColumnIndex": col_idx + 1
+                                },
+                                "cell": {
+                                    "userEnteredFormat": {
+                                        "backgroundColor": bg_color
+                                    }
+                                },
+                                "fields": "userEnteredFormat.backgroundColor"
+                            }
+                        }
+                        requests.append(req)
+
     try:
-        sh.batch_update({"requests": [positive_rule, negative_rule]})
+        sh.batch_update({"requests": requests})
     except Exception as e:
         print(f"⚠️ 格式化設定失敗 (可能是權限或版本問題): {e}")
 
