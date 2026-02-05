@@ -47,26 +47,15 @@ def parse_roc_date(date_str):
         except: continue
     return None
 
-def determine_status_legacy(pre_pct, in_pct):
+def determine_status(pre_pct, in_pct):
     """
-    [舊標準] 用於顯示在左側表格，保持原始紀錄不變
+    判斷處置狀態 (回歸原始標準)
     門檻：5% / 15%
     """
     if in_pct > 15: return "👑 妖股誕生"
     elif in_pct > 5: return "🔥 強勢突圍"
     elif in_pct < -15: return "💀 人去樓空"
     elif in_pct < -5: return "📉 走勢疲軟"
-    else: return "🧊 多空膠著"
-
-def determine_status_new(pre_pct, in_pct):
-    """
-    [新標準] 用於右側統計，測試過濾雜訊後的勝率
-    門檻：10% / 20%
-    """
-    if in_pct > 20: return "👑 妖股誕生"
-    elif in_pct > 10: return "🔥 強勢突圍"
-    elif in_pct < -20: return "💀 人去樓空"
-    elif in_pct < -10: return "📉 走勢疲軟"
     else: return "🧊 多空膠著"
 
 def get_ticker_list(code, market=""):
@@ -81,10 +70,11 @@ def get_ticker_list(code, market=""):
     return [f"{code}.TW", f"{code}.TWO"]
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
-    """抓取歷史股價並計算狀態與出關後走勢"""
+    """抓取歷史股價並計算狀態與出關後走勢 (擴充至 D+20)"""
     try:
+        # 抓取範圍擴大，確保有足夠的交易日計算到 D+20 (約需 30-40 自然日)
         fetch_start = start_date - timedelta(days=60)
-        fetch_end = jail_end_date + timedelta(days=40) 
+        fetch_end = jail_end_date + timedelta(days=60) 
         
         tickers_to_try = get_ticker_list(code, market)
         df = pd.DataFrame()
@@ -126,11 +116,9 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
             if jail_start_price != 0:
                 in_pct = ((jail_end_price - jail_start_price) / jail_start_price) * 100
         
-        # 這裡會同時回傳兩種狀態，分別用於顯示和統計
-        status_legacy = determine_status_legacy(pre_pct, in_pct)
-        status_new = determine_status_new(pre_pct, in_pct)
+        status = determine_status(pre_pct, in_pct)
 
-        # === 2. 計算出關後 D+1 ~ D+10 ===
+        # === 2. 計算出關後 D+1 ~ D+20 ===
         df_after = df[df.index > pd.Timestamp(jail_end_date)]
         
         if not df_after.empty:
@@ -142,7 +130,9 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         accumulated_pct = 0.0
         base_price = jail_end_price if jail_end_price != 0 else (df_after['Open'].iloc[0] if not df_after.empty else 0)
 
-        for i in range(10):
+        # 擴充循環至 20 天
+        track_days = 20
+        for i in range(track_days):
             if i < len(df_after):
                 curr_close = df_after['Close'].iloc[i]
                 prev_close = df_after['Close'].iloc[i-1] if i > 0 else base_price
@@ -152,18 +142,18 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
                 else:
                     post_data.append("0.0%")
                 
-                if i == len(df_after) - 1 or i == 9:
+                # 計算累積漲幅 (D+20 或最後一天)
+                if i == len(df_after) - 1 or i == track_days - 1:
                     if base_price != 0:
                         accumulated_pct = ((curr_close - base_price) / base_price) * 100
             else:
                 post_data.append("")
 
-        while len(post_data) < 10:
+        while len(post_data) < track_days:
             post_data.append("")
 
         return {
-            "status_legacy": status_legacy, # 舊標準 (顯示用)
-            "status_new": status_new,       # 新標準 (統計用)
+            "status": status,
             "pre_pct": f"{pre_pct:+.1f}%",
             "in_pct": f"{in_pct:+.1f}%",
             "acc_pct": f"{accumulated_pct:+.1f}%",
@@ -179,7 +169,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 開始執行處置股出關記錄更新...")
+    print("🚀 開始執行處置股出關記錄更新 (D+20版)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
@@ -190,14 +180,19 @@ def main():
         print(f"❌ 找不到來源工作表 '{SOURCE_WORKSHEET}'")
         return
 
-    header = ["出關日期", "股號", "股名", "狀態", "處置前%", "處置中%", "累積漲跌幅", 
-              "D+1", "D+2", "D+3", "D+4", "D+5", "D+6", "D+7", "D+8", "D+9", "D+10"]
+    # 擴充 Header 至 D+20
+    header_base = ["出關日期", "股號", "股名", "狀態", "處置前%", "處置中%", "累積漲跌幅"]
+    header_days = [f"D+{i+1}" for i in range(20)]
+    header = header_base + header_days
+    
+    # 欄位總數計算: 7 (基本) + 20 (天數) = 27 欄
+    # 右側統計需要額外空間，設定 60 欄以策安全
 
     try:
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
-        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=30) 
+        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=60) 
         ws_dest.append_row(header)
 
     # 讀取現有記錄
@@ -206,10 +201,16 @@ def main():
     
     if len(raw_rows) > 1:
         for row in raw_rows[1:]:
-            if len(row) < 17: continue
+            if len(row) < 7: continue # 至少要有基本資料
             rdate = str(row[0])
             rid = str(row[1])
-            d10 = str(row[16]).strip()
+            
+            # 判斷是否完成 D+20 (檢查最後一欄是否有值)
+            # index 26 是 D+20
+            d_last_idx = 6 + 20 
+            d_last = ""
+            if len(row) > d_last_idx:
+                d_last = str(row[d_last_idx]).strip()
             
             if rid:
                 key = f"{rid}_{rdate}"
@@ -222,15 +223,17 @@ def main():
                 
                 existing_map[key] = {
                     'data': row_dict,
-                    'done': bool(d10)
+                    'done': bool(d_last)
                 }
 
     source_data = ws_source.get_all_records()
     processed_list = []
     
-    # 準備統計容器 (使用新標準)
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
-    daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(10)] for s in status_order}
+    track_days = 20
+    
+    # 統計容器擴充至 20 天
+    daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(track_days)] for s in status_order}
     summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
 
     today = datetime.now()
@@ -263,43 +266,26 @@ def main():
         release_date_str = result['release_date']
         key = f"{code}_{release_date_str}"
         
-        # 無論是新資料還是舊資料，我們都需要它的數值來跑統計
-        # 但只有新資料(或未完成的資料)才需要更新到 processed_list 寫回表格
-        
-        # --- 處理寫回表格的資料 (左側) ---
-        # 這裡使用 result['status_legacy'] (舊標準) 以保持原始紀錄
-        final_row_data = []
+        row_vals = []
         if key in existing_map and existing_map[key]['done']:
             old_row = existing_map[key]['data']
-            final_row_data = [old_row.get(h, "") for h in header]
-            # 如果舊資料裡面的狀態是空的或是舊標準，我們就保持原樣
-            # 但為了統計，我們需要當下的數值(可能要重新抓，但為了效能，我們假設 result 抓到的是最新的)
+            row_vals = [old_row.get(h, "") for h in header]
         else:
-            final_row_data = [
-                release_date_str, code, name, result['status_legacy'], # 顯示舊標準
+            row_vals = [
+                release_date_str, code, name, result['status'],
                 result['pre_pct'], result['in_pct'], result['acc_pct']
             ] + result['daily_trends']
             update_count += 1
-            print(f"  ✨ 更新: {code} {name} | {result['status_legacy']}")
+            print(f"  ✨ 更新: {code} {name} | {result['status']}")
             time.sleep(0.5)
         
-        processed_list.append(final_row_data)
+        processed_list.append(row_vals)
 
-        # --- 處理統計資料 (右側) ---
-        # 這裡使用 result['status_new'] (新標準) 來計算統計
+        # --- 統計邏輯 (基於回歸後的原始標準 5%/15%) ---
+        stat_status = row_vals[3] # 狀態在 index 3
         
-        # 為了統計，我們必須解析 final_row_data 裡的數值
-        # 即使是舊資料，我們也重新用新標準歸類一次
-        
-        # 1. 取得這筆資料的數值 (不管它是剛抓的還是舊的，數值應該是一樣的)
-        # 處置中% 在 index 5
-        in_pct_str = final_row_data[5] 
-        # 我們直接用 result['status_new']，因為它是根據當下抓到的數值判斷的
-        # 注意：如果現有資料的數值跟重新抓的不一樣(極少見)，這裡會以重新抓的為準進行統計
-        stat_status = result['status_new']
-        
-        # D+10 累積
-        acc_pct_str = final_row_data[6]
+        # 累積漲幅 (D+20)
+        acc_pct_str = row_vals[6]
         if stat_status in summary_stats:
             summary_stats[stat_status]['count'] += 1
             try:
@@ -308,48 +294,50 @@ def main():
                 if acc_val > 0: summary_stats[stat_status]['wins'] += 1
             except: pass
             
-        # 每日詳細
+        # 每日詳細 (D+1 ~ D+20)
         if stat_status in daily_stats:
-            for day_idx in range(10):
+            for day_idx in range(track_days):
                 # D+1 在 index 7
-                val_str = final_row_data[7 + day_idx]
-                if val_str:
-                    try:
-                        val = float(val_str.replace('%', '').replace('+', ''))
-                        daily_stats[stat_status][day_idx]['count'] += 1
-                        daily_stats[stat_status][day_idx]['sum'] += val
-                        if val > 0:
-                            daily_stats[stat_status][day_idx]['wins'] += 1
-                    except: pass
+                col_idx = 7 + day_idx
+                if col_idx < len(row_vals):
+                    val_str = row_vals[col_idx]
+                    if val_str:
+                        try:
+                            val = float(val_str.replace('%', '').replace('+', ''))
+                            daily_stats[stat_status][day_idx]['count'] += 1
+                            daily_stats[stat_status][day_idx]['sum'] += val
+                            if val > 0:
+                                daily_stats[stat_status][day_idx]['wins'] += 1
+                        except: pass
         
         total_count += 1
 
     # 4. 排序
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
-    # 5. === 建構右側統計區 (新標準) ===
-    print("📊 計算新標準統計數據 (右側)...")
+    # 5. === 建構右側統計區 (D+20版) ===
+    print("📊 計算 D+20 統計數據 (右側)...")
     
     right_side_rows = []
     
-    # 1. 總覽表格 (標題加註新標準)
-    right_side_rows.append(["", "📊 狀態總覽 (新標準10%/20%)", "個股數", "D+10勝率", "D+10平均", "", "", "", "", "", "", ""])
+    # 1. 總覽表格
+    right_side_rows.append(["", "📊 狀態總覽 (原始標準5%/15%)", "個股數", "D+20勝率", "D+20平均", "", "", "", ""])
     for s in status_order:
         t = summary_stats[s]['count']
         w = summary_stats[s]['wins']
         avg = summary_stats[s]['total_pct'] / t if t > 0 else 0
         wr = (w / t * 100) if t > 0 else 0
-        right_side_rows.append(["", s, t, f"{wr:.1f}%", f"{avg:+.1f}%", "", "", "", "", "", "", ""])
+        right_side_rows.append(["", s, t, f"{wr:.1f}%", f"{avg:+.1f}%", "", "", "", ""])
 
-    right_side_rows.append([""] * 12) 
+    right_side_rows.append([""] * 9) 
 
-    # 2. 每日平均漲跌幅走勢
-    days_header = [f"D+{i+1}" for i in range(10)]
-    right_side_rows.append(["", "📈 平均漲跌幅 (新標準)"] + days_header)
-    
+    days_header = [f"D+{i+1}" for i in range(track_days)]
+
+    # 2. 每日平均漲跌幅
+    right_side_rows.append(["", "📈 平均漲跌幅 (D+20)"] + days_header)
     for s in status_order:
         row_vals = ["", s]
-        for d in range(10):
+        for d in range(track_days):
             data = daily_stats[s][d]
             if data['count'] > 0:
                 avg = data['sum'] / data['count']
@@ -358,14 +346,13 @@ def main():
                 row_vals.append("-")
         right_side_rows.append(row_vals)
 
-    right_side_rows.append([""] * 12) 
+    right_side_rows.append([""] * (2 + track_days)) 
 
-    # 3. 每日勝率走勢
-    right_side_rows.append(["", "🏆 每日勝率 (新標準)"] + days_header)
-    
+    # 3. 每日勝率
+    right_side_rows.append(["", "🏆 每日勝率 (D+20)"] + days_header)
     for s in status_order:
         row_vals = ["", s]
-        for d in range(10):
+        for d in range(track_days):
             data = daily_stats[s][d]
             if data['count'] > 0:
                 wr = (data['wins'] / data['count']) * 100
@@ -375,7 +362,9 @@ def main():
         right_side_rows.append(row_vals)
 
     # 6. === 合併 ===
-    final_header = header + [""] * 12 
+    # 左側有 27 欄 (0~26)
+    # 我們讓右側從第 29 欄開始 (Index 28)，留 Index 27 為空
+    final_header = header + [""] * (3 + track_days) # 預留右側空間
     final_output = [final_header]
     
     max_rows = max(len(processed_list), len(right_side_rows))
@@ -384,25 +373,28 @@ def main():
         if i < len(processed_list):
             left_part = processed_list[i]
         else:
-            left_part = [""] * 17 
+            left_part = [""] * 27 
             
         if i < len(right_side_rows):
             right_part = right_side_rows[i]
         else:
-            right_part = [""] * 12
-            
-        final_output.append(left_part + right_part)
+            right_part = [""] * (3 + track_days)
+        
+        # 中間加一個空欄位分隔 (第 28 欄, Index 27)
+        final_output.append(left_part + [""] + right_part)
 
     # 寫入 Sheet
     ws_dest.clear()
     ws_dest.update(final_output)
 
     # 7. === 設定條件格式 ===
-    print("🎨 更新條件格式化與勝率高低標記...")
+    print("🎨 更新條件格式化與勝率高低標記 (D+20範圍)...")
 
+    # 左側數據範圍: Col 4 (E) ~ Col 26 (AA) -> Index 4 ~ 26
+    # 右側數據範圍: Start from Index 28 (AC) -> To end
     ranges = [
-        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 17},
-        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 19, "endColumnIndex": 30}
+        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 4, "endColumnIndex": 27},
+        {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 28, "endColumnIndex": 50}
     ]
 
     header_rule = {
@@ -449,18 +441,23 @@ def main():
 
     requests = [header_rule, positive_rule, negative_rule]
 
-    # --- 標記最高/最低 ---
+    # --- 標記最高/最低 (針對 D+1 ~ D+20) ---
     win_rate_start_row = -1
     for idx, row in enumerate(final_output):
-        if len(row) > 18 and "🏆 每日勝率" in str(row[18]):
+        # 尋找右側的勝率標題
+        if len(row) > 28 and "🏆 每日勝率" in str(row[29]): # Index 29 是標題開始
             win_rate_start_row = idx
             break
     
     if win_rate_start_row != -1:
-        for col_idx in range(19, 29): 
+        # 每日數據從 Index 30 開始 (AC+2 = AE)
+        start_col = 30
+        end_col = 30 + track_days
+        
+        for col_idx in range(start_col, end_col): 
             col_values = []
             valid_rows = []
-            for r in range(1, 6):
+            for r in range(1, 6): # 5種狀態
                 row_idx = win_rate_start_row + r
                 if row_idx < len(final_output):
                     val_str = final_output[row_idx][col_idx]
