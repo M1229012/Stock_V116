@@ -172,7 +172,6 @@ def push_rank_to_dc():
     display_date = raw_date
     if raw_date and raw_date.isdigit():
         if len(raw_date) == 4:
-            # 強制 2026 年
             display_date = f"2026-{raw_date[:2]}-{raw_date[2:]}"
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
@@ -187,25 +186,31 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [修改] 調整欄位順序與視覺寬度
-        # 順序: 排名 > 代號 > 股名 > 總增減
+        # [嚴格修改] 定義各欄位的「視覺寬度」
+        # 根據要求：股名固定 7 個中文字 = 14 visual width
         W_RANK = 4
         W_CODE = 6
-        W_NAME = 14  # 增加寬度以容納長股名並確保後方對齊
-        W_CHANGE = 9 # 靠右對齊的數字
+        W_NAME = 14  # 7 格全形字 (固定空間)
+        W_GAP  = 2   # 股名後固定空 2 格
+        W_CHANGE = 10 # 總增減 (靠右)
         
         # 標題列
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
+        # 標題 Gap 手動加
         h_chg  = pad_visual("總增減", W_CHANGE, align='right')
         
-        msg += f"{h_rank}{h_code}{h_name}{h_chg}\n"
-        msg += "-" * (W_RANK + W_CODE + W_NAME + W_CHANGE) + "\n"
+        msg += f"{h_rank}{h_code}{h_name}{' '*W_GAP}{h_chg}\n"
+        
+        # 分隔線長度
+        total_width = W_RANK + W_CODE + W_NAME + W_GAP + W_CHANGE
+        msg += "-" * total_width + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
             
+            # 分離代號與名稱
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -216,17 +221,28 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # 若股名太長，截斷以保持排版 (最多6個中文字)
-            if get_visual_len(name) > W_NAME:
+            # 股名截斷 (若超過 7 字則截斷，確保不破壞版面)
+            # 由於中文字元寬度計算複雜，這裡保守取前 7 個字元
+            # (假設最長不會超過 7 個中文字)
+            visual_len = get_visual_len(name)
+            if visual_len > W_NAME:
+                # 簡單截斷：這裡為了安全起見取前6個字元
                 name = name[:6]
             
-            # [修改] 依照: 排名 > 代號 > 股名 > 總增減 進行組裝
+            # [組裝] 嚴格依照指定順序與間距
             s_rank = pad_visual(str(i+1), W_RANK)
             s_code = pad_visual(code, W_CODE)
-            s_name = pad_visual(name, W_NAME) # 靠左對齊，後方補白
-            s_chg  = pad_visual(change, W_CHANGE, align='right') # 靠右對齊
             
-            msg += f"{s_rank}{s_code}{s_name}{s_chg}\n"
+            # 股名：靠左對齊，補足 14 視覺寬度 (7格全形)
+            s_name = pad_visual(name, W_NAME, align='left')
+            
+            # 固定空 2 格
+            s_gap = " " * W_GAP
+            
+            # 總增減：靠右對齊
+            s_chg  = pad_visual(change, W_CHANGE, align='right')
+            
+            msg += f"{s_rank}{s_code}{s_name}{s_gap}{s_chg}\n"
             
         msg += "```\n"
         return msg
