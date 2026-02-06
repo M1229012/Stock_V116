@@ -129,11 +129,11 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# ================= 排版工具區 (全形化修正版) =================
+# ================= 排版工具區 =================
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
 
-# [新增功能] 將半形英數字轉為全形 (解決 KY 對齊問題)
+# 將半形英數字轉為全形 (解決 KY 對齊問題)
 def to_fullwidth(s):
     res = []
     for char in str(s):
@@ -185,8 +185,6 @@ def pad_visual(s, target_w: int, align="left") -> str:
     
     diff = max(0, target_w - vis_len)
     
-    # 這裡依然使用混合填充，但因為我們將股名全形化了
-    # 所以理論上 full_spaces 會承擔大部分工作，對齊會更準
     full_spaces = diff // 2
     half_spaces = diff % 2
     
@@ -196,7 +194,7 @@ def pad_visual(s, target_w: int, align="left") -> str:
         return padding + s
     return s + padding
 
-# [保留] 數值標準化格式
+# 數值標準化格式
 def fmt_change(x):
     s = str(x)
     s = s.replace('%', '').replace(',', '')
@@ -240,18 +238,16 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [嚴格排版] 定義視覺寬度
-        # 縮減欄寬以適應手機版
+        # 定義視覺寬度
         W_RANK   = 4 
         W_CODE   = 6 
-        W_NAME   = 12  # [修正] 縮小寬度，12格 = 6個中文字或 "大略－ＫＹ"
+        W_NAME   = 12 
         W_CHANGE = 10 
         
-        # 定義 Gap (縮小間距)
-        # [修正] 使用一個半形空白，拉近距離
+        # 定義 Gap (單一半形空白)
         GAP = " "
         
-        # 標題列 (股名標題也轉全形對齊，雖然沒差但保持一致)
+        # 標題列
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
@@ -259,9 +255,9 @@ def push_rank_to_dc():
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # 分隔線 (動態計算)
+        # [修改] 分隔線長度 (原計算長度 - 2)
         total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
-        msg += "=" * total_width + "\n"
+        msg += "=" * (total_width - 2) + "\n"
         
         for i, row in df.iterrows():
             # 清洗
@@ -277,14 +273,16 @@ def push_rank_to_dc():
             
             code = clean_cell(code)
             name = clean_cell(name)
+            
+            # [新增] 修正亂碼：將 "卅卅" 替換為 "碁" (修正 宏碁 等股名)
+            name = name.replace("卅卅", "碁")
+            
             change_str = fmt_change(row['總增減'])
             
-            # [關鍵修正] 將股名轉為「全形字元」
-            # 這樣 IET-KY 會變成 ＩＥＴ－ＫＹ (寬度統一)，配合 W_NAME=12
+            # 轉為全形字元 (解決 KY 混排問題)
             full_name = to_fullwidth(name)
             
-            # 截斷與填充 (使用全形後的字串)
-            # 因為都是全形字，補位時會精準使用全形空白
+            # 截斷與填充
             s_name = pad_visual(full_name, W_NAME, align='left')
             
             # 其他欄位
