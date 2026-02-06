@@ -127,16 +127,39 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
+# [核心功能] 計算字串的視覺寬度 (Visual Width)
+# 中文字(全形) = 2, 英數字(半形) = 1
+def get_visual_len(text):
+    length = 0
+    for char in text:
+        if ord(char) > 127: 
+            length += 2
+        else:
+            length += 1
+    return length
+
+# [核心功能] 填充字串以達到目標視覺寬度
+def pad_visual(text, target_width, align='left'):
+    text = str(text)
+    vis_len = get_visual_len(text)
+    pad_len = max(0, target_width - vis_len)
+    padding = " " * pad_len
+    
+    if align == 'right':
+        return padding + text
+    else:
+        return text + padding
+
 def push_rank_to_dc():
     if not DISCORD_WEBHOOK_URL:
         print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
         return
 
     print("正在處理上市排行 (使用籌碼K線邏輯)...")
-    listed_df, listed_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
+    listed_df, listed_date = get_norway_rank_logic("[https://norway.twsthr.info/StockHoldersTopWeek.aspx](https://norway.twsthr.info/StockHoldersTopWeek.aspx)")
     
     print("正在處理上櫃排行 (使用籌碼K線邏輯)...")
-    otc_df, otc_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1")
+    otc_df, otc_date = get_norway_rank_logic("[https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1](https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1)")
 
     if listed_df is None and otc_df is None:
         print("抓取失敗，無資料")
@@ -145,41 +168,46 @@ def push_rank_to_dc():
     # 顯示日期優先順序
     raw_date = listed_date if listed_date != "未知日期" else otc_date
     
-    # [修改] 日期格式化: 0130 -> 2026-01-30
-    # 這裡強制使用 2026 年份，符合你的需求
+    # [修改] 日期強制格式化: 0130 -> 2026-01-30
     display_date = raw_date
     if raw_date and raw_date.isdigit():
         if len(raw_date) == 4:
+            # 強制 2026 年
             display_date = f"2026-{raw_date[:2]}-{raw_date[2:]}"
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
     content = "🚀 **每週大股東籌碼強勢榜 (Top 20)**\n"
     content += f"📅 **資料統計日期：{display_date}**\n\n"
-    # [修改] 已刪除抓取時間
 
     def format_rank_block(df, title):
         if df is None or df.empty:
             return f"{title} ❌ 無資料\n\n"
         
+        # [重要] 使用 text 標籤以顯示純文字 (去除程式碼顏色，但保留等寬字體以對齊)
         msg = f"{title}\n"
-        msg += "```"
+        msg += "```text\n"
         
-        # [修改] 為了保證數字絕對對齊，我們調整欄位順序：
-        # 舊：排名 代號 股名 總增減 (中文在中間會把數字擠歪)
-        # 新：排名 代號 總增減 股名 (全英文數字在前，中文在最後)
-        
+        # [修改] 定義各欄位的「視覺寬度」
+        # 根據觀察：排名(4) 代號(6) 股名(10) 間隔(1) 總增減(8)
         W_RANK = 4
         W_CODE = 6
-        W_CHANGE = 10 
+        W_NAME = 10  # 縮短一點以靠近數據
+        W_CHANGE = 8
         
-        # 標題靠右對齊 (rjust) 以對齊底下的數字
-        header = f"{'排名'.ljust(W_RANK)} {'代號'.ljust(W_CODE)} {'總增減'.rjust(W_CHANGE)}   {'股名'}\n"
-        msg += header
-        msg += "-" * 35 + "\n"
+        # 標題列
+        h_rank = pad_visual("排名", W_RANK)
+        h_code = pad_visual("代號", W_CODE)
+        h_name = pad_visual("股名", W_NAME)
+        h_chg  = pad_visual("總增減", W_CHANGE, align='right')
+        
+        msg += f"{h_rank}{h_code}{h_name} {h_chg}\n"
+        msg += "-" * (W_RANK + W_CODE + W_NAME + 1 + W_CHANGE) + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
+            
+            # 分離代號與名稱
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -190,14 +218,22 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # [關鍵修改]
-            # 1. 排名: 靠左
-            # 2. 代號: 靠左
-            # 3. 總增減: 靠右 (rjust)，這樣小數點才會對齊
-            # 4. 股名: 放在最後面，這樣就算中文寬度不一，也不會影響前面的數字對齊
+            # 股名截斷 (避免過長破壞排版，最多 4 個中文字)
+            if get_visual_len(name) > W_NAME:
+                # 簡單處理，若太長則切片
+                name = name[:4] 
             
-            line = f"{str(i+1).ljust(W_RANK)} {code.ljust(W_CODE)} {change.rjust(W_CHANGE)}   {name}\n"
-            msg += line
+            # [修改] 依照指定順序與對齊方式組裝
+            # 排名: 靠左
+            s_rank = pad_visual(str(i+1), W_RANK)
+            # 代號: 靠左
+            s_code = pad_visual(code, W_CODE)
+            # 股名: 靠左 (為了跟左邊靠近)
+            s_name = pad_visual(name, W_NAME)
+            # 總增減: 靠右 (讓小數點對齊)
+            s_chg  = pad_visual(change, W_CHANGE, align='right')
+            
+            msg += f"{s_rank}{s_code}{s_name} {s_chg}\n"
             
         msg += "```\n"
         return msg
