@@ -156,10 +156,10 @@ def push_rank_to_dc():
         return
 
     print("正在處理上市排行 (使用籌碼K線邏輯)...")
-    listed_df, listed_date = get_norway_rank_logic("[https://norway.twsthr.info/StockHoldersTopWeek.aspx](https://norway.twsthr.info/StockHoldersTopWeek.aspx)")
+    listed_df, listed_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
     
     print("正在處理上櫃排行 (使用籌碼K線邏輯)...")
-    otc_df, otc_date = get_norway_rank_logic("[https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1](https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1)")
+    otc_df, otc_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1")
 
     if listed_df is None and otc_df is None:
         print("抓取失敗，無資料")
@@ -184,16 +184,15 @@ def push_rank_to_dc():
         if df is None or df.empty:
             return f"{title} ❌ 無資料\n\n"
         
-        # [重要] 使用 text 標籤以顯示純文字 (去除程式碼顏色，但保留等寬字體以對齊)
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [修改] 定義各欄位的「視覺寬度」
-        # 根據觀察：排名(4) 代號(6) 股名(10) 間隔(1) 總增減(8)
+        # [修改] 調整欄位順序與視覺寬度
+        # 順序: 排名 > 代號 > 股名 > 總增減
         W_RANK = 4
         W_CODE = 6
-        W_NAME = 10  # 縮短一點以靠近數據
-        W_CHANGE = 8
+        W_NAME = 14  # 增加寬度以容納長股名並確保後方對齊
+        W_CHANGE = 9 # 靠右對齊的數字
         
         # 標題列
         h_rank = pad_visual("排名", W_RANK)
@@ -201,13 +200,12 @@ def push_rank_to_dc():
         h_name = pad_visual("股名", W_NAME)
         h_chg  = pad_visual("總增減", W_CHANGE, align='right')
         
-        msg += f"{h_rank}{h_code}{h_name} {h_chg}\n"
-        msg += "-" * (W_RANK + W_CODE + W_NAME + 1 + W_CHANGE) + "\n"
+        msg += f"{h_rank}{h_code}{h_name}{h_chg}\n"
+        msg += "-" * (W_RANK + W_CODE + W_NAME + W_CHANGE) + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
             
-            # 分離代號與名稱
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -218,22 +216,17 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # 股名截斷 (避免過長破壞排版，最多 4 個中文字)
+            # 若股名太長，截斷以保持排版 (最多6個中文字)
             if get_visual_len(name) > W_NAME:
-                # 簡單處理，若太長則切片
-                name = name[:4] 
+                name = name[:6]
             
-            # [修改] 依照指定順序與對齊方式組裝
-            # 排名: 靠左
+            # [修改] 依照: 排名 > 代號 > 股名 > 總增減 進行組裝
             s_rank = pad_visual(str(i+1), W_RANK)
-            # 代號: 靠左
             s_code = pad_visual(code, W_CODE)
-            # 股名: 靠左 (為了跟左邊靠近)
-            s_name = pad_visual(name, W_NAME)
-            # 總增減: 靠右 (讓小數點對齊)
-            s_chg  = pad_visual(change, W_CHANGE, align='right')
+            s_name = pad_visual(name, W_NAME) # 靠左對齊，後方補白
+            s_chg  = pad_visual(change, W_CHANGE, align='right') # 靠右對齊
             
-            msg += f"{s_rank}{s_code}{s_name} {s_chg}\n"
+            msg += f"{s_rank}{s_code}{s_name}{s_chg}\n"
             
         msg += "```\n"
         return msg
