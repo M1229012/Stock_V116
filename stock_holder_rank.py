@@ -18,6 +18,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 def get_norway_rank_logic(url):
     """
     依照「籌碼K線」APP 邏輯爬取，並加入「依最新週漲幅排序」功能
+    修正: 使用 iloc 避免 FutureWarning 及索引錯誤
     """
     options = Options()
     options.add_argument('--headless=new')
@@ -44,7 +45,8 @@ def get_norway_rank_logic(url):
         # 2. 依照原程式碼邏輯：尋找包含關鍵字的表格
         for df in dfs:
             if len(df.columns) > 10 and len(df) > 20:
-                if df.apply(lambda x: x.astype(str).str.contains('大股東持有').any()).any():
+                # 這裡的 contains 檢查通常是對整個 dataframe，使用 map 較為安全
+                if df.astype(str).apply(lambda x: x.str.contains('大股東持有').any()).any():
                     target_df = df
                     break
         
@@ -59,8 +61,9 @@ def get_norway_rank_logic(url):
         data_start_idx = -1
         
         for idx, row in target_df.iterrows():
+            # [修正] 使用 iloc 避免 FutureWarning
             # 找股票代號 (4碼數字)
-            if re.search(r'\d{4}', str(row[3])):
+            if re.search(r'\d{4}', str(row.iloc[3])):
                 data_start_idx = idx
                 break
         
@@ -70,21 +73,25 @@ def get_norway_rank_logic(url):
         # 往回找日期 Header
         for idx in range(max(0, data_start_idx - 5), data_start_idx):
             row = target_df.iloc[idx]
-            if re.match(r'^\d{4,}$', str(row[5])): # 判斷日期格式
+            # [修正] 使用 iloc 避免 FutureWarning
+            if re.match(r'^\d{4,}$', str(row.iloc[5])): # 判斷日期格式
                 header_idx = idx
                 break
         
-        # 4. [修改部分]：不再直接切片，而是抓取所有資料並依照「最新週」排序
+        # 4. [修改部分]：抓取所有資料並依照「最新週」排序
         
-        # 4.1 找出「最新日期」對應的欄位索引 (通常在 index 5 到 10 之間)
-        # 我們從後往前找 (index 10 -> 5)，找到的第一個日期欄位就是最新的
+        # 4.1 找出「最新日期」對應的欄位索引
+        # [修正] 避免硬寫 range(10...) 導致越界，改用 shape[1] 動態判斷
+        max_col_index = target_df.shape[1] - 1
+        # 限制搜尋範圍不超過實際寬度，且至少大於 4
+        start_search = min(10, max_col_index)
+        
         latest_date_col_idx = 5 # 預設值
         latest_date_str = "未知日期"
         
         if header_idx != -1:
-            # 檢查 column 5 到 10 (假設日期欄位都在這範圍)
             # 倒序檢查，確保抓到最右邊(最新)的日期
-            for col_i in range(10, 4, -1): 
+            for col_i in range(start_search, 4, -1): 
                 try:
                     val = str(target_df.iloc[header_idx, col_i]).strip()
                     # 簡單驗證是否包含數字 (日期格式)
@@ -95,7 +102,7 @@ def get_norway_rank_logic(url):
                 except:
                     continue
         
-        # 4.2 抓取所有資料列 (不只前15)
+        # 4.2 抓取所有資料列
         raw_data = target_df.iloc[data_start_idx:].copy()
         
         # 4.3 定義排序用的數值轉換函數
@@ -107,16 +114,17 @@ def get_norway_rank_logic(url):
                 return -999999.0 # 無法解析的排到最後
         
         # 4.4 建立排序依據欄位
-        raw_data['_sort_val'] = raw_data[latest_date_col_idx].apply(parse_pct)
+        # [修正] 使用 iloc 確保依位置取值，避免 KeyError: 10
+        raw_data['_sort_val'] = raw_data.iloc[:, latest_date_col_idx].apply(parse_pct)
         
         # 4.5 依照最新週漲幅由大到小排序，並取出前 15 名
         top15_data = raw_data.sort_values(by='_sort_val', ascending=False).head(15)
         
-        # 4.6 構建回傳 DataFrame，保持原本的格式
-        # 我們將「最新週漲幅」放入 '總增減' 這個欄位名稱中，讓下游 Discord 推播能直接顯示
+        # 4.6 構建回傳 DataFrame
+        # [修正] 使用 iloc 取值
         result_df = pd.DataFrame()
-        result_df['股票代號/名稱'] = top15_data[3]
-        result_df['總增減'] = top15_data[latest_date_col_idx] # 這裡放的是最新一週的數據
+        result_df['股票代號/名稱'] = top15_data.iloc[:, 3]
+        result_df['總增減'] = top15_data.iloc[:, latest_date_col_idx] 
         
         return result_df, latest_date_str
 
