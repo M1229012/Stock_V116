@@ -12,6 +12,8 @@ import re
 import time
 import os
 from datetime import datetime
+from wcwidth import wcwidth
+import unicodedata
 
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
@@ -129,29 +131,45 @@ def get_norway_rank_logic(url):
 
 # ================= 排版工具區 (修正版) =================
 
-# 清掉 Discord 常見造成對齊飄移的不可見字元
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
 
-def clean_cell(s: str) -> str:
+def clean_cell(s) -> str:
     s = "" if s is None else str(s)
-    s = s.replace("\xa0", " ")              # NBSP
-    s = _ZERO_WIDTH_RE.sub("", s)           # zero-width
-    s = re.sub(r"\s+", " ", s).strip()      # 多空白統一
+    s = unicodedata.normalize("NFKC", s)     # 統一全/半形
+    s = s.replace("\xa0", " ")               # NBSP
+    s = _ZERO_WIDTH_RE.sub("", s)            # zero-width
+    s = re.sub(r"\s+", " ", s).strip()       # 多空白統一
     return s
 
-# Discord code block 對齊：用字元數（更貼近 Discord 的渲染）
-def get_visual_len(text):
-    return len(clean_cell(text))
+def visual_len(s) -> int:
+    s = clean_cell(s)
+    w = 0
+    for ch in s:
+        cw = wcwidth(ch)
+        if cw > 0:
+            w += cw
+    return w
 
-def truncate_to_width(text, max_width):
-    s = clean_cell(text)
-    return s[:max_width]
+def truncate_to_width(s, max_w: int) -> str:
+    s = clean_cell(s)
+    w = 0
+    out = []
+    for ch in s:
+        cw = wcwidth(ch)
+        if cw < 0:
+            continue
+        if w + cw > max_w:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
 
-def pad_visual(text, target_width, align="left"):
-    s = truncate_to_width(text, target_width)
-    pad_len = max(0, target_width - len(s))
-    padding = " " * pad_len
-    return (padding + s) if align == "right" else (s + padding)
+def pad_visual(s, target_w: int, align="left") -> str:
+    s = truncate_to_width(s, target_w)
+    pad = max(0, target_w - visual_len(s))
+    if align == "right":
+        return (" " * pad) + s
+    return s + (" " * pad)
 
 # [保留] 數值標準化格式
 def fmt_change(x):
@@ -197,10 +215,10 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # 定義視覺寬度 (改用字元數邏輯)
+        # [嚴格排版] 定義視覺寬度 (改用顯示格數)
         W_RANK   = 4 
         W_CODE   = 6 
-        W_NAME   = 14 
+        W_NAME   = 18 # 放大到 18 (約 9 個中文字)
         W_CHANGE = 10 
         
         # 定義 Gap
@@ -210,12 +228,12 @@ def push_rank_to_dc():
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        # [修正] 依照指示改回左對齊，確保「總」字和下面的數字起始對齊
+        # 標題強制靠左
         h_chg  = pad_visual("總增減", W_CHANGE, align='left') 
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # 分隔線
+        # 分隔線 (動態計算長度)
         total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
         msg += "=" * total_width + "\n"
         
@@ -238,7 +256,7 @@ def push_rank_to_dc():
             # 使用 fmt_change 格式化數字
             change_str = fmt_change(row['總增減'])
             
-            # 截斷股名 (使用字元數邏輯)
+            # [修正] 股名截斷 (使用正確的 visual_len 邏輯)
             name = truncate_to_width(name, W_NAME)
             
             # [組裝] 
@@ -246,7 +264,7 @@ def push_rank_to_dc():
             s_code = pad_visual(code, W_CODE)
             s_name = pad_visual(name, W_NAME, align='left')
             
-            # [修正] 依照指示改回左對齊，讓數字起始位置一致
+            # [修正] 數字強制靠左對齊，現在因為前方寬度固定，所以會絕對切齊
             s_chg  = pad_visual(change_str, W_CHANGE, align='left')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
