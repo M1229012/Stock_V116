@@ -127,27 +127,6 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# [計算視覺長度] 中文字算2，英數字算1
-def get_visual_length(s):
-    length = 0
-    for char in s:
-        if ord(char) > 127:
-            length += 2
-        else:
-            length += 1
-    return length
-
-# [填充文字] 根據視覺長度進行補白 (align: 'left' | 'right')
-def fill_mixed_text(text, width, align='left'):
-    text = str(text)
-    current_len = get_visual_length(text)
-    padding_len = max(0, width - current_len)
-    
-    if align == 'right':
-        return " " * padding_len + text
-    else:
-        return text + " " * padding_len
-
 def push_rank_to_dc():
     if not DISCORD_WEBHOOK_URL:
         print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
@@ -167,20 +146,17 @@ def push_rank_to_dc():
     raw_date = listed_date if listed_date != "未知日期" else otc_date
     
     # [修改] 日期格式化: 0130 -> 2026-01-30
+    # 這裡強制使用 2026 年份，符合你的需求
     display_date = raw_date
-    current_year = datetime.now().year
-    
     if raw_date and raw_date.isdigit():
-        # 如果只有4碼 (例如 0130)，加上當前年份
         if len(raw_date) == 4:
-            display_date = f"{current_year}-{raw_date[:2]}-{raw_date[2:]}"
-        # 如果是8碼 (例如 20260130)，直接格式化
+            display_date = f"2026-{raw_date[:2]}-{raw_date[2:]}"
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
     content = "🚀 **每週大股東籌碼強勢榜 (Top 20)**\n"
     content += f"📅 **資料統計日期：{display_date}**\n\n"
-    # [修改] 移除了抓取時間顯示
+    # [修改] 已刪除抓取時間
 
     def format_rank_block(df, title):
         if df is None or df.empty:
@@ -189,27 +165,21 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```"
         
-        # [修改] 定義欄位視覺寬度 (Visual Width)
-        W_RANK = 6
-        W_CODE = 7
-        W_NAME = 12
-        W_CHANGE = 10
+        # [修改] 為了保證數字絕對對齊，我們調整欄位順序：
+        # 舊：排名 代號 股名 總增減 (中文在中間會把數字擠歪)
+        # 新：排名 代號 總增減 股名 (全英文數字在前，中文在最後)
         
-        # 構建對齊的標題列
-        header_rank = fill_mixed_text("排名", W_RANK)
-        header_code = fill_mixed_text("代號", W_CODE)
-        header_name = fill_mixed_text("股名", W_NAME)
-        header_change = fill_mixed_text("總增減", W_CHANGE, align='right') # 標題靠右對齊以對齊數字
+        W_RANK = 4
+        W_CODE = 6
+        W_CHANGE = 10 
         
-        msg += f"{header_rank}{header_code}{header_name}{header_change}\n"
-        
-        # 分隔線長度 = 總寬度
-        total_width = W_RANK + W_CODE + W_NAME + W_CHANGE
-        msg += "-" * total_width + "\n"
+        # 標題靠右對齊 (rjust) 以對齊底下的數字
+        header = f"{'排名'.ljust(W_RANK)} {'代號'.ljust(W_CODE)} {'總增減'.rjust(W_CHANGE)}   {'股名'}\n"
+        msg += header
+        msg += "-" * 35 + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
-            # 分離代號與名稱
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -220,18 +190,15 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # 處理股名過長 (截斷)
-            if get_visual_length(name) > W_NAME:
-                # 簡單截斷：這裡為了安全起見取前4個字元(因為可能有全形)
-                name = name[:4]
+            # [關鍵修改]
+            # 1. 排名: 靠左
+            # 2. 代號: 靠左
+            # 3. 總增減: 靠右 (rjust)，這樣小數點才會對齊
+            # 4. 股名: 放在最後面，這樣就算中文寬度不一，也不會影響前面的數字對齊
             
-            # [修改]: 使用 fill_mixed_text 進行精準對齊
-            str_rank = fill_mixed_text(str(i+1), W_RANK)
-            str_code = fill_mixed_text(code, W_CODE)
-            str_name = fill_mixed_text(name, W_NAME)
-            str_change = fill_mixed_text(change, W_CHANGE, align='right') # 數字靠右對齊
+            line = f"{str(i+1).ljust(W_RANK)} {code.ljust(W_CODE)} {change.rjust(W_CHANGE)}   {name}\n"
+            msg += line
             
-            msg += f"{str_rank}{str_code}{str_name}{str_change}\n"
         msg += "```\n"
         return msg
 
