@@ -129,7 +129,7 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# ================= 排版工具區 =================
+# ================= 排版工具區 (終極修正版) =================
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
 
@@ -150,7 +150,9 @@ def to_fullwidth(s):
 
 def clean_cell(s) -> str:
     s = "" if s is None else str(s)
-    s = unicodedata.normalize("NFKC", s)     # 統一全/半形
+    # [關鍵修正] 移除 NFKC 正規化，避免全形字又被轉回半形 (導致 KY 歪掉)
+    # s = unicodedata.normalize("NFKC", s) 
+    
     s = s.replace("\xa0", " ")               # NBSP
     s = _ZERO_WIDTH_RE.sub("", s)            # zero-width
     s = re.sub(r"\s+", " ", s).strip()       # 多空白統一
@@ -241,10 +243,10 @@ def push_rank_to_dc():
         # 定義視覺寬度
         W_RANK   = 4 
         W_CODE   = 6 
-        W_NAME   = 12 
+        W_NAME   = 12 # 保持 12 以容納 "IET-KY" (全形後)
         W_CHANGE = 10 
         
-        # 定義 Gap (單一半形空白)
+        # 定義 Gap (單一半形空白，拉近距離)
         GAP = " "
         
         # 標題列
@@ -255,9 +257,9 @@ def push_rank_to_dc():
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # [修改] 分隔線長度 (原計算長度 - 2)
+        # [修改] 分隔線長度 (再縮短 2 個單位，共減 4)
         total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
-        msg += "=" * (total_width - 2) + "\n"
+        msg += "=" * (total_width - 4) + "\n"
         
         for i, row in df.iterrows():
             # 清洗
@@ -274,7 +276,7 @@ def push_rank_to_dc():
             code = clean_cell(code)
             name = clean_cell(name)
             
-            # [新增] 修正亂碼：將 "卅卅" 替換為 "碁" (修正 宏碁 等股名)
+            # [新增] 修正亂碼：將 "卅卅" 替換為 "碁" (要在轉全形之前做)
             name = name.replace("卅卅", "碁")
             
             change_str = fmt_change(row['總增減'])
