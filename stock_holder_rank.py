@@ -110,7 +110,7 @@ def get_norway_rank_logic(url):
         # 4.4 建立排序依據欄位
         raw_data['_sort_val'] = raw_data.iloc[:, latest_date_col_idx].apply(parse_pct)
         
-        # 4.5 [修改]: 依照最新週漲幅由大到小排序，並取出前 20 名 (原本是 15)
+        # 4.5 依照最新週漲幅由大到小排序，並取出前 20 名
         top20_data = raw_data.sort_values(by='_sort_val', ascending=False).head(20)
         
         # 4.6 構建回傳 DataFrame
@@ -125,6 +125,23 @@ def get_norway_rank_logic(url):
         return None, None
     finally:
         driver.quit()
+
+# [新增] 用來計算混合中英文字串的視覺長度 (中文字算2，英數字算1)
+def get_visual_length(s):
+    length = 0
+    for char in s:
+        # 判斷是否為全形字符 (通常 ASCII > 127 為非英文數字)
+        if ord(char) > 127:
+            length += 2
+        else:
+            length += 1
+    return length
+
+# [新增] 智慧補白函式，確保對齊
+def pad_mixed_text(text, width):
+    current_len = get_visual_length(text)
+    padding_len = max(0, width - current_len)
+    return text + " " * padding_len
 
 def push_rank_to_dc():
     if not DISCORD_WEBHOOK_URL:
@@ -142,9 +159,16 @@ def push_rank_to_dc():
         return
 
     # 顯示日期優先順序
-    display_date = listed_date if listed_date != "未知日期" else otc_date
+    raw_date = listed_date if listed_date != "未知日期" else otc_date
+    
+    # [修改] 日期格式化: 0130 -> 01-30
+    display_date = raw_date
+    if raw_date and raw_date.isdigit():
+        if len(raw_date) == 4:
+            display_date = f"{raw_date[:2]}-{raw_date[2:]}"
+        elif len(raw_date) == 8:
+            display_date = f"{raw_date[4:6]}-{raw_date[6:]}"
 
-    # [修改]: 標題改為 Top 20
     content = "🚀 **每週大股東籌碼強勢榜 (Top 20)**\n"
     content += f"📅 **資料統計日期：{display_date}**\n"
     content += f"⏰ 抓取時間：{time.strftime('%Y-%m-%d %H:%M')}\n\n"
@@ -155,13 +179,14 @@ def push_rank_to_dc():
         
         msg = f"{title}\n"
         msg += "```"
-        # [修改]: 調整標題欄位寬度，增加「代號」與「股名」欄位
-        msg += f"{'排名':<4}{'代號':<6}{'股名':<10}{'總增減':>8}\n"
-        msg += "-" * 32 + "\n"
+        # [修改]: 標題對齊設定 (手動調整空格以符合視覺寬度)
+        # 排名(4) 代號(6) 股名(12) 總增減(8)
+        msg += "排名  代號  股名        總增減\n"
+        msg += "-" * 34 + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
-            # [修改]: 分離代號與名稱 (例如 "2330台積電" -> "2330", "台積電")
+            # 分離代號與名稱
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -172,12 +197,22 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # [修改]: 優化排版格式
-            # 排名占4格，代號占6格，股名占10格(保留中文空間)，增減靠右對齊
-            # 截斷過長的股名以保持整齊
-            if len(name) > 8: name = name[:8]
+            # 處理股名過長 (最多顯示 5 個中文字，約 10 寬度)
+            if get_visual_length(name) > 10:
+                # 簡單截斷，避免破版
+                name = name[:5]
             
-            msg += f"{i+1:<4}{code:<6}{name:<10}{change:>8}\n"
+            # [修改]: 使用 pad_mixed_text 進行精準對齊
+            # Rank: 靠左, 寬度 4
+            rank_str = str(i+1).ljust(6) # 稍微寬一點避免擠壓
+            # Code: 靠左, 寬度 6
+            code_str = code.ljust(6)
+            # Name: 智慧對齊, 寬度 12
+            name_str = pad_mixed_text(name, 12)
+            # Change: 靠右, 寬度 8
+            change_str = change.rjust(8)
+            
+            msg += f"{rank_str}{code_str}{name_str}{change_str}\n"
         msg += "```\n"
         return msg
 
