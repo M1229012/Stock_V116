@@ -127,16 +127,32 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
+# ================= 排版工具區 =================
+
 # [核心功能] 計算字串的視覺寬度 (Visual Width)
 # 中文字(全形) = 2, 英數字(半形) = 1
 def get_visual_len(text):
     length = 0
-    for char in text:
+    for char in str(text):
         if ord(char) > 127: 
             length += 2
         else:
             length += 1
     return length
+
+# [新增功能] 智慧截斷字串
+# 確保字串在視覺寬度限制內，避免切斷中文字或超出表格
+def truncate_to_width(text, max_visual_width):
+    text = str(text)
+    current_width = 0
+    new_text = ""
+    for char in text:
+        char_w = 2 if ord(char) > 127 else 1
+        if current_width + char_w > max_visual_width:
+            break
+        current_width += char_w
+        new_text += char
+    return new_text
 
 # [核心功能] 填充字串以達到目標視覺寬度
 def pad_visual(text, target_width, align='left'):
@@ -176,36 +192,38 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
-    content = "🚀 **每週大股東籌碼強勢榜 (Top 20)**\n"
-    content += f"📅 **資料統計日期：{display_date}**\n\n"
+    # [美化] 標題區塊
+    content = "📊 **籌碼K線｜每週大股東籌碼強勢榜 Top 20**\n"
+    content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
     def format_rank_block(df, title):
         if df is None or df.empty:
-            return f"{title} ❌ 無資料\n\n"
+            return f"{title} ❌ **無資料**\n\n"
         
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [嚴格修改] 定義各欄位的「視覺寬度」
-        # 根據要求：股名固定 7 個中文字 = 14 visual width
-        W_RANK = 4
-        W_CODE = 6
-        W_NAME = 14  # 7 格全形字 (固定空間)
-        W_GAP  = 2   # 股名後固定空 2 格
-        W_CHANGE = 10 # 總增減 (靠右)
+        # [嚴格排版] 定義各欄位的「視覺寬度」
+        # 調整欄位寬度以達到更佳視覺平衡
+        W_RANK   = 4   # 排名
+        W_CODE   = 6   # 代號
+        W_NAME   = 14  # 股名 (約7個全形字)
+        W_CHANGE = 11  # 總增減 (預留符號空間)
+        
+        # 定義 Gap (欄位間距)
+        GAP = "  " 
         
         # 標題列
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
-        h_name = pad_visual("股名", W_NAME)
-        # 標題 Gap 手動加
+        h_name = pad_visual("股名", W_NAME) # 靠左
         h_chg  = pad_visual("總增減", W_CHANGE, align='right')
         
-        msg += f"{h_rank}{h_code}{h_name}{' '*W_GAP}{h_chg}\n"
+        msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # 分隔線長度
-        total_width = W_RANK + W_CODE + W_NAME + W_GAP + W_CHANGE
-        msg += "-" * total_width + "\n"
+        # 分隔線 (動態計算長度)
+        total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
+        msg += "=" * total_width + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
@@ -221,39 +239,30 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # 股名截斷 (若超過 7 字則截斷，確保不破壞版面)
-            # 由於中文字元寬度計算複雜，這裡保守取前 7 個字元
-            # (假設最長不會超過 7 個中文字)
-            visual_len = get_visual_len(name)
-            if visual_len > W_NAME:
-                # 簡單截斷：這裡為了安全起見取前6個字元
-                name = name[:6]
+            # [優化] 智慧截斷股名
+            # 使用 truncate_to_width 取代原本的 name[:6]
+            # 這樣可以確保中英文混合時，長度依然整齊對齊 W_NAME
+            name = truncate_to_width(name, W_NAME)
             
             # [組裝] 嚴格依照指定順序與間距
-            s_rank = pad_visual(str(i+1), W_RANK)
+            s_rank = pad_visual(f"{i+1:02d}", W_RANK) # 補零變成 01, 02 比較整齊
             s_code = pad_visual(code, W_CODE)
-            
-            # 股名：靠左對齊，補足 14 視覺寬度 (7格全形)
             s_name = pad_visual(name, W_NAME, align='left')
-            
-            # 固定空 2 格
-            s_gap = " " * W_GAP
-            
-            # 總增減：靠右對齊
             s_chg  = pad_visual(change, W_CHANGE, align='right')
             
-            msg += f"{s_rank}{s_code}{s_name}{s_gap}{s_chg}\n"
+            msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
             
         msg += "```\n"
         return msg
 
     # 上市
-    content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
+    content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】 Listed**")
     
-    content += "─" * 20 + "\n\n"
-
     # 上櫃
-    content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
+    content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】 OTC**")
+
+    # Footer
+    content += "_資料來源：神秘金字塔 / 籌碼K線邏輯_\n"
 
     # 發送
     try:
