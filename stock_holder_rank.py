@@ -12,6 +12,7 @@ import re
 import time
 import os
 from datetime import datetime
+from wcwidth import wcswidth  # [新增] 引入 wcwidth 用於精確計算寬度
 
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
@@ -127,33 +128,26 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# ================= 排版工具區 =================
+# ================= 排版工具區 (修正版) =================
 
-# [核心功能] 計算字串的視覺寬度 (Visual Width)
-# 中文字(全形) = 2, 英數字(半形) = 1
+# [修正功能] 使用 wcwidth 精確計算字串的視覺寬度
 def get_visual_len(text):
-    length = 0
-    for char in str(text):
-        if ord(char) > 127: 
-            length += 2
-        else:
-            length += 1
-    return length
+    return wcswidth(str(text))
 
-# [核心功能] 智慧截斷字串
+# [修正功能] 智慧截斷字串 (配合 wcwidth)
 def truncate_to_width(text, max_visual_width):
     text = str(text)
     current_width = 0
     new_text = ""
     for char in text:
-        char_w = 2 if ord(char) > 127 else 1
+        char_w = wcswidth(char)
         if current_width + char_w > max_visual_width:
             break
         current_width += char_w
         new_text += char
     return new_text
 
-# [核心功能] 填充字串以達到目標視覺寬度
+# [修正功能] 填充字串 (配合 wcwidth)
 def pad_visual(text, target_width, align='left'):
     text = str(text)
     vis_len = get_visual_len(text)
@@ -163,8 +157,16 @@ def pad_visual(text, target_width, align='left'):
     if align == 'right':
         return padding + text
     else:
-        # left: padding 加在右邊
         return text + padding
+
+# [新增功能] 數值標準化格式
+def fmt_change(x):
+    s = str(x)
+    s = s.replace('%', '').replace(',', '')
+    s = re.sub(r'\s+', '', s)  # 清掉各種奇怪空白
+    v = pd.to_numeric(s, errors='coerce')
+    # 強制顯示兩位小數，確保 5.00 和 10.86 長度邏輯一致
+    return "-" if pd.isna(v) else f"{v:.2f}"
 
 def push_rank_to_dc():
     if not DISCORD_WEBHOOK_URL:
@@ -192,7 +194,6 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
-    # [修改] 標題移除特定字眼
     content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
@@ -203,21 +204,21 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [嚴格排版] 定義視覺寬度
-        # 為了不讓數字黏在一起，稍微加大 Change 的寬度
+        # 定義視覺寬度
         W_RANK   = 4 
         W_CODE   = 6 
         W_NAME   = 14 
-        W_CHANGE = 12 # 加寬一點，確保容納空間
+        W_CHANGE = 10 # 調整寬度，配合 %.2f
         
         # 定義 Gap
         GAP = "  " 
         
-        # 標題列 (全部靠左)
+        # 標題列
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        h_chg  = pad_visual("總增減", W_CHANGE, align='left') # 強制靠左
+        # [修正] 標題改為靠右 (配合數字右對齊)
+        h_chg  = pad_visual("總增減", W_CHANGE, align='right') 
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
@@ -235,8 +236,9 @@ def push_rank_to_dc():
             else:
                 code = raw_str[:4]
                 name = raw_str[4:].strip()
-                
-            change = str(row['總增減']).replace(',', '').strip()
+            
+            # [修正] 使用 fmt_change 格式化數字 (確保是 .2f)
+            change_str = fmt_change(row['總增減'])
             
             # 截斷股名
             name = truncate_to_width(name, W_NAME)
@@ -246,20 +248,16 @@ def push_rank_to_dc():
             s_code = pad_visual(code, W_CODE)
             s_name = pad_visual(name, W_NAME, align='left')
             
-            # [關鍵修改] 強制靠左對齊 (Align Left)
-            # 這樣 10.86 和 5.09 的第一個數字會垂直對齊
-            s_chg  = pad_visual(change, W_CHANGE, align='left')
+            # [修正] 數字改為靠右對齊 (小數點對齊)
+            s_chg  = pad_visual(change_str, W_CHANGE, align='right')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
             
         msg += "```\n"
         return msg
 
-    # [移除] 英文標示與特定品牌字眼
     content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
     content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
-
-    # [移除] 底部資料來源文字已刪除
 
     # 發送
     try:
