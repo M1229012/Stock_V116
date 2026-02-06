@@ -13,15 +13,17 @@ import time
 import os
 
 # ================= 設定區 =================
-# 改為從環境變數讀取
+# 從 GitHub Actions 的 Secrets 讀取
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 
 def get_weekly_rank(url):
     """ 爬取並解析排行榜前 15 名 """
     options = Options()
-    options.add_argument('--headless')
+    options.add_argument('--headless=new') # 使用新版 headless 模式
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu') 
+    options.add_argument('--window-size=1920,1080') # 關鍵：設定視窗大小，避免 RWD 隱藏表格
     
     # 建立 WebDriver
     service = Service(ChromeDriverManager().install())
@@ -30,7 +32,7 @@ def get_weekly_rank(url):
     try:
         driver.get(url)
         # 等待表格出現
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         
         html = driver.page_source
         dfs = pd.read_html(StringIO(html))
@@ -73,7 +75,7 @@ def get_weekly_rank(url):
 def push_rank_to_dc():
     """ 整合上市上櫃排行並推播 """
     if not DISCORD_WEBHOOK_URL:
-        print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
+        print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數，請檢查 GitHub Secrets")
         return
 
     print("正在處理上市排行...")
