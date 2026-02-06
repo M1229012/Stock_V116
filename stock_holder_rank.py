@@ -18,7 +18,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 
 def get_norway_rank_logic(url):
     """
-    依照「籌碼K線」APP 邏輯爬取，並加入「依最新週漲幅排序」功能
+    依照APP邏輯爬取，並加入「依最新週漲幅排序」功能
     修正: 使用 iloc 避免 FutureWarning 及索引錯誤
     """
     options = Options()
@@ -76,7 +76,7 @@ def get_norway_rank_logic(url):
                 header_idx = idx
                 break
         
-        # 4. [修改部分]：抓取所有資料並依照「最新週」排序
+        # 4. 抓取所有資料並依照「最新週」排序
         
         # 4.1 找出「最新日期」對應的欄位索引
         max_col_index = target_df.shape[1] - 1
@@ -140,8 +140,7 @@ def get_visual_len(text):
             length += 1
     return length
 
-# [新增功能] 智慧截斷字串
-# 確保字串在視覺寬度限制內，避免切斷中文字或超出表格
+# [核心功能] 智慧截斷字串
 def truncate_to_width(text, max_visual_width):
     text = str(text)
     current_width = 0
@@ -164,6 +163,7 @@ def pad_visual(text, target_width, align='left'):
     if align == 'right':
         return padding + text
     else:
+        # left: padding 加在右邊
         return text + padding
 
 def push_rank_to_dc():
@@ -171,10 +171,10 @@ def push_rank_to_dc():
         print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
         return
 
-    print("正在處理上市排行 (使用籌碼K線邏輯)...")
+    print("正在處理上市排行...")
     listed_df, listed_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
     
-    print("正在處理上櫃排行 (使用籌碼K線邏輯)...")
+    print("正在處理上櫃排行...")
     otc_df, otc_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1")
 
     if listed_df is None and otc_df is None:
@@ -184,7 +184,7 @@ def push_rank_to_dc():
     # 顯示日期優先順序
     raw_date = listed_date if listed_date != "未知日期" else otc_date
     
-    # [修改] 日期強制格式化: 0130 -> 2026-01-30
+    # 日期格式化
     display_date = raw_date
     if raw_date and raw_date.isdigit():
         if len(raw_date) == 4:
@@ -192,8 +192,8 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
-    # [美化] 標題區塊
-    content = "📊 **籌碼K線｜每週大股東籌碼強勢榜 Top 20**\n"
+    # [修改] 標題移除特定字眼
+    content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
     def format_rank_block(df, title):
@@ -203,33 +203,31 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [嚴格排版] 定義各欄位的「視覺寬度」
-        # 調整欄位寬度以達到更佳視覺平衡
-        W_RANK   = 4   # 排名
-        W_CODE   = 6   # 代號
-        W_NAME   = 14  # 股名 (約7個全形字)
-        W_CHANGE = 11  # 總增減 (預留符號空間)
+        # [嚴格排版] 定義視覺寬度
+        # 為了不讓數字黏在一起，稍微加大 Change 的寬度
+        W_RANK   = 4 
+        W_CODE   = 6 
+        W_NAME   = 14 
+        W_CHANGE = 12 # 加寬一點，確保容納空間
         
-        # 定義 Gap (欄位間距)
+        # 定義 Gap
         GAP = "  " 
         
-        # 標題列
+        # 標題列 (全部靠左)
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
-        h_name = pad_visual("股名", W_NAME) # 靠左
-        # [修改] 總增減標題改為靠左對齊
-        h_chg  = pad_visual("總增減", W_CHANGE, align='left')
+        h_name = pad_visual("股名", W_NAME)
+        h_chg  = pad_visual("總增減", W_CHANGE, align='left') # 強制靠左
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # 分隔線 (動態計算長度)
+        # 分隔線
         total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
         msg += "=" * total_width + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
             
-            # 分離代號與名稱
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -240,14 +238,16 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # [優化] 智慧截斷股名
+            # 截斷股名
             name = truncate_to_width(name, W_NAME)
             
-            # [組裝] 嚴格依照指定順序與間距
-            s_rank = pad_visual(f"{i+1:02d}", W_RANK) # 補零變成 01, 02
+            # [組裝] 
+            s_rank = pad_visual(f"{i+1:02d}", W_RANK) 
             s_code = pad_visual(code, W_CODE)
             s_name = pad_visual(name, W_NAME, align='left')
-            # [修改] 數字強制靠左對齊，與標題對齊
+            
+            # [關鍵修改] 強制靠左對齊 (Align Left)
+            # 這樣 10.86 和 5.09 的第一個數字會垂直對齊
             s_chg  = pad_visual(change, W_CHANGE, align='left')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
@@ -255,13 +255,11 @@ def push_rank_to_dc():
         msg += "```\n"
         return msg
 
-    # 上市 [移除 Listed 字樣]
+    # [移除] 英文標示與特定品牌字眼
     content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
-    
-    # 上櫃 [移除 OTC 字樣]
     content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
 
-    # [移除] 這裡已經刪除資料來源的 footer 程式碼
+    # [移除] 底部資料來源文字已刪除
 
     # 發送
     try:
