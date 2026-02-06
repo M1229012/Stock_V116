@@ -45,7 +45,6 @@ def get_norway_rank_logic(url):
         # 2. 依照原程式碼邏輯：尋找包含關鍵字的表格
         for df in dfs:
             if len(df.columns) > 10 and len(df) > 20:
-                # 這裡的 contains 檢查通常是對整個 dataframe，使用 map 較為安全
                 if df.astype(str).apply(lambda x: x.str.contains('大股東持有').any()).any():
                     target_df = df
                     break
@@ -61,7 +60,6 @@ def get_norway_rank_logic(url):
         data_start_idx = -1
         
         for idx, row in target_df.iterrows():
-            # [修正] 使用 iloc 避免 FutureWarning
             # 找股票代號 (4碼數字)
             if re.search(r'\d{4}', str(row.iloc[3])):
                 data_start_idx = idx
@@ -73,7 +71,6 @@ def get_norway_rank_logic(url):
         # 往回找日期 Header
         for idx in range(max(0, data_start_idx - 5), data_start_idx):
             row = target_df.iloc[idx]
-            # [修正] 使用 iloc 避免 FutureWarning
             if re.match(r'^\d{4,}$', str(row.iloc[5])): # 判斷日期格式
                 header_idx = idx
                 break
@@ -81,9 +78,7 @@ def get_norway_rank_logic(url):
         # 4. [修改部分]：抓取所有資料並依照「最新週」排序
         
         # 4.1 找出「最新日期」對應的欄位索引
-        # [修正] 避免硬寫 range(10...) 導致越界，改用 shape[1] 動態判斷
         max_col_index = target_df.shape[1] - 1
-        # 限制搜尋範圍不超過實際寬度，且至少大於 4
         start_search = min(10, max_col_index)
         
         latest_date_col_idx = 5 # 預設值
@@ -94,7 +89,6 @@ def get_norway_rank_logic(url):
             for col_i in range(start_search, 4, -1): 
                 try:
                     val = str(target_df.iloc[header_idx, col_i]).strip()
-                    # 簡單驗證是否包含數字 (日期格式)
                     if re.search(r'\d+', val):
                         latest_date_col_idx = col_i
                         latest_date_str = val
@@ -114,17 +108,15 @@ def get_norway_rank_logic(url):
                 return -999999.0 # 無法解析的排到最後
         
         # 4.4 建立排序依據欄位
-        # [修正] 使用 iloc 確保依位置取值，避免 KeyError: 10
         raw_data['_sort_val'] = raw_data.iloc[:, latest_date_col_idx].apply(parse_pct)
         
-        # 4.5 依照最新週漲幅由大到小排序，並取出前 15 名
-        top15_data = raw_data.sort_values(by='_sort_val', ascending=False).head(15)
+        # 4.5 [修改]: 依照最新週漲幅由大到小排序，並取出前 20 名 (原本是 15)
+        top20_data = raw_data.sort_values(by='_sort_val', ascending=False).head(20)
         
         # 4.6 構建回傳 DataFrame
-        # [修正] 使用 iloc 取值
         result_df = pd.DataFrame()
-        result_df['股票代號/名稱'] = top15_data.iloc[:, 3]
-        result_df['總增減'] = top15_data.iloc[:, latest_date_col_idx] 
+        result_df['股票代號/名稱'] = top20_data.iloc[:, 3]
+        result_df['總增減'] = top20_data.iloc[:, latest_date_col_idx] 
         
         return result_df, latest_date_str
 
@@ -152,7 +144,8 @@ def push_rank_to_dc():
     # 顯示日期優先順序
     display_date = listed_date if listed_date != "未知日期" else otc_date
 
-    content = "🚀 **每週大股東籌碼強勢榜 (Top 15)**\n"
+    # [修改]: 標題改為 Top 20
+    content = "🚀 **每週大股東籌碼強勢榜 (Top 20)**\n"
     content += f"📅 **資料統計日期：{display_date}**\n"
     content += f"⏰ 抓取時間：{time.strftime('%Y-%m-%d %H:%M')}\n\n"
 
@@ -162,19 +155,29 @@ def push_rank_to_dc():
         
         msg = f"{title}\n"
         msg += "```"
-        # 這裡使用籌碼K線邏輯抓到的「總增減」欄位 (已經替換為最新週漲幅)
-        msg += f"{'排名':<2} {'股票代號/名稱':<12} {'總增減':>8}\n"
-        msg += "-" * 30 + "\n"
+        # [修改]: 調整標題欄位寬度，增加「代號」與「股名」欄位
+        msg += f"{'排名':<4}{'代號':<6}{'股名':<10}{'總增減':>8}\n"
+        msg += "-" * 32 + "\n"
         
         for i, row in df.iterrows():
-            name = str(row['股票代號/名稱']).strip()
-            # 確保內容是字串並去除多餘空格
+            raw_str = str(row['股票代號/名稱']).strip()
+            # [修改]: 分離代號與名稱 (例如 "2330台積電" -> "2330", "台積電")
+            match = re.match(r'(\d{4})\s*(.*)', raw_str)
+            if match:
+                code = match.group(1)
+                name = match.group(2).strip()
+            else:
+                code = raw_str[:4]
+                name = raw_str[4:].strip()
+                
             change = str(row['總增減']).replace(',', '').strip()
             
-            # 嘗試格式化讓排版好看一點 (如果太長截斷)
-            if len(name) > 12: name = name[:12]
+            # [修改]: 優化排版格式
+            # 排名占4格，代號占6格，股名占10格(保留中文空間)，增減靠右對齊
+            # 截斷過長的股名以保持整齊
+            if len(name) > 8: name = name[:8]
             
-            msg += f"{i+1:<4} {name:<14} {change:>8}\n"
+            msg += f"{i+1:<4}{code:<6}{name:<10}{change:>8}\n"
         msg += "```\n"
         return msg
 
