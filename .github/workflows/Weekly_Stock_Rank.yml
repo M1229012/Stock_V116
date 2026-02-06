@@ -1,22 +1,29 @@
-name: Weekly Stock Rank
+name: Weekly Stock Holder Rank
 
 on:
   schedule:
-    # 每週六 10:00 UTC (台灣時間 18:00) 執行一次
-    - cron: '0 10 * * 6'
-  workflow_dispatch: # 允許手動觸發
+    # UTC 03:00 = 台灣時間 11:00 (週六)
+    - cron: '0 3 * * 6'
+  workflow_dispatch: # 允許手動按按鈕測試
 
 jobs:
-  run_script:
+  run_rank_script:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: |
           pip install pandas requests selenium webdriver-manager lxml
-      - name: Run Script
+
+      - name: Run Stock Holder Rank Script
+        env:
+          # 這裡將 GitHub Secrets 注入到環境變數
+          DISCORD_WEBHOOK_URL_TEST: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
         run: python stock_holder_rank.py
