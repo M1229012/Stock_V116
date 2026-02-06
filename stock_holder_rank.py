@@ -11,6 +11,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 import re
 import time
 import os
+from datetime import datetime
 
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
@@ -126,22 +127,26 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# [新增] 用來計算混合中英文字串的視覺長度 (中文字算2，英數字算1)
+# [計算視覺長度] 中文字算2，英數字算1
 def get_visual_length(s):
     length = 0
     for char in s:
-        # 判斷是否為全形字符 (通常 ASCII > 127 為非英文數字)
         if ord(char) > 127:
             length += 2
         else:
             length += 1
     return length
 
-# [新增] 智慧補白函式，確保對齊
-def pad_mixed_text(text, width):
+# [填充文字] 根據視覺長度進行補白 (align: 'left' | 'right')
+def fill_mixed_text(text, width, align='left'):
+    text = str(text)
     current_len = get_visual_length(text)
     padding_len = max(0, width - current_len)
-    return text + " " * padding_len
+    
+    if align == 'right':
+        return " " * padding_len + text
+    else:
+        return text + " " * padding_len
 
 def push_rank_to_dc():
     if not DISCORD_WEBHOOK_URL:
@@ -161,17 +166,21 @@ def push_rank_to_dc():
     # 顯示日期優先順序
     raw_date = listed_date if listed_date != "未知日期" else otc_date
     
-    # [修改] 日期格式化: 0130 -> 01-30
+    # [修改] 日期格式化: 0130 -> 2026-01-30
     display_date = raw_date
+    current_year = datetime.now().year
+    
     if raw_date and raw_date.isdigit():
+        # 如果只有4碼 (例如 0130)，加上當前年份
         if len(raw_date) == 4:
-            display_date = f"{raw_date[:2]}-{raw_date[2:]}"
+            display_date = f"{current_year}-{raw_date[:2]}-{raw_date[2:]}"
+        # 如果是8碼 (例如 20260130)，直接格式化
         elif len(raw_date) == 8:
-            display_date = f"{raw_date[4:6]}-{raw_date[6:]}"
+            display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
     content = "🚀 **每週大股東籌碼強勢榜 (Top 20)**\n"
-    content += f"📅 **資料統計日期：{display_date}**\n"
-    content += f"⏰ 抓取時間：{time.strftime('%Y-%m-%d %H:%M')}\n\n"
+    content += f"📅 **資料統計日期：{display_date}**\n\n"
+    # [修改] 移除了抓取時間顯示
 
     def format_rank_block(df, title):
         if df is None or df.empty:
@@ -179,10 +188,24 @@ def push_rank_to_dc():
         
         msg = f"{title}\n"
         msg += "```"
-        # [修改]: 標題對齊設定 (手動調整空格以符合視覺寬度)
-        # 排名(4) 代號(6) 股名(12) 總增減(8)
-        msg += "排名  代號  股名        總增減\n"
-        msg += "-" * 34 + "\n"
+        
+        # [修改] 定義欄位視覺寬度 (Visual Width)
+        W_RANK = 6
+        W_CODE = 7
+        W_NAME = 12
+        W_CHANGE = 10
+        
+        # 構建對齊的標題列
+        header_rank = fill_mixed_text("排名", W_RANK)
+        header_code = fill_mixed_text("代號", W_CODE)
+        header_name = fill_mixed_text("股名", W_NAME)
+        header_change = fill_mixed_text("總增減", W_CHANGE, align='right') # 標題靠右對齊以對齊數字
+        
+        msg += f"{header_rank}{header_code}{header_name}{header_change}\n"
+        
+        # 分隔線長度 = 總寬度
+        total_width = W_RANK + W_CODE + W_NAME + W_CHANGE
+        msg += "-" * total_width + "\n"
         
         for i, row in df.iterrows():
             raw_str = str(row['股票代號/名稱']).strip()
@@ -197,22 +220,18 @@ def push_rank_to_dc():
                 
             change = str(row['總增減']).replace(',', '').strip()
             
-            # 處理股名過長 (最多顯示 5 個中文字，約 10 寬度)
-            if get_visual_length(name) > 10:
-                # 簡單截斷，避免破版
-                name = name[:5]
+            # 處理股名過長 (截斷)
+            if get_visual_length(name) > W_NAME:
+                # 簡單截斷：這裡為了安全起見取前4個字元(因為可能有全形)
+                name = name[:4]
             
-            # [修改]: 使用 pad_mixed_text 進行精準對齊
-            # Rank: 靠左, 寬度 4
-            rank_str = str(i+1).ljust(6) # 稍微寬一點避免擠壓
-            # Code: 靠左, 寬度 6
-            code_str = code.ljust(6)
-            # Name: 智慧對齊, 寬度 12
-            name_str = pad_mixed_text(name, 12)
-            # Change: 靠右, 寬度 8
-            change_str = change.rjust(8)
+            # [修改]: 使用 fill_mixed_text 進行精準對齊
+            str_rank = fill_mixed_text(str(i+1), W_RANK)
+            str_code = fill_mixed_text(code, W_CODE)
+            str_name = fill_mixed_text(name, W_NAME)
+            str_change = fill_mixed_text(change, W_CHANGE, align='right') # 數字靠右對齊
             
-            msg += f"{rank_str}{code_str}{name_str}{change_str}\n"
+            msg += f"{str_rank}{str_code}{str_name}{str_change}\n"
         msg += "```\n"
         return msg
 
