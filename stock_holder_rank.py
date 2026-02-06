@@ -129,9 +129,24 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# ================= 排版工具區 (終極對齊修正版) =================
+# ================= 排版工具區 (全形化修正版) =================
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
+
+# [新增功能] 將半形英數字轉為全形 (解決 KY 對齊問題)
+def to_fullwidth(s):
+    res = []
+    for char in str(s):
+        code = ord(char)
+        # ASCII 範圍 (33-126) -> 全形範圍 (65281-65374)
+        if 0x21 <= code <= 0x7E:
+            res.append(chr(code + 0xFEE0))
+        # 空白 (32) -> 全形空白 (12288)
+        elif code == 0x20:
+            res.append(chr(0x3000))
+        else:
+            res.append(char)
+    return "".join(res)
 
 def clean_cell(s) -> str:
     s = "" if s is None else str(s)
@@ -164,18 +179,14 @@ def truncate_to_width(s, max_w: int) -> str:
         w += cw
     return "".join(out)
 
-# [修正功能] 填充字串 (使用全形空白 \u3000 修正對齊)
 def pad_visual(s, target_w: int, align="left") -> str:
     s = truncate_to_width(s, target_w)
     vis_len = visual_len(s)
     
-    # 計算還差多少寬度
     diff = max(0, target_w - vis_len)
     
-    # [魔法修正] 
-    # 因為 1 個中文字(寬度2) 通常比 2 個半形空白寬
-    # 所以每差 2 個單位，我們直接補 1 個「全形空白(\u3000)」
-    # 這樣才能跟中文字完美對齊，防止數字欄位飄移
+    # 這裡依然使用混合填充，但因為我們將股名全形化了
+    # 所以理論上 full_spaces 會承擔大部分工作，對齊會更準
     full_spaces = diff // 2
     half_spaces = diff % 2
     
@@ -189,7 +200,7 @@ def pad_visual(s, target_w: int, align="left") -> str:
 def fmt_change(x):
     s = str(x)
     s = s.replace('%', '').replace(',', '')
-    s = re.sub(r'\s+', '', s)  # 清掉各種奇怪空白（含不可見空白）
+    s = re.sub(r'\s+', '', s)  # 清掉各種奇怪空白
     v = pd.to_numeric(s, errors='coerce')
     return "-" if pd.isna(v) else f"{v:.2f}"
 
@@ -219,7 +230,6 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
-    # [移除] 移除所有品牌字眼
     content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
@@ -231,29 +241,30 @@ def push_rank_to_dc():
         msg += "```text\n"
         
         # [嚴格排版] 定義視覺寬度
-        # W_NAME 設為 16 (約8個字)
+        # 縮減欄寬以適應手機版
         W_RANK   = 4 
         W_CODE   = 6 
-        W_NAME   = 16 
+        W_NAME   = 12  # [修正] 縮小寬度，12格 = 6個中文字或 "大略－ＫＹ"
         W_CHANGE = 10 
         
-        # 定義 Gap (使用全形空白 \u3000 做間隔，對齊最穩)
-        GAP = "\u3000"
+        # 定義 Gap (縮小間距)
+        # [修正] 使用一個半形空白，拉近距離
+        GAP = " "
         
-        # 標題列
+        # 標題列 (股名標題也轉全形對齊，雖然沒差但保持一致)
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        # [重點] 總增減標題強制靠左
         h_chg  = pad_visual("總增減", W_CHANGE, align='left') 
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # 分隔線
-        msg += "=" * 42 + "\n"
+        # 分隔線 (動態計算)
+        total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
+        msg += "=" * total_width + "\n"
         
         for i, row in df.iterrows():
-            # 先清洗隱藏字元
+            # 清洗
             raw_str = clean_cell(row['股票代號/名稱'])
             
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
@@ -268,17 +279,17 @@ def push_rank_to_dc():
             name = clean_cell(name)
             change_str = fmt_change(row['總增減'])
             
-            # 截斷股名
-            name = truncate_to_width(name, W_NAME)
+            # [關鍵修正] 將股名轉為「全形字元」
+            # 這樣 IET-KY 會變成 ＩＥＴ－ＫＹ (寬度統一)，配合 W_NAME=12
+            full_name = to_fullwidth(name)
             
-            # [組裝] 
+            # 截斷與填充 (使用全形後的字串)
+            # 因為都是全形字，補位時會精準使用全形空白
+            s_name = pad_visual(full_name, W_NAME, align='left')
+            
+            # 其他欄位
             s_rank = pad_visual(f"{i+1:02d}", W_RANK) 
             s_code = pad_visual(code, W_CODE)
-            # 股名靠左 (右側會補上全形空白)
-            s_name = pad_visual(name, W_NAME, align='left')
-            
-            # [重點] 數字強制靠左對齊
-            # 由於前方 s_name 寬度已被全形空白完美鎖定，這裡的數字會筆直對齊
             s_chg  = pad_visual(change_str, W_CHANGE, align='left')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
@@ -286,11 +297,8 @@ def push_rank_to_dc():
         msg += "```\n"
         return msg
 
-    # [移除] 移除 Listed/OTC 字樣
     content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
     content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
-
-    # [移除] 底部資料來源已刪除
 
     # 發送
     try:
