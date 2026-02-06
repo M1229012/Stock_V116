@@ -12,7 +12,6 @@ import re
 import time
 import os
 from datetime import datetime
-from wcwidth import wcswidth  # [新增] 引入 wcwidth 用於精確計算寬度
 
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
@@ -130,42 +129,36 @@ def get_norway_rank_logic(url):
 
 # ================= 排版工具區 (修正版) =================
 
-# [修正功能] 使用 wcwidth 精確計算字串的視覺寬度
+# 清掉 Discord 常見造成對齊飄移的不可見字元
+_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
+
+def clean_cell(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = s.replace("\xa0", " ")              # NBSP
+    s = _ZERO_WIDTH_RE.sub("", s)           # zero-width
+    s = re.sub(r"\s+", " ", s).strip()      # 多空白統一
+    return s
+
+# Discord code block 對齊：用字元數（更貼近 Discord 的渲染）
 def get_visual_len(text):
-    return wcswidth(str(text))
+    return len(clean_cell(text))
 
-# [修正功能] 智慧截斷字串 (配合 wcwidth)
-def truncate_to_width(text, max_visual_width):
-    text = str(text)
-    current_width = 0
-    new_text = ""
-    for char in text:
-        char_w = wcswidth(char)
-        if current_width + char_w > max_visual_width:
-            break
-        current_width += char_w
-        new_text += char
-    return new_text
+def truncate_to_width(text, max_width):
+    s = clean_cell(text)
+    return s[:max_width]
 
-# [修正功能] 填充字串 (配合 wcwidth)
-def pad_visual(text, target_width, align='left'):
-    text = str(text)
-    vis_len = get_visual_len(text)
-    pad_len = max(0, target_width - vis_len)
+def pad_visual(text, target_width, align="left"):
+    s = truncate_to_width(text, target_width)
+    pad_len = max(0, target_width - len(s))
     padding = " " * pad_len
-    
-    if align == 'right':
-        return padding + text
-    else:
-        return text + padding
+    return (padding + s) if align == "right" else (s + padding)
 
-# [新增功能] 數值標準化格式
+# [保留] 數值標準化格式
 def fmt_change(x):
     s = str(x)
     s = s.replace('%', '').replace(',', '')
-    s = re.sub(r'\s+', '', s)  # 清掉各種奇怪空白
+    s = re.sub(r'\s+', '', s)  # 清掉各種奇怪空白（含不可見空白）
     v = pd.to_numeric(s, errors='coerce')
-    # 強制顯示兩位小數，確保 5.00 和 10.86 長度邏輯一致
     return "-" if pd.isna(v) else f"{v:.2f}"
 
 def push_rank_to_dc():
@@ -204,11 +197,11 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # 定義視覺寬度
+        # 定義視覺寬度 (改用字元數邏輯)
         W_RANK   = 4 
         W_CODE   = 6 
         W_NAME   = 14 
-        W_CHANGE = 10 # 調整寬度，配合 %.2f
+        W_CHANGE = 10 
         
         # 定義 Gap
         GAP = "  " 
@@ -217,8 +210,8 @@ def push_rank_to_dc():
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        # [修正] 標題改為靠右 (配合數字右對齊)
-        h_chg  = pad_visual("總增減", W_CHANGE, align='right') 
+        # [修正] 依照指示改回左對齊，確保「總」字和下面的數字起始對齊
+        h_chg  = pad_visual("總增減", W_CHANGE, align='left') 
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
@@ -227,7 +220,8 @@ def push_rank_to_dc():
         msg += "=" * total_width + "\n"
         
         for i, row in df.iterrows():
-            raw_str = str(row['股票代號/名稱']).strip()
+            # [修正] 先清洗隱藏字元
+            raw_str = clean_cell(row['股票代號/名稱'])
             
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
@@ -237,10 +231,14 @@ def push_rank_to_dc():
                 code = raw_str[:4]
                 name = raw_str[4:].strip()
             
-            # [修正] 使用 fmt_change 格式化數字 (確保是 .2f)
+            # 確保代號和股名也是乾淨的
+            code = clean_cell(code)
+            name = clean_cell(name)
+            
+            # 使用 fmt_change 格式化數字
             change_str = fmt_change(row['總增減'])
             
-            # 截斷股名
+            # 截斷股名 (使用字元數邏輯)
             name = truncate_to_width(name, W_NAME)
             
             # [組裝] 
@@ -248,8 +246,8 @@ def push_rank_to_dc():
             s_code = pad_visual(code, W_CODE)
             s_name = pad_visual(name, W_NAME, align='left')
             
-            # [修正] 數字改為靠右對齊 (小數點對齊)
-            s_chg  = pad_visual(change_str, W_CHANGE, align='right')
+            # [修正] 依照指示改回左對齊，讓數字起始位置一致
+            s_chg  = pad_visual(change_str, W_CHANGE, align='left')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
             
