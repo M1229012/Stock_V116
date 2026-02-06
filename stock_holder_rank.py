@@ -129,7 +129,7 @@ def get_norway_rank_logic(url):
     finally:
         driver.quit()
 
-# ================= 排版工具區 (修正版) =================
+# ================= 排版工具區 (終極對齊修正版) =================
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
 
@@ -164,12 +164,26 @@ def truncate_to_width(s, max_w: int) -> str:
         w += cw
     return "".join(out)
 
+# [修正功能] 填充字串 (使用全形空白 \u3000 修正對齊)
 def pad_visual(s, target_w: int, align="left") -> str:
     s = truncate_to_width(s, target_w)
-    pad = max(0, target_w - visual_len(s))
+    vis_len = visual_len(s)
+    
+    # 計算還差多少寬度
+    diff = max(0, target_w - vis_len)
+    
+    # [魔法修正] 
+    # 因為 1 個中文字(寬度2) 通常比 2 個半形空白寬
+    # 所以每差 2 個單位，我們直接補 1 個「全形空白(\u3000)」
+    # 這樣才能跟中文字完美對齊，防止數字欄位飄移
+    full_spaces = diff // 2
+    half_spaces = diff % 2
+    
+    padding = "\u3000" * full_spaces + " " * half_spaces
+    
     if align == "right":
-        return (" " * pad) + s
-    return s + (" " * pad)
+        return padding + s
+    return s + padding
 
 # [保留] 數值標準化格式
 def fmt_change(x):
@@ -205,6 +219,7 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
+    # [移除] 移除所有品牌字眼
     content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
@@ -215,30 +230,30 @@ def push_rank_to_dc():
         msg = f"{title}\n"
         msg += "```text\n"
         
-        # [嚴格排版] 定義視覺寬度 (改用顯示格數)
+        # [嚴格排版] 定義視覺寬度
+        # W_NAME 設為 16 (約8個字)
         W_RANK   = 4 
         W_CODE   = 6 
-        W_NAME   = 18 # 放大到 18 (約 9 個中文字)
+        W_NAME   = 16 
         W_CHANGE = 10 
         
-        # 定義 Gap
-        GAP = "  " 
+        # 定義 Gap (使用全形空白 \u3000 做間隔，對齊最穩)
+        GAP = "\u3000"
         
         # 標題列
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        # 標題強制靠左
+        # [重點] 總增減標題強制靠左
         h_chg  = pad_visual("總增減", W_CHANGE, align='left') 
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
-        # 分隔線 (動態計算長度)
-        total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
-        msg += "=" * total_width + "\n"
+        # 分隔線
+        msg += "=" * 42 + "\n"
         
         for i, row in df.iterrows():
-            # [修正] 先清洗隱藏字元
+            # 先清洗隱藏字元
             raw_str = clean_cell(row['股票代號/名稱'])
             
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
@@ -249,22 +264,21 @@ def push_rank_to_dc():
                 code = raw_str[:4]
                 name = raw_str[4:].strip()
             
-            # 確保代號和股名也是乾淨的
             code = clean_cell(code)
             name = clean_cell(name)
-            
-            # 使用 fmt_change 格式化數字
             change_str = fmt_change(row['總增減'])
             
-            # [修正] 股名截斷 (使用正確的 visual_len 邏輯)
+            # 截斷股名
             name = truncate_to_width(name, W_NAME)
             
             # [組裝] 
             s_rank = pad_visual(f"{i+1:02d}", W_RANK) 
             s_code = pad_visual(code, W_CODE)
+            # 股名靠左 (右側會補上全形空白)
             s_name = pad_visual(name, W_NAME, align='left')
             
-            # [修正] 數字強制靠左對齊，現在因為前方寬度固定，所以會絕對切齊
+            # [重點] 數字強制靠左對齊
+            # 由於前方 s_name 寬度已被全形空白完美鎖定，這裡的數字會筆直對齊
             s_chg  = pad_visual(change_str, W_CHANGE, align='left')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
@@ -272,8 +286,11 @@ def push_rank_to_dc():
         msg += "```\n"
         return msg
 
+    # [移除] 移除 Listed/OTC 字樣
     content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
     content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
+
+    # [移除] 底部資料來源已刪除
 
     # 發送
     try:
