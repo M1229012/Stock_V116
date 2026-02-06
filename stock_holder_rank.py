@@ -217,7 +217,8 @@ def push_rank_to_dc():
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME) # 靠左
-        h_chg  = pad_visual("總增減", W_CHANGE, align='right')
+        # [修改] 總增減標題改為靠左對齊
+        h_chg  = pad_visual("總增減", W_CHANGE, align='left')
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
@@ -240,29 +241,27 @@ def push_rank_to_dc():
             change = str(row['總增減']).replace(',', '').strip()
             
             # [優化] 智慧截斷股名
-            # 使用 truncate_to_width 取代原本的 name[:6]
-            # 這樣可以確保中英文混合時，長度依然整齊對齊 W_NAME
             name = truncate_to_width(name, W_NAME)
             
             # [組裝] 嚴格依照指定順序與間距
-            s_rank = pad_visual(f"{i+1:02d}", W_RANK) # 補零變成 01, 02 比較整齊
+            s_rank = pad_visual(f"{i+1:02d}", W_RANK) # 補零變成 01, 02
             s_code = pad_visual(code, W_CODE)
             s_name = pad_visual(name, W_NAME, align='left')
-            s_chg  = pad_visual(change, W_CHANGE, align='right')
+            # [修改] 數字強制靠左對齊，與標題對齊
+            s_chg  = pad_visual(change, W_CHANGE, align='left')
             
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
             
         msg += "```\n"
         return msg
 
-    # 上市
-    content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】 Listed**")
+    # 上市 [移除 Listed 字樣]
+    content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
     
-    # 上櫃
-    content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】 OTC**")
+    # 上櫃 [移除 OTC 字樣]
+    content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
 
-    # Footer
-    content += "_資料來源：神秘金字塔 / 籌碼K線邏輯_\n"
+    # [移除] 這裡已經刪除資料來源的 footer 程式碼
 
     # 發送
     try:
