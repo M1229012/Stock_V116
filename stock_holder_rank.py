@@ -253,7 +253,7 @@ def push_rank_to_dc():
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        h_chg  = pad_visual("總增減", W_CHANGE, align='left') 
+        h_chg  = pad_visual("總增減%", W_CHANGE, align='left') 
         
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
         
