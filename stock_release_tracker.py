@@ -139,8 +139,9 @@ def get_ticker_list(code, market=""):
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
     """抓取股價與法人資料"""
     try:
-        fetch_start = start_date - timedelta(days=60)
-        fetch_end = jail_end_date + timedelta(days=60) 
+        # 📌 修改點：抓取範圍擴大至處置前 365 天 (一年)，增加數據準確度
+        fetch_start = start_date - timedelta(days=365)
+        fetch_end = jail_end_date + timedelta(days=65) 
         
         tickers_to_try = get_ticker_list(code, market)
         df = pd.DataFrame()
@@ -326,8 +327,6 @@ def main():
     inst_stats_data = {i: {'count': 0, 'wins': 0, 'total_pct': 0.0} for i in inst_order}
 
     # === 新增：狀態+法人 組合統計容器 ===
-    # Key: (狀態, 法人動向) Tuple
-    # Value: {'count': 0, 'wins': 0, 'total_pct': 0.0}
     combo_stats_data = {} 
 
     today = datetime.now()
