@@ -25,9 +25,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ⚙️ 設定區
 # ============================
 SHEET_NAME = "台股注意股資料庫_V33"
-# 來源不重要了，因為我們會自己抓，但還是留著當備案
-SOURCE_WORKSHEET = "處置股90日明細" 
-DEST_WORKSHEET = "一年期處置回測數據" 
+DEST_WORKSHEET = "一年期處置回測數據"  # 輸出分頁名稱
 
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -67,69 +65,134 @@ def is_valid_date_row(s):
     return re.match(r"^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}$", str(s).strip()) is not None
 
 def roc_to_datestr(d_str):
+    """將民國年字串 (113/01/01) 轉為西元字串 (2024-01-01)"""
     parts = re.split(r"[/-]", str(d_str).strip())
     if len(parts) < 2: return None
     y = int(parts[0])
     if y < 1911: y += 1911
     return f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
 
-# ============================
-# 📅 歷史名單抓取邏輯 (關鍵新增)
-# ============================
-def fetch_historical_disposition_list_twse_tpex():
-    """
-    從證交所與櫃買中心 Open Data 抓取過去一年的處置股
-    邏輯：直接打 API 或是抓取 CSV，整理出 (代號, 名稱, 處置起日, 處置迄日)
-    """
-    print("🌍 正在連線證交所/櫃買中心抓取「過去365天」歷史處置名單...")
-    
-    historical_data = []
-    
-    # 設定回測起始日 (今天往前推 365 天)
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
-    
-    # 轉換成民國年字串 (例如 113/01/01) 用於比對 (如果需要)
-    # 但 Open Data API 通常支援西元或特定格式
-    
-    # 1. 上市 (TWSE) - 處置證券資訊
-    # URL: https://www.twse.com.tw/rwd/zh/announced/punish?response=json
-    # 為了確保抓到一年，我們使用 requests 模擬查詢
-    try:
-        # TWSE 查詢參數通常需要日期範圍
-        # 這裡示範抓取最近一個月的 JSON (實際抓一年需要迴圈或調整參數，為求穩定我們抓最近大量資料)
-        # 證交所 API 限制較多，我們改用 `pandas.read_html` 爬取證交所公告頁面 (較慢但穩)
-        # 或者使用更可靠的 Open Data URL: https://openapi.twse.com.tw/v1/exchangeReport/TWT85U
-        # TWT85U 是「處置有價證券公告表」，通常只有當天的。
-        
-        # 替代方案：我們使用「歷史股價」的邏輯反推，或者
-        # 直接使用 requests 抓取 TWSE 的查詢介面 (POST request)
-        
-        # 為了保證能運行且不被擋，我們這裡模擬一個「已知的歷史清單」結構
-        # **重要：** 真正的即時爬取全年度歷史資料非常耗時且容易被 Ban IP。
-        # 如果您的 Google Sheet 只有 90 天，我建議您手動去證交所下載「年度報表」貼上。
-        # 但既然您要求程式處理，我這裡寫一個「多月份迴圈爬蟲」來抓。
-        
-        # --- 簡易版：抓取 TWSE 網站 (模擬) ---
-        # 由於實作複雜的 TWSE 歷史爬蟲代碼過長，我這裡使用一個折衷方案：
-        # 嘗試從您 Google Sheet 的「其他分頁」找看看有沒有備份，如果沒有，
-        # 我們會嘗試抓取 `Source` 分頁，並假設它其實有舊資料。
-        # 如果您確定 Sheet 裡只有 90 天，那這段程式碼將「自動擴充」搜尋範圍。
-        
-        pass 
-    except Exception as e:
-        print(f"⚠️ TWSE 爬取失敗: {e}")
+def datestr_to_roc(date_obj):
+    """將日期物件轉為民國年字串 (113/01/01)"""
+    y = date_obj.year - 1911
+    return f"{y}/{date_obj.month:02d}/{date_obj.day:02d}"
 
-    # 由於在無頭模式下爬取 TWSE 歷史查詢極其困難 (驗證碼/IP限制)
-    # 我將邏輯修改為：讀取 Google Sheet，但「不進行日期過濾」。
-    # **請您配合：** 請去證交所下載「2025年處置股票excel」和「2024年處置股票excel」
-    # 直接貼到 Google Sheet 的 `SOURCE_WORKSHEET` 裡面，蓋掉原本的 90 日資料。
-    # 這樣程式碼就能直接跑一整年了。這是最安全、最不會錯的方式。
+# ============================
+# 📅 官方名單爬取 (一年期核心)
+# ============================
+def fetch_history_from_official_sites():
+    """
+    直接從證交所 (TWSE) 和櫃買中心 (TPEx) 抓取過去 365 天的處置股名單
+    """
+    print("🌍 正在連線官方資料庫抓取「過去 365 天」完整處置名單...")
     
-    print("💡 提示：為了確保資料準確，請確保 Google Sheet 的來源工作表包含一整年的資料。")
-    print("   程式將無條件讀取 Sheet 中「所有」列，不做 90 天限制。")
+    all_records = []
+    today = datetime.now()
+    # 建立過去 12 個月的月份列表
+    months = []
+    for i in range(13):
+        d = today - timedelta(days=30 * i)
+        months.append(d)
+    months = sorted(list(set([m.strftime("%Y%m") for m in months]))) # 去重排序
     
-    return []
+    # --- 1. 證交所 (TWSE) ---
+    print("  ...正在下載 TWSE (上市) 歷史資料...")
+    for ym in months:
+        # TWSE API 格式 (yyyymmdd)
+        # 我們抓每個月的資料
+        start_d = f"{ym}01"
+        # 計算該月最後一天
+        y = int(ym[:4])
+        m = int(ym[4:])
+        if m == 12:
+            end_d = f"{y+1}0101"
+        else:
+            end_d = f"{y}{m+1:02d}01"
+        end_d_obj = datetime.strptime(end_d, "%Y%m%d") - timedelta(days=1)
+        end_d = end_d_obj.strftime("%Y%m%d")
+
+        url = f"https://www.twse.com.tw/rwd/zh/announced/punish?startDate={start_d}&endDate={end_d}&response=json"
+        
+        try:
+            r = requests.get(url, timeout=10)
+            data = r.json()
+            if 'data' in data:
+                for row in data['data']:
+                    # TWSE 格式: [編號, 日期, 證券代號, 證券名稱, 次數, 措施, 期間]
+                    # 日期是公告日，期間通常是 "113/01/02~113/01/15"
+                    code = row[2]
+                    name = row[3]
+                    period_raw = row[6]
+                    
+                    # 簡單清洗
+                    if "處置期間" in period_raw: # 有時候會有多餘文字
+                        pass 
+                    
+                    # 整理格式
+                    all_records.append({
+                        '代號': code,
+                        '名稱': name,
+                        '處置期間': period_raw,
+                        '市場': '上市'
+                    })
+            time.sleep(1) # 避免被擋
+        except Exception as e:
+            print(f"    ⚠️ TWSE {ym} 抓取失敗: {e}")
+
+    # --- 2. 櫃買中心 (TPEx) ---
+    print("  ...正在下載 TPEx (上櫃) 歷史資料...")
+    for ym in months:
+        # TPEx 需要民國年格式 (e.g. 113/01)
+        y = int(ym[:4])
+        m = int(ym[4:])
+        roc_y = y - 1911
+        
+        # TPEx API 參數: d=起始日(113/01/01), e=結束日(113/01/31)
+        start_d = f"{roc_y}/{m:02d}/01"
+        
+        # 計算月底
+        if m == 12:
+            next_y = y + 1
+            next_m = 1
+        else:
+            next_y = y
+            next_m = m + 1
+        last_day = (datetime(next_y, next_m, 1) - timedelta(days=1)).day
+        end_d = f"{roc_y}/{m:02d}/{last_day}"
+
+        url = f"https://www.tpex.org.tw/web/bulletin/punish/punish_result.php?l=zh-tw&o=json&d={start_d}&e={end_d}"
+        
+        try:
+            r = requests.get(url, timeout=10)
+            data = r.json()
+            if 'aaData' in data:
+                for row in data['aaData']:
+                    # TPEx 格式: [0:日期, 1:代號, 2:名稱, 3:次數, 4:措施, 5:期間, ...]
+                    code = row[1]
+                    name = row[2]
+                    period_raw = row[5] # 113/01/02~113/01/15
+                    
+                    all_records.append({
+                        '代號': code,
+                        '名稱': name,
+                        '處置期間': period_raw,
+                        '市場': '上櫃'
+                    })
+            time.sleep(1)
+        except Exception as e:
+            print(f"    ⚠️ TPEx {ym} 抓取失敗: {e}")
+
+    # 去除重複 (同一支股票同一期間可能出現多次公告)
+    unique_records = []
+    seen = set()
+    for rec in all_records:
+        key = f"{rec['代號']}_{rec['處置期間']}"
+        if key not in seen:
+            unique_records.append(rec)
+            seen.add(key)
+    
+    print(f"✅ 成功抓取並整理 {len(unique_records)} 筆歷史處置資料！")
+    return unique_records
 
 def get_institutional_data(stock_id, start_date, end_date):
     """爬取法人買賣超 (富邦證券)"""
@@ -191,9 +254,7 @@ def get_ticker_list(code, market=""):
     return [f"{code}.TW", f"{code}.TWO"]
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
-    """抓取股價與法人資料 (強制抓 365 天前 K 線)"""
     try:
-        # 📌 關鍵：這裡控制 K 線回測長度
         fetch_start = start_date - timedelta(days=365)
         fetch_end = jail_end_date + timedelta(days=65) 
         
@@ -216,7 +277,6 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         df.index = df.index.tz_localize(None)
         df = df.ffill()
 
-        # === 1. 計算價格與狀態 ===
         mask_jail = (df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(jail_end_date))
         df_jail = df[mask_jail]
         mask_before = df.index < pd.Timestamp(start_date)
@@ -227,9 +287,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         
         if mask_before.any():
             jail_base_p = df[mask_before]['Close'].iloc[-1]
-            # 📌 關鍵：使用 60 日均量 (季均量) 作為基準
             pre_jail_avg_volume = df[mask_before]['Volume'].tail(60).mean()
-            
             target_idx = max(0, len(df[mask_before]) - len(df_jail))
             pre_entry = df[mask_before]['Open'].iloc[target_idx] if len(df[mask_before]) > target_idx else jail_base_p
             if pre_entry != 0:
@@ -244,9 +302,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         
         status = determine_status(pre_pct, in_pct)
 
-        # === 2. 法人判斷邏輯 ===
         inst_status = "🧊 無明顯動向"
-        
         if not df_jail.empty and pre_jail_avg_volume > 0:
             print(f"  🕷️ 爬取法人資料: {code}...")
             inst_df = get_institutional_data(code, start_date, jail_end_date)
@@ -272,7 +328,6 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
                 elif is_foreign_sell: inst_status = "🟢 外資大賣"
                 elif is_trust_sell: inst_status = "🟢 投信大賣"
 
-        # === 3. 計算出關後走勢 (20天) ===
         df_after = df[df.index > pd.Timestamp(jail_end_date)]
         
         if not df_after.empty:
@@ -322,17 +377,13 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 開始執行一年期全量處置股回測...")
+    print("🚀 開始執行一年期全量處置股回測 (含名單爬取)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
 
-    # 讀取來源
-    try:
-        ws_source = sh.worksheet(SOURCE_WORKSHEET)
-    except WorksheetNotFound:
-        print(f"❌ 找不到來源工作表 '{SOURCE_WORKSHEET}'")
-        return
+    # 📌 關鍵修改：不再讀取 Sheet，改為直接爬取過去一年的名單
+    source_data = fetch_history_from_official_sites()
 
     header_base = ["出關日期", "股號", "股名", "狀態", "法人動向", "處置前%", "處置中%", "累積漲跌幅"]
     header_days = [f"D+{i+1}" for i in range(20)]
@@ -342,7 +393,7 @@ def main():
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
-        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=5000, cols=60) # 加大行數
+        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=5000, cols=60)
         ws_dest.append_row(header)
 
     raw_rows = ws_dest.get_all_values()
@@ -363,7 +414,6 @@ def main():
                     else: row_dict[h] = ""
                 existing_map[key] = {'data': row_dict, 'done': bool(d_last)}
 
-    source_data = ws_source.get_all_records()
     processed_list = []
     
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
@@ -379,12 +429,10 @@ def main():
     inst_stats_data = {i: {'count': 0, 'wins': 0, 'total_pct': 0.0} for i in inst_order}
     combo_stats_data = {} 
 
-    # 📌 確保回測範圍包含過去一年
     today = datetime.now()
     one_year_ago = today - timedelta(days=365)
 
-    print(f"🔍 來源資料共 {len(source_data)} 筆")
-    print(f"   回測區間：{one_year_ago.strftime('%Y/%m/%d')} ~ {today.strftime('%Y/%m/%d')}")
+    print(f"🔍 準備回測 {len(source_data)} 筆歷史資料 (範圍：過去一年)...")
     
     total_count = 0
     update_count = 0
@@ -405,13 +453,9 @@ def main():
         
         if not s_date or not e_date: continue
         
-        # 📌 濾掉太久以前的 (>1年) 和未來的
         if e_date < one_year_ago: continue 
         if e_date > today: continue 
 
-        # 這裡不檢查 existing_map，為了確保法人資料是最新的，建議每次都重跑計算
-        # 除非您確定舊資料是對的。這裡我們採用「有資料就用，沒資料才跑」的混合策略以節省時間
-        
         result = fetch_stock_data(code, s_date, e_date, market)
         
         if not result: continue
@@ -420,13 +464,10 @@ def main():
         key = f"{code}_{release_date_str}"
         
         row_vals = []
-        
-        # 如果這筆資料已經存在且跑完了，我們可以沿用舊數據，但要確保舊數據包含「法人動向」
-        # 如果舊數據沒有法人動向 (是舊版程式跑的)，那就必須重跑
         need_rerun = True
         if key in existing_map and existing_map[key]['done']:
             old_row = existing_map[key]['data']
-            if old_row.get('法人動向', '') != "": # 檢查是否有法人欄位
+            if old_row.get('法人動向', '') != "":
                 row_vals = [old_row.get(h, "") for h in header]
                 need_rerun = False
         
@@ -440,7 +481,6 @@ def main():
         
         processed_list.append(row_vals)
 
-        # --- 統計邏輯 ---
         stat_status = row_vals[3] 
         inst_tag = row_vals[4]    
         acc_pct_str = row_vals[7] 
@@ -488,14 +528,11 @@ def main():
         
         total_count += 1
 
-    # 排序
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
-    # 建構統計區
     print("📊 正在計算彙整統計數據...")
     right_side_rows = []
     
-    # 1. 狀態總覽
     right_side_rows.append(["", "📊 狀態總覽 (一年期回測)", "個股數", "D+20勝率", "D+20平均", "", "", "", ""])
     for s in status_order:
         t = summary_stats[s]['count']
@@ -507,7 +544,6 @@ def main():
     right_side_rows.append([""] * 9) 
     days_header = [f"D+{i+1}" for i in range(track_days)]
 
-    # 2. 每日平均
     right_side_rows.append(["", "📈 平均漲跌幅 (每日)"] + days_header)
     for s in status_order:
         row_vals = ["", s]
@@ -522,7 +558,6 @@ def main():
 
     right_side_rows.append([""] * (2 + track_days)) 
 
-    # 3. 每日勝率
     right_side_rows.append(["", "🏆 每日勝率 (每日)"] + days_header)
     for s in status_order:
         row_vals = ["", s]
@@ -537,7 +572,6 @@ def main():
         
     right_side_rows.append([""] * (2 + track_days)) 
 
-    # 4. 每5日累計勝率
     interval_header = ["D+5", "D+10", "D+15", "D+20"]
     right_side_rows.append(["", "🏆 每5日累計勝率"] + interval_header)
     for s in status_order:
@@ -555,7 +589,6 @@ def main():
 
     right_side_rows.append([""] * (2 + 4))
 
-    # 5. 每5日累計漲跌
     right_side_rows.append(["", "📈 每5日累計漲跌"] + interval_header)
     for s in status_order:
         row_vals = ["", s]
@@ -570,7 +603,6 @@ def main():
 
     right_side_rows.append([""] * (2 + 4))
 
-    # 6. 法人籌碼統計
     right_side_rows.append(["", "📊 法人籌碼統計 (D+20)", "個股數", "勝率", "平均漲幅"])
     for i in inst_order:
         d = inst_stats_data[i]
@@ -581,7 +613,6 @@ def main():
 
     right_side_rows.append([""] * 5)
 
-    # 7. 狀態+法人 組合統計
     right_side_rows.append(["", "📊 狀態+法人 組合統計", "個股數", "勝率", "平均漲幅"])
     for s in status_order:
         for i in inst_order:
@@ -595,7 +626,6 @@ def main():
                     display_name = f"{s} + {i}"
                     right_side_rows.append(["", display_name, t, f"{wr:.1f}%", f"{avg:+.1f}%"])
 
-    # 合併
     final_header = header + [""] * (3 + track_days) 
     final_output = [final_header]
     max_rows = max(len(processed_list), len(right_side_rows))
@@ -607,11 +637,9 @@ def main():
         else: right_part = [""] * (3 + track_days)
         final_output.append(left_part + [""] + right_part)
 
-    # 寫入
     ws_dest.clear()
     ws_dest.update(final_output)
 
-    # 條件格式化
     print("🎨 更新條件格式化...")
     ranges = [
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 5, "endColumnIndex": 28},
