@@ -7,7 +7,7 @@ import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 from io import StringIO
@@ -34,20 +34,20 @@ THRESH_FOREIGN = 0.010  # 外資 1.0%
 THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 
 # ============================
-# 🛠️ 爬蟲與工具函式
+# 🛠️ 爬蟲與工具函式 (源自 V116.26)
 # ============================
 def get_driver():
-    """初始化 Selenium Driver"""
-    options = Options()
-    options.add_argument('--headless=new') # 無頭模式
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    # 偽裝成一般瀏覽器
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
+    """ 取得 Selenium Chrome Driver (Headless) - V116.26版本 """
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
     service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 def connect_google_sheets(sheet_name):
@@ -72,148 +72,176 @@ def roc_to_datestr(d_str):
     if y < 1911: y += 1911
     return f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
 
+def parse_roc_date(date_str):
+    s = str(date_str).strip()
+    match = re.match(r'^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$', s)
+    if match:
+        y, m, d = map(int, match.groups())
+        y_final = y + 1911 if y < 1911 else y
+        return datetime(y_final, m, d)
+    for fmt in ["%Y/%m/%d", "%Y-%m-%d", "%Y%m%d"]:
+        try: return datetime.strptime(s, fmt)
+        except: continue
+    return None
+
 # ============================
-# 📅 官方名單爬取 (改用 Selenium 繞過防爬)
+# 🔥 核心爬蟲區 (完完全全照抄 V116.26)
 # ============================
-def fetch_history_from_official_sites():
+
+def fetch_tpex_jail_90d_requests(s_date, e_date):
     """
-    使用 Selenium 從證交所與櫃買中心抓取過去 365 天的處置股
+    [V116.26 原版] 上櫃 (TPEx) 處置股爬蟲 - Requests API 版
     """
-    print("🌍 正在啟動瀏覽器，準備抓取「過去 365 天」完整處置名單...")
+    print(f"  [上櫃] 啟動 Requests 爬蟲 (新版官網 API)... {s_date} ~ {e_date}")
     
-    # 啟動 Selenium Driver (共用一個 Session 減少開銷)
-    driver = get_driver()
-    all_records = []
+    # 依照使用者的邏輯修正：結束日期強制往後推 30 天
+    real_end_date = e_date + timedelta(days=30)
+    
+    sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
+    ed = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
+    
+    url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
+    }
+    
+    payload = {
+        "startDate": sd,
+        "endDate": ed,
+        "response": "json"
+    }
+    
+    sess = requests.Session()
+    clean_data = []
     
     try:
-        today = datetime.now()
-        # 建立過去 13 個月的月份列表 (確保覆蓋滿一年)
-        months = []
-        for i in range(13):
-            d = today - timedelta(days=30 * i)
-            months.append(d)
-        months = sorted(list(set([m.strftime("%Y%m") for m in months])))
+        # 1. Get Cookie
+        sess.get(url, headers=headers) 
         
-        # --- 1. 證交所 (TWSE) ---
-        print("  ...正在下載 TWSE (上市) 歷史資料 (使用 Selenium)...")
-        for ym in months:
-            # 計算日期範圍
-            start_d = f"{ym}01"
-            y = int(ym[:4])
-            m = int(ym[4:])
-            if m == 12:
-                end_d = f"{y+1}0101" # 跨年
-            else:
-                end_d = f"{y}{m+1:02d}01"
-            # 減一天得到月底
-            end_d_obj = datetime.strptime(end_d, "%Y%m%d") - timedelta(days=1)
-            end_d = end_d_obj.strftime("%Y%m%d")
-
-            # 證交所 JSON API 網址
-            url = f"https://www.twse.com.tw/rwd/zh/announced/punish?startDate={start_d}&endDate={end_d}&response=json"
-            
-            try:
-                driver.get(url)
-                # 等待內容載入
-                time.sleep(2) 
-                # 取得頁面原始碼 (這時候應該是純 JSON 文字顯示在瀏覽器中)
-                # 使用 pre tag 或者 body text 來獲取內容
-                content = driver.find_element(By.TAG_NAME, "body").text
+        # 2. Post
+        r = sess.post(url, data=payload, headers=headers, timeout=10)
+        
+        if r.status_code == 200:
+            data = r.json()
+            if "tables" in data and len(data["tables"]) > 0:
+                rows = data["tables"][0].get("data", [])
+                print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料...")
                 
-                # 嘗試解析 JSON
-                if content:
-                    data = json.loads(content)
-                    if 'data' in data:
-                        for row in data['data']:
-                            # TWSE 格式: [編號, 日期, 證券代號, 證券名稱, 次數, 措施, 期間]
-                            code = row[2]
-                            name = row[3]
-                            period_raw = row[6]
-                            
-                            all_records.append({
-                                '代號': code,
-                                '名稱': name,
-                                '處置期間': period_raw,
-                                '市場': '上市'
-                            })
-                        print(f"    ✅ TWSE {ym}: 取得 {len(data['data'])} 筆")
-                    else:
-                        print(f"    ℹ️ TWSE {ym}: 無資料")
-            except Exception as e:
-                print(f"    ⚠️ TWSE {ym} 抓取失敗: {e}")
-
-        # --- 2. 櫃買中心 (TPEx) ---
-        print("  ...正在下載 TPEx (上櫃) 歷史資料 (使用 Selenium)...")
-        for ym in months:
-            y = int(ym[:4])
-            m = int(ym[4:])
-            roc_y = y - 1911
-            
-            start_d = f"{roc_y}/{m:02d}/01"
-            
-            if m == 12:
-                next_y = y + 1
-                next_m = 1
-            else:
-                next_y = y
-                next_m = m + 1
-            last_day = (datetime(next_y, next_m, 1) - timedelta(days=1)).day
-            end_d = f"{roc_y}/{m:02d}/{last_day}"
-
-            url = f"https://www.tpex.org.tw/web/bulletin/punish/punish_result.php?l=zh-tw&o=json&d={start_d}&e={end_d}"
-            
-            try:
-                driver.get(url)
-                time.sleep(2)
-                content = driver.find_element(By.TAG_NAME, "body").text
-                
-                if content:
-                    data = json.loads(content)
-                    if 'aaData' in data:
-                        count = 0
-                        for row in data['aaData']:
-                            # TPEx 格式: [0:日期, 1:代號, 2:名稱, 3:次數, 4:措施, 5:期間, ...]
-                            code = row[1]
-                            name = row[2]
-                            period_raw = row[5]
-                            
-                            all_records.append({
-                                '代號': code,
-                                '名稱': name,
-                                '處置期間': period_raw,
-                                '市場': '上櫃'
-                            })
-                            count += 1
-                        print(f"    ✅ TPEx {ym}: 取得 {count} 筆")
-                    else:
-                        print(f"    ℹ️ TPEx {ym}: 無資料")
-            except Exception as e:
-                print(f"    ⚠️ TPEx {ym} 抓取失敗: {e}")
-
+                for row in rows:
+                    # 1: Date, 2: Code, 3: Name(HTML), 5: Period
+                    if len(row) < 6: continue
+                    c_code = str(row[2]).strip()
+                    c_name_raw = str(row[3]).strip()
+                    c_name = c_name_raw.split("(")[0] if "(" in c_name_raw else c_name_raw
+                    c_period = str(row[5]).strip()
+                    
+                    if c_code.isdigit() and len(c_code) == 4:
+                        clean_data.append({
+                            "Code": c_code,
+                            "Name": c_name,
+                            "Period": c_period,
+                            "Market": "上櫃"
+                        })
     except Exception as e:
-        print(f"❌ 歷史名單抓取發生嚴重錯誤: {e}")
+        print(f"    ❌ TPEx Requests 失敗: {e}")
+        
+    if clean_data:
+        return pd.DataFrame(clean_data)
+    return pd.DataFrame()
+
+def fetch_twse_selenium_90d(s_date, e_date):
+    """
+    [V116.26 原版] 上市 (TWSE) 處置股爬蟲 - Selenium 版
+    """
+    print(f"  [上市] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
+    
+    sd_str = s_date.strftime("%Y%m%d")
+    ed_str = e_date.strftime("%Y%m%d")
+    
+    url = "https://www.twse.com.tw/zh/announcement/punish.html"
+    driver = get_driver()
+    clean_data = []
+
+    try:
+        driver.get(url)
+        wait = WebDriverWait(driver, 20)
+        
+        # 1. 填寫日期
+        driver.execute_script(f"""
+            document.querySelector('input[name="startDate"]').value = "{sd_str}";
+            document.querySelector('input[name="endDate"]').value = "{ed_str}";
+        """)
+        
+        # 2. 點擊查詢
+        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
+        search_btn.click()
+        
+        # 3. 等待表格出現
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
+        time.sleep(3)
+        
+        # 4. 解析表格
+        # 上市表格結構通常比較標準，直接抓取
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
+        
+        for row in rows:
+            try:
+                cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) >= 7:
+                    # Index 2: Code
+                    # Index 3: Name
+                    # Index 6: Period
+                    c_code = cols[2].text.strip()
+                    c_name = cols[3].text.strip()
+                    c_period = cols[6].text.strip()
+                    
+                    if c_code and c_code.isdigit() and len(c_code) == 4:
+                          clean_data.append({
+                            "Code": c_code,
+                            "Name": c_name,
+                            "Period": c_period,
+                            "Market": "上市"
+                        })
+            except: continue
+            
+    except Exception as e:
+        print(f"    ❌ TWSE Selenium 操作失敗: {e}")
     finally:
-        # 務必關閉 driver
         driver.quit()
 
-    # 去除重複
-    unique_records = []
-    seen = set()
-    for rec in all_records:
-        # 簡單清理代號 (有時候會有空白)
-        c = str(rec['代號']).strip()
-        p = str(rec['處置期間']).strip()
-        key = f"{c}_{p}"
-        if key not in seen:
-            unique_records.append(rec)
-            seen.add(key)
-    
-    print(f"🎉 歷史名單整理完畢！共 {len(unique_records)} 筆獨特處置紀錄。")
-    return unique_records
+    if clean_data:
+        print(f"    ✅ 成功解析 {len(clean_data)} 筆資料")
+        return pd.DataFrame(clean_data)
+
+    print("    ⚠️ TWSE 無資料")
+    return pd.DataFrame()
+
+# ============================
+# 📊 整合與統計函式 (D+20 & 法人)
+# ============================
+
+def determine_status(pre_pct, in_pct):
+    if in_pct > 15: return "👑 妖股誕生"
+    elif in_pct > 5: return "🔥 強勢突圍"
+    elif in_pct < -15: return "💀 人去樓空"
+    elif in_pct < -5: return "📉 走勢疲軟"
+    else: return "🧊 多空膠著"
+
+def get_ticker_list(code, market=""):
+    code = str(code)
+    if "上櫃" in market or "TPEx" in market: return [f"{code}.TWO", f"{code}.TW"]
+    if "上市" in market: return [f"{code}.TW", f"{code}.TWO"]
+    if code and code[0] in ['3', '4', '5', '6', '8']: return [f"{code}.TWO", f"{code}.TW"]
+    return [f"{code}.TW", f"{code}.TWO"]
 
 def get_institutional_data(stock_id, start_date, end_date):
-    """爬取法人買賣超 (富邦證券)"""
-    driver = get_driver()
+    """爬取法人買賣超 (富邦證券) - 用於分析籌碼"""
+    driver = get_driver() # 使用同樣的 driver 函式
     if isinstance(start_date, datetime): start_date = start_date.strftime("%Y-%m-%d")
     if isinstance(end_date, datetime): end_date = end_date.strftime("%Y-%m-%d")
     
@@ -243,32 +271,6 @@ def get_institutional_data(stock_id, start_date, end_date):
         return None
     finally:
         driver.quit()
-
-def parse_roc_date(date_str):
-    s = str(date_str).strip()
-    match = re.match(r'^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$', s)
-    if match:
-        y, m, d = map(int, match.groups())
-        y_final = y + 1911 if y < 1911 else y
-        return datetime(y_final, m, d)
-    for fmt in ["%Y/%m/%d", "%Y-%m-%d", "%Y%m%d"]:
-        try: return datetime.strptime(s, fmt)
-        except: continue
-    return None
-
-def determine_status(pre_pct, in_pct):
-    if in_pct > 15: return "👑 妖股誕生"
-    elif in_pct > 5: return "🔥 強勢突圍"
-    elif in_pct < -15: return "💀 人去樓空"
-    elif in_pct < -5: return "📉 走勢疲軟"
-    else: return "🧊 多空膠著"
-
-def get_ticker_list(code, market=""):
-    code = str(code)
-    if "上櫃" in market or "TPEx" in market: return [f"{code}.TWO", f"{code}.TW"]
-    if "上市" in market: return [f"{code}.TW", f"{code}.TWO"]
-    if code and code[0] in ['3', '4', '5', '6', '8']: return [f"{code}.TWO", f"{code}.TW"]
-    return [f"{code}.TW", f"{code}.TWO"]
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
     """抓取股價與法人資料 (強制抓 365 天前 K 線)"""
@@ -395,14 +397,38 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 開始執行一年期全量處置股回測 (含 Selenium 名單爬取)...")
+    print("🚀 啟動一年期全量處置股回測 (整合 V116.26 爬蟲)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
 
-    # 📌 關鍵修改：使用 Selenium 抓取名單
-    source_data = fetch_history_from_official_sites()
+    # 1. 執行爬蟲抓取過去一年的清單
+    # 雖然函式原本叫 90d，但我們透過日期參數控制讓它抓一年
+    today = datetime.now()
+    one_year_ago = today - timedelta(days=365)
+    end_buffer = today + timedelta(days=30) # 預抓未來，確保本月資料完整
 
+    print(f"🔍 正在透過 Selenium/Requests 抓取 {one_year_ago.strftime('%Y-%m-%d')} ~ {end_buffer.strftime('%Y-%m-%d')} 的資料...")
+
+    df_tpex = fetch_tpex_jail_90d_requests(one_year_ago, end_buffer)
+    df_twse = fetch_twse_selenium_90d(one_year_ago, end_buffer)
+
+    all_dfs = []
+    if not df_tpex.empty: all_dfs.append(df_tpex)
+    if not df_twse.empty: all_dfs.append(df_twse)
+
+    if not all_dfs:
+        print("❌ 抓取失敗，無資料可供回測。")
+        return
+
+    print("\n🔄 合併並整理資料...")
+    final_df = pd.concat(all_dfs, ignore_index=True)
+    # 轉為 Dictionary List 以便處理
+    source_data = final_df.to_dict('records')
+    
+    print(f"✅ 共取得 {len(source_data)} 筆處置公告。開始進行 D+20 回測...")
+
+    # 2. 準備寫入 Header
     header_base = ["出關日期", "股號", "股名", "狀態", "法人動向", "處置前%", "處置中%", "累積漲跌幅"]
     header_days = [f"D+{i+1}" for i in range(20)]
     header = header_base + header_days
@@ -447,22 +473,18 @@ def main():
     inst_stats_data = {i: {'count': 0, 'wins': 0, 'total_pct': 0.0} for i in inst_order}
     combo_stats_data = {} 
 
-    today = datetime.now()
-    one_year_ago = today - timedelta(days=365)
-
-    print(f"🔍 準備回測 {len(source_data)} 筆歷史資料...")
-    
     total_count = 0
     update_count = 0
 
     for row in source_data:
-        code = str(row.get('代號', '')).replace("'", "").strip()
-        name = row.get('名稱', '')
-        period = str(row.get('處置期間', '')).strip()
-        market = str(row.get('市場', ''))
+        code = str(row.get('Code', '')).strip()
+        name = str(row.get('Name', '')).strip()
+        period = str(row.get('Period', '')).strip()
+        market = str(row.get('Market', ''))
         
         if not code or not period: continue
         
+        # 解析日期 (V116.26 的 period 格式可能為 113/01/01~113/01/10)
         dates = re.split(r'[~-～]', period)
         if len(dates) < 2: continue
         
@@ -471,7 +493,6 @@ def main():
         
         if not s_date or not e_date: continue
         
-        # 再次確保不跑太久以前的
         if e_date < one_year_ago: continue 
         if e_date > today: continue 
 
@@ -500,6 +521,7 @@ def main():
         
         processed_list.append(row_vals)
 
+        # 統計
         stat_status = row_vals[3] 
         inst_tag = row_vals[4]    
         acc_pct_str = row_vals[7] 
