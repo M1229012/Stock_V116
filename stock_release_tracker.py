@@ -50,6 +50,18 @@ def get_driver():
     driver = webdriver.Chrome(service=service, options=options)
     return driver
 
+def connect_google_sheets(sheet_name):
+    """連線 Google Sheets"""
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_file(SERVICE_KEY_FILE, scopes=scope)
+        gc = gspread.authorize(creds)
+        sh = gc.open(sheet_name)
+        return sh
+    except Exception as e:
+        print(f"❌ Google Sheet 連線失敗 ({sheet_name}): {e}")
+        return None
+
 def is_valid_date_row(s): 
     return re.match(r"^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}$", str(s).strip()) is not None
 
@@ -69,7 +81,7 @@ def get_institutional_data(stock_id, start_date, end_date):
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
         driver.get(url)
-        time.sleep(1.5)
+        time.sleep(1.0)
         html = driver.page_source
         tables = pd.read_html(StringIO(html))
         target_df = None
@@ -93,18 +105,6 @@ def get_institutional_data(stock_id, start_date, end_date):
     finally:
         driver.quit()
 
-def connect_google_sheets(sheet_name):
-    """連線 Google Sheets"""
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_file(SERVICE_KEY_FILE, scopes=scope)
-        gc = gspread.authorize(creds)
-        sh = gc.open(sheet_name)
-        return sh
-    except Exception as e:
-        print(f"❌ Google Sheet 連線失敗 ({sheet_name}): {e}")
-        return None
-
 def parse_roc_date(date_str):
     """解析民國或西元日期"""
     s = str(date_str).strip()
@@ -119,7 +119,7 @@ def parse_roc_date(date_str):
     return None
 
 def determine_status(pre_pct, in_pct):
-    """判斷處置狀態 (5%/15% 標準)"""
+    """判斷處置狀態"""
     if in_pct > 15: return "👑 妖股誕生"
     elif in_pct > 5: return "🔥 強勢突圍"
     elif in_pct < -15: return "💀 人去樓空"
@@ -128,18 +128,15 @@ def determine_status(pre_pct, in_pct):
 
 def get_ticker_list(code, market=""):
     code = str(code)
-    if "上櫃" in market or "TPEx" in market:
-        return [f"{code}.TWO", f"{code}.TW"]
-    if "上市" in market:
-        return [f"{code}.TW", f"{code}.TWO"]
-    if code and code[0] in ['3', '4', '5', '6', '8']:
-        return [f"{code}.TWO", f"{code}.TW"]
+    if "上櫃" in market or "TPEx" in market: return [f"{code}.TWO", f"{code}.TW"]
+    if "上市" in market: return [f"{code}.TW", f"{code}.TWO"]
+    if code and code[0] in ['3', '4', '5', '6', '8']: return [f"{code}.TWO", f"{code}.TW"]
     return [f"{code}.TW", f"{code}.TWO"]
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
-    """抓取股價與法人資料"""
+    """抓取股價與法人資料 (回測一年版)"""
     try:
-        # 📌 修改點：抓取範圍擴大至處置前 365 天 (一年)，增加數據準確度
+        # 抓取範圍：處置前 365 天 ~ 處置後 65 天
         fetch_start = start_date - timedelta(days=365)
         fetch_end = jail_end_date + timedelta(days=65) 
         
@@ -148,7 +145,9 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         
         for ticker in tickers_to_try:
             try:
-                temp_df = yf.Ticker(ticker).history(start=fetch_start, end=fetch_end, auto_adjust=True)
+                temp_df = yf.Ticker(ticker).history(start=fetch_start.strftime("%Y-%m-%d"), 
+                                                  end=fetch_end.strftime("%Y-%m-%d"), 
+                                                  auto_adjust=True)
                 if not temp_df.empty:
                     df = temp_df
                     break
@@ -171,7 +170,8 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         
         if mask_before.any():
             jail_base_p = df[mask_before]['Close'].iloc[-1]
-            pre_jail_avg_volume = df[mask_before]['Volume'].tail(20).mean()
+            # 使用季均量 (60天) 當作基準，比較穩定
+            pre_jail_avg_volume = df[mask_before]['Volume'].tail(60).mean()
             
             target_idx = max(0, len(df[mask_before]) - len(df_jail))
             pre_entry = df[mask_before]['Open'].iloc[target_idx] if len(df[mask_before]) > target_idx else jail_base_p
@@ -215,7 +215,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
                 elif is_foreign_sell: inst_status = "🟢 外資大賣"
                 elif is_trust_sell: inst_status = "🟢 投信大賣"
 
-        # === 3. 計算出關後走勢 ===
+        # === 3. 計算出關後走勢 (20天) ===
         df_after = df[df.index > pd.Timestamp(jail_end_date)]
         
         if not df_after.empty:
@@ -265,7 +265,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 開始執行處置股出關記錄更新 (含組合統計)...")
+    print("🚀 開始執行一年期處置股回測 (含法人爬蟲)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
@@ -276,7 +276,7 @@ def main():
         print(f"❌ 找不到來源工作表 '{SOURCE_WORKSHEET}'")
         return
 
-    # 擴充 Header
+    # Header 設定
     header_base = ["出關日期", "股號", "股名", "狀態", "法人動向", "處置前%", "處置中%", "累積漲跌幅"]
     header_days = [f"D+{i+1}" for i in range(20)]
     header = header_base + header_days
@@ -285,13 +285,12 @@ def main():
         ws_dest = sh.worksheet(DEST_WORKSHEET)
     except WorksheetNotFound:
         print(f"💡 工作表 '{DEST_WORKSHEET}' 不存在，正在建立...")
-        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=1000, cols=60) 
+        ws_dest = sh.add_worksheet(title=DEST_WORKSHEET, rows=2000, cols=60)
         ws_dest.append_row(header)
 
     # 讀取現有記錄
     raw_rows = ws_dest.get_all_values()
     existing_map = {} 
-    
     if len(raw_rows) > 1:
         for row in raw_rows[1:]:
             if len(row) < 8: continue 
@@ -299,9 +298,7 @@ def main():
             rid = str(row[1])
             d_last_idx = 7 + 20 
             d_last = ""
-            if len(row) > d_last_idx:
-                d_last = str(row[d_last_idx]).strip()
-            
+            if len(row) > d_last_idx: d_last = str(row[d_last_idx]).strip()
             if rid:
                 key = f"{rid}_{rdate}"
                 row_dict = {}
@@ -313,24 +310,25 @@ def main():
     source_data = ws_source.get_all_records()
     processed_list = []
     
+    # 統計容器初始化
     status_order = ["👑 妖股誕生", "🔥 強勢突圍", "🧊 多空膠著", "📉 走勢疲軟", "💀 人去樓空"]
-    track_days = 20
-    
-    # 統計容器
-    daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(track_days)] for s in status_order}
-    summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
-    interval_checkpoints = [5, 10, 15, 20]
-    interval_data = {s: {cp: [] for cp in interval_checkpoints} for s in status_order}
-
     inst_order = ["🔴 土洋合購", "🔴 外資大買", "🔴 投信大買", "🔴 外資買/投信賣", "🔴 投信買/外資賣", 
                   "🟢 土洋合賣", "🟢 外資大賣", "🟢 投信大賣", "🧊 無明顯動向"]
+    
+    track_days = 20
+    interval_checkpoints = [5, 10, 15, 20]
+    
+    daily_stats = {s: [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(track_days)] for s in status_order}
+    summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
+    interval_data = {s: {cp: [] for cp in interval_checkpoints} for s in status_order}
     inst_stats_data = {i: {'count': 0, 'wins': 0, 'total_pct': 0.0} for i in inst_order}
-
-    # === 新增：狀態+法人 組合統計容器 ===
     combo_stats_data = {} 
 
     today = datetime.now()
-    print(f"🔍 掃描 {len(source_data)} 筆處置紀錄...")
+    one_year_ago = today - timedelta(days=365)
+
+    print(f"🔍 來源資料共 {len(source_data)} 筆，準備進行一年期回測...")
+    
     total_count = 0
     update_count = 0
 
@@ -349,12 +347,14 @@ def main():
         e_date = parse_roc_date(dates[1])
         
         if not s_date or not e_date: continue
+        
+        # 📌 抓取過去一年的資料 (不限制在最近)
+        if e_date < one_year_ago: continue 
         if e_date > today: continue 
 
         result = fetch_stock_data(code, s_date, e_date, market)
         
-        if not result:
-            continue
+        if not result: continue
             
         release_date_str = result['release_date']
         key = f"{code}_{release_date_str}"
@@ -369,7 +369,7 @@ def main():
                 result['pre_pct'], result['in_pct'], result['acc_pct']
             ] + result['daily_trends']
             update_count += 1
-            print(f"  ✨ 更新: {code} {name} | {result['status']} | {result['inst_status']}")
+            print(f"  ✨ ({update_count}) 回測: {result['release_date']} {code} {name} | {result['status']} | {result['inst_status']}")
             
         processed_list.append(row_vals)
 
@@ -393,11 +393,10 @@ def main():
                 inst_stats_data[inst_tag]['total_pct'] += acc_val
                 if acc_val > 0: inst_stats_data[inst_tag]['wins'] += 1
 
-            # 3. 組合統計 (狀態 + 法人)
+            # 3. 組合統計
             combo_key = (stat_status, inst_tag)
             if combo_key not in combo_stats_data:
                 combo_stats_data[combo_key] = {'count': 0, 'wins': 0, 'total_pct': 0.0}
-            
             combo_stats_data[combo_key]['count'] += 1
             combo_stats_data[combo_key]['total_pct'] += acc_val
             if acc_val > 0: combo_stats_data[combo_key]['wins'] += 1
@@ -430,12 +429,11 @@ def main():
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
     # 5. === 建構右側統計區 ===
-    print("📊 計算統計數據 (含組合統計)...")
-    
+    print("📊 正在計算彙整統計數據...")
     right_side_rows = []
     
     # --- 表格 1: 狀態總覽 ---
-    right_side_rows.append(["", "📊 狀態總覽 (原始標準5%/15%)", "個股數", "D+20勝率", "D+20平均", "", "", "", ""])
+    right_side_rows.append(["", "📊 狀態總覽 (一年期回測)", "個股數", "D+20勝率", "D+20平均", "", "", "", ""])
     for s in status_order:
         t = summary_stats[s]['count']
         w = summary_stats[s]['wins']
@@ -520,17 +518,15 @@ def main():
 
     right_side_rows.append([""] * 5)
 
-    # --- 表格 7: 狀態+法人 組合統計 (新增) ---
+    # --- 表格 7: 狀態+法人 組合統計 ---
     right_side_rows.append(["", "📊 狀態+法人 組合統計", "個股數", "勝率", "平均漲幅"])
-    
-    # 雙層迴圈確保排序整齊 (先排狀態，再排法人)
     for s in status_order:
         for i in inst_order:
             combo_key = (s, i)
             if combo_key in combo_stats_data:
                 d = combo_stats_data[combo_key]
                 t = d['count']
-                if t > 0: # 只顯示有數據的組合
+                if t > 0: 
                     wr = (d['wins'] / t * 100)
                     avg = d['total_pct'] / t
                     display_name = f"{s} + {i}"
@@ -558,7 +554,7 @@ def main():
     # 7. === 設定條件格式 ===
     print("🎨 更新條件格式化...")
 
-    # 右側範圍擴大到包含新表格 (Col 29 ~ 60 夠用了)
+    # 右側範圍擴大到包含新表格
     ranges = [
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 5, "endColumnIndex": 28},
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 29, "endColumnIndex": 60}
