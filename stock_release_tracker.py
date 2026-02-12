@@ -25,7 +25,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ⚙️ 設定區
 # ============================
 SHEET_NAME = "台股注意股資料庫_V33"
-DEST_WORKSHEET = "一年期處置回測數據"  # 輸出分頁名稱
+DEST_WORKSHEET = "一年期處置回測數據" 
 
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -39,9 +39,10 @@ THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 def get_driver():
     """初始化 Selenium Driver"""
     options = Options()
-    options.add_argument('--headless=new')
+    options.add_argument('--headless=new') # 無頭模式
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    # 偽裝成一般瀏覽器
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -65,133 +66,149 @@ def is_valid_date_row(s):
     return re.match(r"^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}$", str(s).strip()) is not None
 
 def roc_to_datestr(d_str):
-    """將民國年字串 (113/01/01) 轉為西元字串 (2024-01-01)"""
     parts = re.split(r"[/-]", str(d_str).strip())
     if len(parts) < 2: return None
     y = int(parts[0])
     if y < 1911: y += 1911
     return f"{y:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
 
-def datestr_to_roc(date_obj):
-    """將日期物件轉為民國年字串 (113/01/01)"""
-    y = date_obj.year - 1911
-    return f"{y}/{date_obj.month:02d}/{date_obj.day:02d}"
-
 # ============================
-# 📅 官方名單爬取 (一年期核心)
+# 📅 官方名單爬取 (改用 Selenium 繞過防爬)
 # ============================
 def fetch_history_from_official_sites():
     """
-    直接從證交所 (TWSE) 和櫃買中心 (TPEx) 抓取過去 365 天的處置股名單
+    使用 Selenium 從證交所與櫃買中心抓取過去 365 天的處置股
     """
-    print("🌍 正在連線官方資料庫抓取「過去 365 天」完整處置名單...")
+    print("🌍 正在啟動瀏覽器，準備抓取「過去 365 天」完整處置名單...")
     
+    # 啟動 Selenium Driver (共用一個 Session 減少開銷)
+    driver = get_driver()
     all_records = []
-    today = datetime.now()
-    # 建立過去 12 個月的月份列表
-    months = []
-    for i in range(13):
-        d = today - timedelta(days=30 * i)
-        months.append(d)
-    months = sorted(list(set([m.strftime("%Y%m") for m in months]))) # 去重排序
     
-    # --- 1. 證交所 (TWSE) ---
-    print("  ...正在下載 TWSE (上市) 歷史資料...")
-    for ym in months:
-        # TWSE API 格式 (yyyymmdd)
-        # 我們抓每個月的資料
-        start_d = f"{ym}01"
-        # 計算該月最後一天
-        y = int(ym[:4])
-        m = int(ym[4:])
-        if m == 12:
-            end_d = f"{y+1}0101"
-        else:
-            end_d = f"{y}{m+1:02d}01"
-        end_d_obj = datetime.strptime(end_d, "%Y%m%d") - timedelta(days=1)
-        end_d = end_d_obj.strftime("%Y%m%d")
-
-        url = f"https://www.twse.com.tw/rwd/zh/announced/punish?startDate={start_d}&endDate={end_d}&response=json"
+    try:
+        today = datetime.now()
+        # 建立過去 13 個月的月份列表 (確保覆蓋滿一年)
+        months = []
+        for i in range(13):
+            d = today - timedelta(days=30 * i)
+            months.append(d)
+        months = sorted(list(set([m.strftime("%Y%m") for m in months])))
         
-        try:
-            r = requests.get(url, timeout=10)
-            data = r.json()
-            if 'data' in data:
-                for row in data['data']:
-                    # TWSE 格式: [編號, 日期, 證券代號, 證券名稱, 次數, 措施, 期間]
-                    # 日期是公告日，期間通常是 "113/01/02~113/01/15"
-                    code = row[2]
-                    name = row[3]
-                    period_raw = row[6]
-                    
-                    # 簡單清洗
-                    if "處置期間" in period_raw: # 有時候會有多餘文字
-                        pass 
-                    
-                    # 整理格式
-                    all_records.append({
-                        '代號': code,
-                        '名稱': name,
-                        '處置期間': period_raw,
-                        '市場': '上市'
-                    })
-            time.sleep(1) # 避免被擋
-        except Exception as e:
-            print(f"    ⚠️ TWSE {ym} 抓取失敗: {e}")
+        # --- 1. 證交所 (TWSE) ---
+        print("  ...正在下載 TWSE (上市) 歷史資料 (使用 Selenium)...")
+        for ym in months:
+            # 計算日期範圍
+            start_d = f"{ym}01"
+            y = int(ym[:4])
+            m = int(ym[4:])
+            if m == 12:
+                end_d = f"{y+1}0101" # 跨年
+            else:
+                end_d = f"{y}{m+1:02d}01"
+            # 減一天得到月底
+            end_d_obj = datetime.strptime(end_d, "%Y%m%d") - timedelta(days=1)
+            end_d = end_d_obj.strftime("%Y%m%d")
 
-    # --- 2. 櫃買中心 (TPEx) ---
-    print("  ...正在下載 TPEx (上櫃) 歷史資料...")
-    for ym in months:
-        # TPEx 需要民國年格式 (e.g. 113/01)
-        y = int(ym[:4])
-        m = int(ym[4:])
-        roc_y = y - 1911
-        
-        # TPEx API 參數: d=起始日(113/01/01), e=結束日(113/01/31)
-        start_d = f"{roc_y}/{m:02d}/01"
-        
-        # 計算月底
-        if m == 12:
-            next_y = y + 1
-            next_m = 1
-        else:
-            next_y = y
-            next_m = m + 1
-        last_day = (datetime(next_y, next_m, 1) - timedelta(days=1)).day
-        end_d = f"{roc_y}/{m:02d}/{last_day}"
+            # 證交所 JSON API 網址
+            url = f"https://www.twse.com.tw/rwd/zh/announced/punish?startDate={start_d}&endDate={end_d}&response=json"
+            
+            try:
+                driver.get(url)
+                # 等待內容載入
+                time.sleep(2) 
+                # 取得頁面原始碼 (這時候應該是純 JSON 文字顯示在瀏覽器中)
+                # 使用 pre tag 或者 body text 來獲取內容
+                content = driver.find_element(By.TAG_NAME, "body").text
+                
+                # 嘗試解析 JSON
+                if content:
+                    data = json.loads(content)
+                    if 'data' in data:
+                        for row in data['data']:
+                            # TWSE 格式: [編號, 日期, 證券代號, 證券名稱, 次數, 措施, 期間]
+                            code = row[2]
+                            name = row[3]
+                            period_raw = row[6]
+                            
+                            all_records.append({
+                                '代號': code,
+                                '名稱': name,
+                                '處置期間': period_raw,
+                                '市場': '上市'
+                            })
+                        print(f"    ✅ TWSE {ym}: 取得 {len(data['data'])} 筆")
+                    else:
+                        print(f"    ℹ️ TWSE {ym}: 無資料")
+            except Exception as e:
+                print(f"    ⚠️ TWSE {ym} 抓取失敗: {e}")
 
-        url = f"https://www.tpex.org.tw/web/bulletin/punish/punish_result.php?l=zh-tw&o=json&d={start_d}&e={end_d}"
-        
-        try:
-            r = requests.get(url, timeout=10)
-            data = r.json()
-            if 'aaData' in data:
-                for row in data['aaData']:
-                    # TPEx 格式: [0:日期, 1:代號, 2:名稱, 3:次數, 4:措施, 5:期間, ...]
-                    code = row[1]
-                    name = row[2]
-                    period_raw = row[5] # 113/01/02~113/01/15
-                    
-                    all_records.append({
-                        '代號': code,
-                        '名稱': name,
-                        '處置期間': period_raw,
-                        '市場': '上櫃'
-                    })
-            time.sleep(1)
-        except Exception as e:
-            print(f"    ⚠️ TPEx {ym} 抓取失敗: {e}")
+        # --- 2. 櫃買中心 (TPEx) ---
+        print("  ...正在下載 TPEx (上櫃) 歷史資料 (使用 Selenium)...")
+        for ym in months:
+            y = int(ym[:4])
+            m = int(ym[4:])
+            roc_y = y - 1911
+            
+            start_d = f"{roc_y}/{m:02d}/01"
+            
+            if m == 12:
+                next_y = y + 1
+                next_m = 1
+            else:
+                next_y = y
+                next_m = m + 1
+            last_day = (datetime(next_y, next_m, 1) - timedelta(days=1)).day
+            end_d = f"{roc_y}/{m:02d}/{last_day}"
 
-    # 去除重複 (同一支股票同一期間可能出現多次公告)
+            url = f"https://www.tpex.org.tw/web/bulletin/punish/punish_result.php?l=zh-tw&o=json&d={start_d}&e={end_d}"
+            
+            try:
+                driver.get(url)
+                time.sleep(2)
+                content = driver.find_element(By.TAG_NAME, "body").text
+                
+                if content:
+                    data = json.loads(content)
+                    if 'aaData' in data:
+                        count = 0
+                        for row in data['aaData']:
+                            # TPEx 格式: [0:日期, 1:代號, 2:名稱, 3:次數, 4:措施, 5:期間, ...]
+                            code = row[1]
+                            name = row[2]
+                            period_raw = row[5]
+                            
+                            all_records.append({
+                                '代號': code,
+                                '名稱': name,
+                                '處置期間': period_raw,
+                                '市場': '上櫃'
+                            })
+                            count += 1
+                        print(f"    ✅ TPEx {ym}: 取得 {count} 筆")
+                    else:
+                        print(f"    ℹ️ TPEx {ym}: 無資料")
+            except Exception as e:
+                print(f"    ⚠️ TPEx {ym} 抓取失敗: {e}")
+
+    except Exception as e:
+        print(f"❌ 歷史名單抓取發生嚴重錯誤: {e}")
+    finally:
+        # 務必關閉 driver
+        driver.quit()
+
+    # 去除重複
     unique_records = []
     seen = set()
     for rec in all_records:
-        key = f"{rec['代號']}_{rec['處置期間']}"
+        # 簡單清理代號 (有時候會有空白)
+        c = str(rec['代號']).strip()
+        p = str(rec['處置期間']).strip()
+        key = f"{c}_{p}"
         if key not in seen:
             unique_records.append(rec)
             seen.add(key)
     
-    print(f"✅ 成功抓取並整理 {len(unique_records)} 筆歷史處置資料！")
+    print(f"🎉 歷史名單整理完畢！共 {len(unique_records)} 筆獨特處置紀錄。")
     return unique_records
 
 def get_institutional_data(stock_id, start_date, end_date):
@@ -254,6 +271,7 @@ def get_ticker_list(code, market=""):
     return [f"{code}.TW", f"{code}.TWO"]
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
+    """抓取股價與法人資料 (強制抓 365 天前 K 線)"""
     try:
         fetch_start = start_date - timedelta(days=365)
         fetch_end = jail_end_date + timedelta(days=65) 
@@ -377,12 +395,12 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 開始執行一年期全量處置股回測 (含名單爬取)...")
+    print("🚀 開始執行一年期全量處置股回測 (含 Selenium 名單爬取)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
 
-    # 📌 關鍵修改：不再讀取 Sheet，改為直接爬取過去一年的名單
+    # 📌 關鍵修改：使用 Selenium 抓取名單
     source_data = fetch_history_from_official_sites()
 
     header_base = ["出關日期", "股號", "股名", "狀態", "法人動向", "處置前%", "處置中%", "累積漲跌幅"]
@@ -432,7 +450,7 @@ def main():
     today = datetime.now()
     one_year_ago = today - timedelta(days=365)
 
-    print(f"🔍 準備回測 {len(source_data)} 筆歷史資料 (範圍：過去一年)...")
+    print(f"🔍 準備回測 {len(source_data)} 筆歷史資料...")
     
     total_count = 0
     update_count = 0
@@ -453,6 +471,7 @@ def main():
         
         if not s_date or not e_date: continue
         
+        # 再次確保不跑太久以前的
         if e_date < one_year_ago: continue 
         if e_date > today: continue 
 
