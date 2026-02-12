@@ -37,16 +37,17 @@ THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 # 🛠️ 爬蟲與工具函式
 # ============================
 def get_driver():
-    """初始化 Selenium Driver"""
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
+    """初始化 Selenium Driver (無頭模式)"""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
     service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 def connect_google_sheets(sheet_name):
@@ -90,26 +91,19 @@ def parse_roc_date(date_str):
 def fetch_tpex_history_requests(start_date, end_date):
     """
     [上櫃 TPEx] 使用 Requests 抓取歷史資料 (按月迴圈)
-    確保能抓到完整一年份
     """
     print(f"  [上櫃] 啟動 Requests 爬蟲，範圍: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
     
     all_data = []
-    
-    # 建立月份區間列表 (每個月抓一次，避免資料量太大被截斷)
     curr = start_date
     while curr <= end_date:
         # 計算當月最後一天
         next_month = curr.replace(day=28) + timedelta(days=4)
         last_day_of_month = next_month - timedelta(days=next_month.day)
-        
-        # 本次搜尋結束日 (不超過總結束日)
         batch_end = min(last_day_of_month, end_date)
         
         sd_str = f"{curr.year - 1911}/{curr.month:02d}/{curr.day:02d}"
         ed_str = f"{batch_end.year - 1911}/{batch_end.month:02d}/{batch_end.day:02d}"
-        
-        # print(f"    └── 抓取區間: {sd_str} ~ {ed_str}")
         
         url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
         headers = {
@@ -139,11 +133,10 @@ def fetch_tpex_history_requests(start_date, end_date):
                                 "Period": c_period,
                                 "Market": "上櫃"
                             })
-            time.sleep(0.5) # 稍微休息避免被擋
+            time.sleep(0.5) 
         except Exception as e:
             print(f"    ❌ TPEx {sd_str} 抓取失敗: {e}")
         
-        # 移動到下個月第一天
         curr = last_day_of_month + timedelta(days=1)
 
     if all_data:
@@ -153,7 +146,6 @@ def fetch_tpex_history_requests(start_date, end_date):
 def fetch_twse_history_selenium(start_date, end_date):
     """
     [上市 TWSE] 使用 Selenium 抓取歷史資料 (按月迴圈)
-    確保能抓到完整一年份
     """
     print(f"  [上市] 啟動 Selenium 瀏覽器，範圍: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
     
@@ -165,7 +157,6 @@ def fetch_twse_history_selenium(start_date, end_date):
         driver.get(url)
         wait = WebDriverWait(driver, 15)
         
-        # 建立月份區間列表
         curr = start_date
         while curr <= end_date:
             next_month = curr.replace(day=28) + timedelta(days=4)
@@ -175,23 +166,17 @@ def fetch_twse_history_selenium(start_date, end_date):
             sd_str = curr.strftime("%Y%m%d")
             ed_str = batch_end.strftime("%Y%m%d")
             
-            # print(f"    └── 抓取區間: {sd_str} ~ {ed_str}")
-            
             try:
-                # 填寫日期
                 driver.execute_script(f"""
                     document.querySelector('input[name="startDate"]').value = "{sd_str}";
                     document.querySelector('input[name="endDate"]').value = "{ed_str}";
                 """)
                 
-                # 點擊查詢
                 search_btn = driver.find_element(By.CSS_SELECTOR, "button.search")
                 search_btn.click()
                 
-                # 等待讀取
                 time.sleep(1.5) 
                 
-                # 解析
                 rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
                 for row in rows:
                     try:
@@ -213,7 +198,6 @@ def fetch_twse_history_selenium(start_date, end_date):
             except Exception as e:
                 print(f"    ❌ TWSE {sd_str} 操作失敗: {e}")
                 
-            # 移動到下個月
             curr = last_day_of_month + timedelta(days=1)
             
     except Exception as e:
@@ -277,7 +261,7 @@ def get_institutional_data(stock_id, start_date, end_date):
         driver.quit()
 
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
-    """抓取股價與法人資料 (強制抓 365 天前 K 線)"""
+    """抓取股價與法人資料"""
     try:
         fetch_start = start_date - timedelta(days=365)
         fetch_end = jail_end_date + timedelta(days=65) 
@@ -408,10 +392,9 @@ def main():
 
     today = datetime.now()
     one_year_ago = today - timedelta(days=365)
-    # 往後抓一個月，避免漏掉今天剛公布的
     end_fetch = today + timedelta(days=30) 
 
-    # 1. 抓取歷史名單 (按月迴圈，確保完整)
+    # 1. 抓取歷史名單
     print(f"🔎 抓取歷史名單區間: {one_year_ago.strftime('%Y-%m-%d')} ~ {end_fetch.strftime('%Y-%m-%d')}")
     
     df_tpex = fetch_tpex_history_requests(one_year_ago, end_fetch)
@@ -430,7 +413,6 @@ def main():
 
     print("\n🔄 合併並整理資料...")
     final_df = pd.concat(all_dfs, ignore_index=True)
-    # 去重
     final_df.drop_duplicates(subset=['Code', 'Period'], inplace=True)
     source_data = final_df.to_dict('records')
     
@@ -479,7 +461,9 @@ def main():
     summary_stats = {s: {'count': 0, 'wins': 0, 'total_pct': 0.0} for s in status_order}
     interval_data = {s: {cp: [] for cp in interval_checkpoints} for s in status_order}
     inst_stats_data = {i: {'count': 0, 'wins': 0, 'total_pct': 0.0} for i in inst_order}
-    combo_stats_data = {} 
+    
+    # 📌 新增：組合的區間統計 (狀態+法人)
+    combo_interval_data = {} # Key: (status, inst), Value: {5: [], 10: [], 15: [], 20: []}
 
     total_count = 0
     update_count = 0
@@ -500,7 +484,6 @@ def main():
         
         if not s_date or not e_date: continue
         
-        # 資料已經篩選過了，這邊雙重確認一下
         if e_date < one_year_ago: continue 
         if e_date > today: continue 
 
@@ -529,11 +512,17 @@ def main():
         
         processed_list.append(row_vals)
 
-        # 統計
         stat_status = row_vals[3] 
         inst_tag = row_vals[4]    
         acc_pct_str = row_vals[7] 
         
+        # 初始化組合鍵
+        combo_key = (stat_status, inst_tag)
+        if combo_key not in combo_interval_data:
+            combo_interval_data[combo_key] = {cp: [] for cp in interval_checkpoints}
+            combo_interval_data[combo_key]['total_pct_sum'] = 0.0
+            combo_interval_data[combo_key]['count'] = 0
+
         try:
             acc_val = float(acc_pct_str.replace('%', '').replace('+', ''))
             
@@ -546,14 +535,11 @@ def main():
                 inst_stats_data[inst_tag]['count'] += 1
                 inst_stats_data[inst_tag]['total_pct'] += acc_val
                 if acc_val > 0: inst_stats_data[inst_tag]['wins'] += 1
+            
+            # 更新組合總計
+            combo_interval_data[combo_key]['count'] += 1
+            combo_interval_data[combo_key]['total_pct_sum'] += acc_val
 
-            combo_key = (stat_status, inst_tag)
-            if combo_key not in combo_stats_data:
-                combo_stats_data[combo_key] = {'count': 0, 'wins': 0, 'total_pct': 0.0}
-            combo_stats_data[combo_key]['count'] += 1
-            combo_stats_data[combo_key]['total_pct'] += acc_val
-            if acc_val > 0: combo_stats_data[combo_key]['wins'] += 1
-                
         except: pass
             
         if stat_status in daily_stats:
@@ -568,11 +554,15 @@ def main():
                             daily_stats[stat_status][day_idx]['count'] += 1
                             daily_stats[stat_status][day_idx]['sum'] += daily_val
                             if daily_val > 0: daily_stats[stat_status][day_idx]['wins'] += 1
+                            
                             current_compound *= (1 + daily_val / 100)
                             current_day = day_idx + 1
                             if current_day in interval_checkpoints:
-                                cumulative_return = (current_compound - 1) * 100
-                                interval_data[stat_status][current_day].append(cumulative_return)
+                                ret = (current_compound - 1) * 100
+                                # 狀態區間
+                                interval_data[stat_status][current_day].append(ret)
+                                # 組合區間 (新增)
+                                combo_interval_data[combo_key][current_day].append(ret)
                         except: pass
         
         total_count += 1
@@ -662,18 +652,35 @@ def main():
 
     right_side_rows.append([""] * 5)
 
-    right_side_rows.append(["", "📊 狀態+法人 組合統計", "個股數", "勝率", "平均漲幅"])
+    # 📌 [修正] 狀態+法人 組合統計 (擴充顯示每5日勝率)
+    combo_header = ["D+5勝率", "D+10勝率", "D+15勝率", "D+20勝率"]
+    right_side_rows.append(["", "📊 狀態+法人 組合統計", "個股數"] + combo_header + ["D+20平均漲跌"])
+    
     for s in status_order:
         for i in inst_order:
             combo_key = (s, i)
-            if combo_key in combo_stats_data:
-                d = combo_stats_data[combo_key]
+            if combo_key in combo_interval_data:
+                d = combo_interval_data[combo_key]
                 t = d['count']
-                if t > 0: 
-                    wr = (d['wins'] / t * 100)
-                    avg = d['total_pct'] / t
+                if t > 0:
                     display_name = f"{s} + {i}"
-                    right_side_rows.append(["", display_name, t, f"{wr:.1f}%", f"{avg:+.1f}%"])
+                    row_vals = ["", display_name, t]
+                    
+                    # 填入區間勝率
+                    for cp in interval_checkpoints:
+                        data_list = d[cp]
+                        if data_list:
+                            wins = sum(1 for x in data_list if x > 0)
+                            wr = (wins / len(data_list) * 100)
+                            row_vals.append(f"{wr:.1f}%")
+                        else:
+                            row_vals.append("-")
+                    
+                    # 填入總平均
+                    avg = d['total_pct_sum'] / t
+                    row_vals.append(f"{avg:+.1f}%")
+                    
+                    right_side_rows.append(row_vals)
 
     final_header = header + [""] * (3 + track_days) 
     final_output = [final_header]
