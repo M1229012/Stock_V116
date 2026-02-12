@@ -30,7 +30,7 @@ DEST_WORKSHEET = "處置股出關記錄"
 
 SERVICE_KEY_FILE = "service_key.json"
 
-# ⚡ 法人判斷閥值 (來自您的設定)
+# ⚡ 法人判斷閥值
 THRESH_FOREIGN = 0.010  # 外資 1.0%
 THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 
@@ -63,14 +63,13 @@ def roc_to_datestr(d_str):
 def get_institutional_data(stock_id, start_date, end_date):
     """爬取法人買賣超 (富邦證券)"""
     driver = get_driver()
-    # 修正：轉換日期格式以符合網址需求 (如果是 datetime 物件轉字串)
     if isinstance(start_date, datetime): start_date = start_date.strftime("%Y-%m-%d")
     if isinstance(end_date, datetime): end_date = end_date.strftime("%Y-%m-%d")
     
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
         driver.get(url)
-        time.sleep(1.5) # 稍微縮短等待時間
+        time.sleep(1.5)
         html = driver.page_source
         tables = pd.read_html(StringIO(html))
         target_df = None
@@ -171,7 +170,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         
         if mask_before.any():
             jail_base_p = df[mask_before]['Close'].iloc[-1]
-            pre_jail_avg_volume = df[mask_before]['Volume'].tail(20).mean() # 計算處置前均量
+            pre_jail_avg_volume = df[mask_before]['Volume'].tail(20).mean()
             
             target_idx = max(0, len(df[mask_before]) - len(df_jail))
             pre_entry = df[mask_before]['Open'].iloc[target_idx] if len(df[mask_before]) > target_idx else jail_base_p
@@ -190,32 +189,17 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         # === 2. 法人判斷邏輯 ===
         inst_status = "🧊 無明顯動向"
         
-        # 只有在有處置期間數據且有成交量時才爬蟲
         if not df_jail.empty and pre_jail_avg_volume > 0:
             print(f"  🕷️ 爬取法人資料: {code}...")
             inst_df = get_institutional_data(code, start_date, jail_end_date)
             
             if inst_df is not None:
-                # 基準量 (Benchmark Volume)
-                bm = (pre_jail_avg_volume * len(df_jail)) / 1000 # 轉換為張數(假設Volume單位為股, 視yf回傳而定, 通常是股)
-                if bm == 0: bm = 1 # 避免除以零
+                bm_shares = pre_jail_avg_volume * len(df_jail) 
+                if bm_shares == 0: bm_shares = 1
 
-                # 累計買賣超 (張)
-                net_foreign = inst_df['外資買賣超'].sum() / 1000 # yf volume是股, 這裡要統一單位
-                net_trust = inst_df['投信買賣超'].sum() / 1000
-                
-                # 若 yf volume 單位是股, 這裡 bm 已經除以 1000 變張
-                # 網站抓下來的通常是張, 所以不用除
-                # 修正: yfinance history volume 單位是股
-                # 網站抓下來的資料單位通常是「張」
-                
-                # 重算比例
-                bm_shares = pre_jail_avg_volume * len(df_jail) # 預期總成交股數
-                # 網站抓的是張，轉成股比較
                 r_f = (inst_df['外資買賣超'].sum() * 1000) / bm_shares
                 r_t = (inst_df['投信買賣超'].sum() * 1000) / bm_shares
                 
-                # 判斷邏輯
                 is_foreign_buy = r_f > THRESH_FOREIGN
                 is_foreign_sell = r_f < -THRESH_FOREIGN
                 is_trust_buy = r_t > THRESH_OTHERS
@@ -223,8 +207,8 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
                 
                 if is_foreign_buy and is_trust_buy: inst_status = "🔴 土洋合購"
                 elif is_foreign_sell and is_trust_sell: inst_status = "🟢 土洋合賣"
-                elif is_foreign_buy and is_trust_sell: inst_status = "🔴 外資買/投信賣" # 土洋對作
-                elif is_foreign_sell and is_trust_buy: inst_status = "🔴 投信買/外資賣" # 土洋對作
+                elif is_foreign_buy and is_trust_sell: inst_status = "🔴 外資買/投信賣"
+                elif is_foreign_sell and is_trust_buy: inst_status = "🔴 投信買/外資賣"
                 elif is_foreign_buy: inst_status = "🔴 外資大買"
                 elif is_trust_buy: inst_status = "🔴 投信大買"
                 elif is_foreign_sell: inst_status = "🟢 外資大賣"
@@ -280,7 +264,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 開始執行處置股出關記錄更新 (含法人爬蟲)...")
+    print("🚀 開始執行處置股出關記錄更新 (含組合統計)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
@@ -291,7 +275,7 @@ def main():
         print(f"❌ 找不到來源工作表 '{SOURCE_WORKSHEET}'")
         return
 
-    # 擴充 Header: 加入「法人動向」
+    # 擴充 Header
     header_base = ["出關日期", "股號", "股名", "狀態", "法人動向", "處置前%", "處置中%", "累積漲跌幅"]
     header_days = [f"D+{i+1}" for i in range(20)]
     header = header_base + header_days
@@ -312,7 +296,6 @@ def main():
             if len(row) < 8: continue 
             rdate = str(row[0])
             rid = str(row[1])
-            
             d_last_idx = 7 + 20 
             d_last = ""
             if len(row) > d_last_idx:
@@ -322,15 +305,9 @@ def main():
                 key = f"{rid}_{rdate}"
                 row_dict = {}
                 for idx, h in enumerate(header):
-                    if idx < len(row):
-                        row_dict[h] = row[idx]
-                    else:
-                        row_dict[h] = ""
-                
-                existing_map[key] = {
-                    'data': row_dict,
-                    'done': bool(d_last)
-                }
+                    if idx < len(row): row_dict[h] = row[idx]
+                    else: row_dict[h] = ""
+                existing_map[key] = {'data': row_dict, 'done': bool(d_last)}
 
     source_data = ws_source.get_all_records()
     processed_list = []
@@ -344,10 +321,14 @@ def main():
     interval_checkpoints = [5, 10, 15, 20]
     interval_data = {s: {cp: [] for cp in interval_checkpoints} for s in status_order}
 
-    # === 新增：法人統計容器 ===
     inst_order = ["🔴 土洋合購", "🔴 外資大買", "🔴 投信大買", "🔴 外資買/投信賣", "🔴 投信買/外資賣", 
                   "🟢 土洋合賣", "🟢 外資大賣", "🟢 投信大賣", "🧊 無明顯動向"]
     inst_stats_data = {i: {'count': 0, 'wins': 0, 'total_pct': 0.0} for i in inst_order}
+
+    # === 新增：狀態+法人 組合統計容器 ===
+    # Key: (狀態, 法人動向) Tuple
+    # Value: {'count': 0, 'wins': 0, 'total_pct': 0.0}
+    combo_stats_data = {} 
 
     today = datetime.now()
     print(f"🔍 掃描 {len(source_data)} 筆處置紀錄...")
@@ -394,11 +375,9 @@ def main():
         processed_list.append(row_vals)
 
         # --- 統計邏輯 ---
-        stat_status = row_vals[3] # 狀態
-        inst_tag = row_vals[4]    # 法人動向
-        
-        # D+20 累積漲幅
-        acc_pct_str = row_vals[7] # Index 7 是累積漲跌幅
+        stat_status = row_vals[3] 
+        inst_tag = row_vals[4]    
+        acc_pct_str = row_vals[7] 
         
         try:
             acc_val = float(acc_pct_str.replace('%', '').replace('+', ''))
@@ -409,38 +388,41 @@ def main():
                 summary_stats[stat_status]['total_pct'] += acc_val
                 if acc_val > 0: summary_stats[stat_status]['wins'] += 1
             
-            # 2. 法人統計 (新增)
+            # 2. 法人統計
             if inst_tag in inst_stats_data:
                 inst_stats_data[inst_tag]['count'] += 1
                 inst_stats_data[inst_tag]['total_pct'] += acc_val
                 if acc_val > 0: inst_stats_data[inst_tag]['wins'] += 1
+
+            # 3. 組合統計 (狀態 + 法人)
+            combo_key = (stat_status, inst_tag)
+            if combo_key not in combo_stats_data:
+                combo_stats_data[combo_key] = {'count': 0, 'wins': 0, 'total_pct': 0.0}
+            
+            combo_stats_data[combo_key]['count'] += 1
+            combo_stats_data[combo_key]['total_pct'] += acc_val
+            if acc_val > 0: combo_stats_data[combo_key]['wins'] += 1
                 
         except: pass
             
-        # 每日詳細
+        # 每日詳細 & 區間累積
         if stat_status in daily_stats:
             current_compound = 1.0 
-            
             for day_idx in range(track_days):
-                col_idx = 8 + day_idx # D+1 從 Index 8 開始
+                col_idx = 8 + day_idx 
                 if col_idx < len(row_vals):
                     val_str = row_vals[col_idx]
                     if val_str:
                         try:
                             daily_val = float(val_str.replace('%', '').replace('+', ''))
-                            
                             daily_stats[stat_status][day_idx]['count'] += 1
                             daily_stats[stat_status][day_idx]['sum'] += daily_val
-                            if daily_val > 0:
-                                daily_stats[stat_status][day_idx]['wins'] += 1
-                                
+                            if daily_val > 0: daily_stats[stat_status][day_idx]['wins'] += 1
                             current_compound *= (1 + daily_val / 100)
-                            
                             current_day = day_idx + 1
                             if current_day in interval_checkpoints:
                                 cumulative_return = (current_compound - 1) * 100
                                 interval_data[stat_status][current_day].append(cumulative_return)
-                                
                         except: pass
         
         total_count += 1
@@ -449,7 +431,7 @@ def main():
     processed_list.sort(key=lambda x: x[0], reverse=True)
     
     # 5. === 建構右側統計區 ===
-    print("📊 計算統計數據 (含法人統計)...")
+    print("📊 計算統計數據 (含組合統計)...")
     
     right_side_rows = []
     
@@ -463,7 +445,6 @@ def main():
         right_side_rows.append(["", s, t, f"{wr:.1f}%", f"{avg:+.1f}%", "", "", "", ""])
 
     right_side_rows.append([""] * 9) 
-
     days_header = [f"D+{i+1}" for i in range(track_days)]
 
     # --- 表格 2: 每日平均 ---
@@ -529,7 +510,7 @@ def main():
 
     right_side_rows.append([""] * (2 + 4))
 
-    # --- 表格 6: 法人籌碼統計 (新增) ---
+    # --- 表格 6: 法人籌碼統計 ---
     right_side_rows.append(["", "📊 法人籌碼統計 (D+20)", "個股數", "勝率", "平均漲幅"])
     for i in inst_order:
         d = inst_stats_data[i]
@@ -538,24 +519,36 @@ def main():
         avg = d['total_pct'] / t if t > 0 else 0.0
         right_side_rows.append(["", i, t, f"{wr:.1f}%", f"{avg:+.1f}%"])
 
+    right_side_rows.append([""] * 5)
+
+    # --- 表格 7: 狀態+法人 組合統計 (新增) ---
+    right_side_rows.append(["", "📊 狀態+法人 組合統計", "個股數", "勝率", "平均漲幅"])
+    
+    # 雙層迴圈確保排序整齊 (先排狀態，再排法人)
+    for s in status_order:
+        for i in inst_order:
+            combo_key = (s, i)
+            if combo_key in combo_stats_data:
+                d = combo_stats_data[combo_key]
+                t = d['count']
+                if t > 0: # 只顯示有數據的組合
+                    wr = (d['wins'] / t * 100)
+                    avg = d['total_pct'] / t
+                    display_name = f"{s} + {i}"
+                    right_side_rows.append(["", display_name, t, f"{wr:.1f}%", f"{avg:+.1f}%"])
+
     # 6. === 合併 ===
-    # 左側有 28 欄 (0~27) -> Header 長度
-    # 我們讓右側從第 30 欄開始 (Index 29), 留 Index 28 為空
     final_header = header + [""] * (3 + track_days) 
     final_output = [final_header]
     
     max_rows = max(len(processed_list), len(right_side_rows))
     
     for i in range(max_rows):
-        if i < len(processed_list):
-            left_part = processed_list[i]
-        else:
-            left_part = [""] * 28 
+        if i < len(processed_list): left_part = processed_list[i]
+        else: left_part = [""] * 28 
             
-        if i < len(right_side_rows):
-            right_part = right_side_rows[i]
-        else:
-            right_part = [""] * (3 + track_days)
+        if i < len(right_side_rows): right_part = right_side_rows[i]
+        else: right_part = [""] * (3 + track_days)
         
         final_output.append(left_part + [""] + right_part)
 
@@ -564,10 +557,9 @@ def main():
     ws_dest.update(final_output)
 
     # 7. === 設定條件格式 ===
-    print("🎨 更新條件格式化 (包含法人統計)...")
+    print("🎨 更新條件格式化...")
 
-    # 左側範圍: Col 5 (E) ~ Col 28 (AB) 
-    # 右側範圍: Col 30 (AD) ~ End
+    # 右側範圍擴大到包含新表格 (Col 29 ~ 60 夠用了)
     ranges = [
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 5, "endColumnIndex": 28},
         {"sheetId": ws_dest.id, "startRowIndex": 1, "startColumnIndex": 29, "endColumnIndex": 60}
@@ -617,7 +609,6 @@ def main():
 
     requests = [header_rule, positive_rule, negative_rule]
 
-    # --- 標記最高/最低 (針對 D+1 ~ D+20 的每日勝率) ---
     win_rate_start_row = -1
     for idx, row in enumerate(final_output):
         if len(row) > 29 and "🏆 每日勝率 (每日)" in str(row[30]):
@@ -625,9 +616,8 @@ def main():
             break
     
     if win_rate_start_row != -1:
-        start_col = 31 # AD+1
+        start_col = 31 
         end_col = 31 + track_days
-        
         for col_idx in range(start_col, end_col): 
             col_values = []
             valid_rows = []
@@ -647,15 +637,11 @@ def main():
             if valid_vals:
                 max_val = max(valid_vals)
                 min_val = min(valid_vals)
-                
                 for i, val in enumerate(col_values):
                     if val == -1.0: continue
                     bg_color = None
-                    if val == max_val:
-                        bg_color = {"red": 1.0, "green": 0.8, "blue": 0.8} 
-                    elif val == min_val:
-                        bg_color = {"red": 0.8, "green": 1.0, "blue": 0.8} 
-                    
+                    if val == max_val: bg_color = {"red": 1.0, "green": 0.8, "blue": 0.8} 
+                    elif val == min_val: bg_color = {"red": 0.8, "green": 1.0, "blue": 0.8} 
                     if bg_color:
                         req = {
                             "repeatCell": {
