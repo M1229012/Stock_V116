@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread google-auth requests yfinance pandas numpy
+          pip install gspread google-auth requests yfinance pandas numpy selenium webdriver_manager lxml
 
       - name: Create Service Key
         # 👇 這裡改用 GCP_SERVICE_KEY
