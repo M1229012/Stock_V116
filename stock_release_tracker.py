@@ -34,20 +34,19 @@ THRESH_FOREIGN = 0.010  # 外資 1.0%
 THRESH_OTHERS  = 0.005  # 投信/自營 0.5%
 
 # ============================
-# 🛠️ 爬蟲與工具函式 (源自 V116.26)
+# 🛠️ 爬蟲與工具函式
 # ============================
 def get_driver():
-    """ 取得 Selenium Chrome Driver (Headless) - V116.26版本 """
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
+    """初始化 Selenium Driver"""
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(service=service, options=options)
     return driver
 
 def connect_google_sheets(sheet_name):
@@ -85,144 +84,149 @@ def parse_roc_date(date_str):
     return None
 
 # ============================
-# 🔥 核心爬蟲區 (完完全全照抄 V116.26)
+# 📅 歷史名單爬取 (一年份核心邏輯)
 # ============================
 
-def fetch_tpex_jail_90d_requests(s_date, e_date):
+def fetch_tpex_history_requests(start_date, end_date):
     """
-    [V116.26 原版] 上櫃 (TPEx) 處置股爬蟲 - Requests API 版
+    [上櫃 TPEx] 使用 Requests 抓取歷史資料 (按月迴圈)
+    確保能抓到完整一年份
     """
-    print(f"  [上櫃] 啟動 Requests 爬蟲 (新版官網 API)... {s_date} ~ {e_date}")
+    print(f"  [上櫃] 啟動 Requests 爬蟲，範圍: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
     
-    # 依照使用者的邏輯修正：結束日期強制往後推 30 天
-    real_end_date = e_date + timedelta(days=30)
+    all_data = []
     
-    sd = f"{s_date.year - 1911}/{s_date.month:02d}/{s_date.day:02d}"
-    ed = f"{real_end_date.year - 1911}/{real_end_date.month:02d}/{real_end_date.day:02d}"
-    
-    url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "X-Requested-With": "XMLHttpRequest",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
-    }
-    
-    payload = {
-        "startDate": sd,
-        "endDate": ed,
-        "response": "json"
-    }
-    
-    sess = requests.Session()
-    clean_data = []
-    
-    try:
-        # 1. Get Cookie
-        sess.get(url, headers=headers) 
+    # 建立月份區間列表 (每個月抓一次，避免資料量太大被截斷)
+    curr = start_date
+    while curr <= end_date:
+        # 計算當月最後一天
+        next_month = curr.replace(day=28) + timedelta(days=4)
+        last_day_of_month = next_month - timedelta(days=next_month.day)
         
-        # 2. Post
-        r = sess.post(url, data=payload, headers=headers, timeout=10)
+        # 本次搜尋結束日 (不超過總結束日)
+        batch_end = min(last_day_of_month, end_date)
         
-        if r.status_code == 200:
-            data = r.json()
-            if "tables" in data and len(data["tables"]) > 0:
-                rows = data["tables"][0].get("data", [])
-                print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料...")
-                
-                for row in rows:
-                    # 1: Date, 2: Code, 3: Name(HTML), 5: Period
-                    if len(row) < 6: continue
-                    c_code = str(row[2]).strip()
-                    c_name_raw = str(row[3]).strip()
-                    c_name = c_name_raw.split("(")[0] if "(" in c_name_raw else c_name_raw
-                    c_period = str(row[5]).strip()
-                    
-                    if c_code.isdigit() and len(c_code) == 4:
-                        clean_data.append({
-                            "Code": c_code,
-                            "Name": c_name,
-                            "Period": c_period,
-                            "Market": "上櫃"
-                        })
-    except Exception as e:
-        print(f"    ❌ TPEx Requests 失敗: {e}")
+        sd_str = f"{curr.year - 1911}/{curr.month:02d}/{curr.day:02d}"
+        ed_str = f"{batch_end.year - 1911}/{batch_end.month:02d}/{batch_end.day:02d}"
         
-    if clean_data:
-        return pd.DataFrame(clean_data)
+        # print(f"    └── 抓取區間: {sd_str} ~ {ed_str}")
+        
+        url = "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal"
+        }
+        payload = {"startDate": sd_str, "endDate": ed_str, "response": "json"}
+        
+        try:
+            r = requests.post(url, data=payload, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if "tables" in data and len(data["tables"]) > 0:
+                    rows = data["tables"][0].get("data", [])
+                    for row in rows:
+                        if len(row) < 6: continue
+                        c_code = str(row[2]).strip()
+                        c_name = str(row[3]).split("(")[0].strip()
+                        c_period = str(row[5]).strip()
+                        
+                        if c_code.isdigit() and len(c_code) == 4:
+                            all_data.append({
+                                "Code": c_code,
+                                "Name": c_name,
+                                "Period": c_period,
+                                "Market": "上櫃"
+                            })
+            time.sleep(0.5) # 稍微休息避免被擋
+        except Exception as e:
+            print(f"    ❌ TPEx {sd_str} 抓取失敗: {e}")
+        
+        # 移動到下個月第一天
+        curr = last_day_of_month + timedelta(days=1)
+
+    if all_data:
+        return pd.DataFrame(all_data)
     return pd.DataFrame()
 
-def fetch_twse_selenium_90d(s_date, e_date):
+def fetch_twse_history_selenium(start_date, end_date):
     """
-    [V116.26 原版] 上市 (TWSE) 處置股爬蟲 - Selenium 版
+    [上市 TWSE] 使用 Selenium 抓取歷史資料 (按月迴圈)
+    確保能抓到完整一年份
     """
-    print(f"  [上市] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
+    print(f"  [上市] 啟動 Selenium 瀏覽器，範圍: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
     
-    sd_str = s_date.strftime("%Y%m%d")
-    ed_str = e_date.strftime("%Y%m%d")
-    
-    url = "https://www.twse.com.tw/zh/announcement/punish.html"
     driver = get_driver()
-    clean_data = []
-
+    url = "https://www.twse.com.tw/zh/announcement/punish.html"
+    all_data = []
+    
     try:
         driver.get(url)
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 15)
         
-        # 1. 填寫日期
-        driver.execute_script(f"""
-            document.querySelector('input[name="startDate"]').value = "{sd_str}";
-            document.querySelector('input[name="endDate"]').value = "{ed_str}";
-        """)
-        
-        # 2. 點擊查詢
-        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
-        search_btn.click()
-        
-        # 3. 等待表格出現
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
-        time.sleep(3)
-        
-        # 4. 解析表格
-        # 上市表格結構通常比較標準，直接抓取
-        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-        print(f"    └── ⚡ 偵測到 {len(rows)} 筆資料，開始解析...")
-        
-        for row in rows:
+        # 建立月份區間列表
+        curr = start_date
+        while curr <= end_date:
+            next_month = curr.replace(day=28) + timedelta(days=4)
+            last_day_of_month = next_month - timedelta(days=next_month.day)
+            batch_end = min(last_day_of_month, end_date)
+            
+            sd_str = curr.strftime("%Y%m%d")
+            ed_str = batch_end.strftime("%Y%m%d")
+            
+            # print(f"    └── 抓取區間: {sd_str} ~ {ed_str}")
+            
             try:
-                cols = row.find_elements(By.TAG_NAME, "td")
-                if len(cols) >= 7:
-                    # Index 2: Code
-                    # Index 3: Name
-                    # Index 6: Period
-                    c_code = cols[2].text.strip()
-                    c_name = cols[3].text.strip()
-                    c_period = cols[6].text.strip()
+                # 填寫日期
+                driver.execute_script(f"""
+                    document.querySelector('input[name="startDate"]').value = "{sd_str}";
+                    document.querySelector('input[name="endDate"]').value = "{ed_str}";
+                """)
+                
+                # 點擊查詢
+                search_btn = driver.find_element(By.CSS_SELECTOR, "button.search")
+                search_btn.click()
+                
+                # 等待讀取
+                time.sleep(1.5) 
+                
+                # 解析
+                rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+                for row in rows:
+                    try:
+                        cols = row.find_elements(By.TAG_NAME, "td")
+                        if len(cols) >= 7:
+                            c_code = cols[2].text.strip()
+                            c_name = cols[3].text.strip()
+                            c_period = cols[6].text.strip()
+                            
+                            if c_code and c_code.isdigit() and len(c_code) == 4:
+                                all_data.append({
+                                    "Code": c_code,
+                                    "Name": c_name,
+                                    "Period": c_period,
+                                    "Market": "上市"
+                                })
+                    except: continue
                     
-                    if c_code and c_code.isdigit() and len(c_code) == 4:
-                          clean_data.append({
-                            "Code": c_code,
-                            "Name": c_name,
-                            "Period": c_period,
-                            "Market": "上市"
-                        })
-            except: continue
+            except Exception as e:
+                print(f"    ❌ TWSE {sd_str} 操作失敗: {e}")
+                
+            # 移動到下個月
+            curr = last_day_of_month + timedelta(days=1)
             
     except Exception as e:
-        print(f"    ❌ TWSE Selenium 操作失敗: {e}")
+        print(f"  ❌ TWSE Driver 錯誤: {e}")
     finally:
         driver.quit()
-
-    if clean_data:
-        print(f"    ✅ 成功解析 {len(clean_data)} 筆資料")
-        return pd.DataFrame(clean_data)
-
-    print("    ⚠️ TWSE 無資料")
+        
+    if all_data:
+        return pd.DataFrame(all_data)
     return pd.DataFrame()
 
 # ============================
-# 📊 整合與統計函式 (D+20 & 法人)
+# 📊 整合與統計函式
 # ============================
 
 def determine_status(pre_pct, in_pct):
@@ -240,8 +244,8 @@ def get_ticker_list(code, market=""):
     return [f"{code}.TW", f"{code}.TWO"]
 
 def get_institutional_data(stock_id, start_date, end_date):
-    """爬取法人買賣超 (富邦證券) - 用於分析籌碼"""
-    driver = get_driver() # 使用同樣的 driver 函式
+    """爬取法人買賣超 (富邦證券)"""
+    driver = get_driver()
     if isinstance(start_date, datetime): start_date = start_date.strftime("%Y-%m-%d")
     if isinstance(end_date, datetime): end_date = end_date.strftime("%Y-%m-%d")
     
@@ -397,21 +401,24 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
 # 🚀 主程式
 # ============================
 def main():
-    print("🚀 啟動一年期全量處置股回測 (整合 V116.26 爬蟲)...")
+    print("🚀 啟動一年期全量處置股回測 (TWSE-Selenium / TPEx-Requests)...")
     
     sh = connect_google_sheets(SHEET_NAME)
     if not sh: return
 
-    # 1. 執行爬蟲抓取過去一年的清單
-    # 雖然函式原本叫 90d，但我們透過日期參數控制讓它抓一年
     today = datetime.now()
     one_year_ago = today - timedelta(days=365)
-    end_buffer = today + timedelta(days=30) # 預抓未來，確保本月資料完整
+    # 往後抓一個月，避免漏掉今天剛公布的
+    end_fetch = today + timedelta(days=30) 
 
-    print(f"🔍 正在透過 Selenium/Requests 抓取 {one_year_ago.strftime('%Y-%m-%d')} ~ {end_buffer.strftime('%Y-%m-%d')} 的資料...")
-
-    df_tpex = fetch_tpex_jail_90d_requests(one_year_ago, end_buffer)
-    df_twse = fetch_twse_selenium_90d(one_year_ago, end_buffer)
+    # 1. 抓取歷史名單 (按月迴圈，確保完整)
+    print(f"🔎 抓取歷史名單區間: {one_year_ago.strftime('%Y-%m-%d')} ~ {end_fetch.strftime('%Y-%m-%d')}")
+    
+    df_tpex = fetch_tpex_history_requests(one_year_ago, end_fetch)
+    print(f"  --> 上櫃抓到: {len(df_tpex)} 筆")
+    
+    df_twse = fetch_twse_history_selenium(one_year_ago, end_fetch)
+    print(f"  --> 上市抓到: {len(df_twse)} 筆")
 
     all_dfs = []
     if not df_tpex.empty: all_dfs.append(df_tpex)
@@ -423,10 +430,11 @@ def main():
 
     print("\n🔄 合併並整理資料...")
     final_df = pd.concat(all_dfs, ignore_index=True)
-    # 轉為 Dictionary List 以便處理
+    # 去重
+    final_df.drop_duplicates(subset=['Code', 'Period'], inplace=True)
     source_data = final_df.to_dict('records')
     
-    print(f"✅ 共取得 {len(source_data)} 筆處置公告。開始進行 D+20 回測...")
+    print(f"✅ 共取得 {len(source_data)} 筆不重複處置公告。開始進行 D+20 回測...")
 
     # 2. 準備寫入 Header
     header_base = ["出關日期", "股號", "股名", "狀態", "法人動向", "處置前%", "處置中%", "累積漲跌幅"]
@@ -484,7 +492,6 @@ def main():
         
         if not code or not period: continue
         
-        # 解析日期 (V116.26 的 period 格式可能為 113/01/01~113/01/10)
         dates = re.split(r'[~-～]', period)
         if len(dates) < 2: continue
         
@@ -493,6 +500,7 @@ def main():
         
         if not s_date or not e_date: continue
         
+        # 資料已經篩選過了，這邊雙重確認一下
         if e_date < one_year_ago: continue 
         if e_date > today: continue 
 
