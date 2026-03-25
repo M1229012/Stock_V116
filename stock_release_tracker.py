@@ -26,6 +26,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ============================
 SHEET_NAME = "台股注意股資料庫_V33"
 DEST_WORKSHEET = "一年期處置回測數據" 
+MA_TOUCH_DETAIL_WORKSHEET = "月線回測個股明細"  # [新增] 月線回測個股逐筆明細工作表
 
 SERVICE_KEY_FILE = "service_key.json"
 
@@ -265,7 +266,7 @@ def get_institutional_data(stock_id, start_date, end_date):
 # ============================
 def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
     """
-    計算「上漲進處置 + 處置期間月線(MA20)斜率>1 + 處置期間跌到月線」後的 D+1~D+10 每日漲跌幅。
+    計算「上漲進處置 + 處置期間月線(MA20)斜率>1 + 處置期間股價接近月線±15%」後的 D+1~D+20 每日漲跌幅。
 
     條件說明：
     1. pre_pct_val > 0：股票在處置前期間為上漲走勢 (因上漲進入處置)
@@ -275,7 +276,7 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
 
     計算邏輯：
     - 以第一個符合條件的當天收盤價為基準
-    - 回傳觸碰日後 D+1~D+10 的每日漲跌幅列表 (float，不足則為 None)
+    - 回傳 dict：{"returns": [D+1~D+20 漲跌幅, 不足補 None], "slope": 月線斜率(點/日)}
     - 若任一條件不符合則回傳 None
     """
     try:
@@ -322,11 +323,11 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
         if base_price == 0:
             return None
 
-        # 取觸碰日之後的 D+1~D+10 (不限於處置期間，可延伸至出關後)
-        df_after = df_calc[df_calc.index > touch_date].head(10)
+        # 取觸碰日之後的 D+1~D+20 (不限於處置期間，可延伸至出關後)
+        df_after = df_calc[df_calc.index > touch_date].head(20)
 
         returns = []
-        for i in range(10):
+        for i in range(20):
             if i < len(df_after):
                 curr = float(df_after['Close'].iloc[i])
                 prev = float(df_after['Close'].iloc[i - 1]) if i > 0 else base_price
@@ -337,7 +338,7 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
             else:
                 returns.append(None)
 
-        return returns
+        return {"returns": returns, "slope": round(slope, 4)}
 
     except Exception as e:
         return None
@@ -561,6 +562,7 @@ def main():
     MA_TOUCH_TRACK_DAYS = 10
     ma_touch_daily = [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(MA_TOUCH_TRACK_DAYS)]
     ma_touch_total = {'count': 0, 'wins': 0, 'total_pct': 0.0}
+    ma_detail_list = []  # [新增] 逐筆個股明細，用於寫入「月線回測個股明細」工作表
 
     total_count = 0
     update_count = 0
@@ -667,10 +669,15 @@ def main():
         # ============================
         ma_touch_returns = result.get('ma_touch_returns')
         if ma_touch_returns is not None:
+            ma_returns_list = ma_touch_returns['returns']   # D+1~D+20 列表
+            ma_slope_val = ma_touch_returns['slope']        # 月線斜率 (點/日)
+
+            # 前 10 天累計進入匯總統計
             compound_ma = 1.0
             last_valid_acc_ma = 0.0
             has_any_ma = False
-            for day_idx, ret in enumerate(ma_touch_returns):
+            for day_idx in range(MA_TOUCH_TRACK_DAYS):
+                ret = ma_returns_list[day_idx] if day_idx < len(ma_returns_list) else None
                 if ret is not None:
                     ma_touch_daily[day_idx]['count'] += 1
                     ma_touch_daily[day_idx]['sum'] += ret
@@ -684,6 +691,25 @@ def main():
                 ma_touch_total['total_pct'] += last_valid_acc_ma
                 if last_valid_acc_ma > 0:
                     ma_touch_total['wins'] += 1
+
+            # [新增] 收集個股明細 (D+1~D+20)
+            detail_row = [
+                result['release_date'],                 # 出關日期
+                code,                                   # 股號
+                name,                                   # 股名
+                result['status'],                       # 狀態
+                result['inst_status'],                  # 法人動向
+                result['pre_pct'],                      # 處置前%
+                result['in_pct'],                       # 處置中%
+                f"{ma_slope_val:+.4f}"                  # 月線斜率(點/日)
+            ]
+            for i in range(20):
+                ret = ma_returns_list[i] if i < len(ma_returns_list) else None
+                if ret is not None:
+                    detail_row.append(f"{ret:+.1f}%")
+                else:
+                    detail_row.append("")
+            ma_detail_list.append(detail_row)
         
         total_count += 1
 
@@ -967,6 +993,67 @@ def main():
         sh.batch_update({"requests": requests})
     except Exception as e:
         print(f"⚠️ 格式化設定失敗 (可能是權限或版本問題): {e}")
+
+    # ============================
+    # [新增] 寫入「月線回測個股明細」新工作表
+    # 欄位：出關日期, 股號, 股名, 狀態, 法人動向, 處置前%, 處置中%, 月線斜率(點/日), D+1~D+20
+    # ============================
+    print("💾 寫入「月線回測個股明細」工作表...")
+    ma_detail_header = [
+        "出關日期", "股號", "股名", "狀態", "法人動向",
+        "處置前%", "處置中%", "月線斜率(點/日)"
+    ] + [f"D+{i+1}" for i in range(20)]
+
+    try:
+        ws_ma_detail = sh.worksheet(MA_TOUCH_DETAIL_WORKSHEET)
+        ws_ma_detail.clear()
+    except WorksheetNotFound:
+        print(f"💡 工作表 '{MA_TOUCH_DETAIL_WORKSHEET}' 不存在，正在建立...")
+        ws_ma_detail = sh.add_worksheet(title=MA_TOUCH_DETAIL_WORKSHEET, rows=5000, cols=len(ma_detail_header) + 5)
+
+    # 按出關日期降冪排序
+    ma_detail_list.sort(key=lambda x: x[0], reverse=True)
+
+    ma_detail_output = [ma_detail_header] + ma_detail_list
+    ws_ma_detail.update(ma_detail_output, value_input_option="USER_ENTERED")
+    print(f"✅ 已寫入 {len(ma_detail_list)} 筆個股明細至「{MA_TOUCH_DETAIL_WORKSHEET}」")
+
+    # 條件格式化：D+1~D+20 正值紅底、負值綠底 (與主工作表相同配色)
+    if len(ma_detail_list) > 0:
+        try:
+            detail_ranges = [{
+                "sheetId": ws_ma_detail.id,
+                "startRowIndex": 1,
+                "startColumnIndex": 8,   # D+1 從第 9 欄(index=8) 開始
+                "endColumnIndex": 28     # D+20 到第 28 欄
+            }]
+            detail_positive_rule = {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": detail_ranges,
+                        "booleanRule": {
+                            "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "+"}]},
+                            "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}
+                        }
+                    },
+                    "index": 0
+                }
+            }
+            detail_negative_rule = {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": detail_ranges,
+                        "booleanRule": {
+                            "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "-"}]},
+                            "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}}
+                        }
+                    },
+                    "index": 1
+                }
+            }
+            sh.batch_update({"requests": [detail_positive_rule, detail_negative_rule]})
+        except Exception as e:
+            print(f"⚠️ 月線明細格式化設定失敗: {e}")
 
     print(f"🎉 完成！共掃描 {total_count} 筆，本次更新 {update_count} 筆。")
     print(f"📈 月線回測命中統計：共 {ma_touch_total['count']} 筆符合條件，整體勝率 {wr_ma_overall:.1f}%，D+10累積平均 {avg_ma_overall:+.1f}%")
