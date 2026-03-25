@@ -260,6 +260,88 @@ def get_institutional_data(stock_id, start_date, end_date):
     finally:
         driver.quit()
 
+# ============================
+# 📈 [新增] 月線(MA20)回測統計函式
+# ============================
+def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
+    """
+    計算「上漲進處置 + 處置期間月線(MA20)斜率>1 + 處置期間跌到月線」後的 D+1~D+10 每日漲跌幅。
+
+    條件說明：
+    1. pre_pct_val > 0：股票在處置前期間為上漲走勢 (因上漲進入處置)
+    2. 處置期間 MA20 斜率 > 1：月線每日平均上升幅度 > 1 點 (月線仍向上)
+    3. 處置期間至少有一天收盤價落在 MA20 的 ±15% 範圍內
+       即：MA20 * 0.85 <= Close <= MA20 * 1.15
+
+    計算邏輯：
+    - 以第一個符合條件的當天收盤價為基準
+    - 回傳觸碰日後 D+1~D+10 的每日漲跌幅列表 (float，不足則為 None)
+    - 若任一條件不符合則回傳 None
+    """
+    try:
+        # 條件 1: 因上漲進入處置 (處置前漲幅 > 0)
+        if pre_pct_val <= 0:
+            return None
+
+        df_calc = df.copy()
+
+        # 計算 MA20 (月線，20日移動平均)
+        df_calc['MA20'] = df_calc['Close'].rolling(window=20).mean()
+
+        # 取處置期間資料，排除 MA20 為 NaN 的列
+        mask_jail = (
+            (df_calc.index >= pd.Timestamp(start_date)) &
+            (df_calc.index <= pd.Timestamp(end_date))
+        )
+        df_jail = df_calc[mask_jail].dropna(subset=['MA20'])
+
+        if len(df_jail) < 2:
+            return None
+
+        # 條件 2: 月線斜率 > 1 (處置期間 MA20 每日平均上升 > 1 點)
+        slope = (df_jail['MA20'].iloc[-1] - df_jail['MA20'].iloc[0]) / len(df_jail)
+        if slope <= 1:
+            return None
+
+        # 條件 3: 找處置期間第一個收盤價在 MA20 ±15% 範圍內的日子
+        # 即：MA20 * 0.85 <= Close <= MA20 * 1.15
+        touch_idx = None
+        for i in range(len(df_jail)):
+            ma_val = df_jail['MA20'].iloc[i]
+            close_val = df_jail['Close'].iloc[i]
+            if ma_val * 0.85 <= close_val <= ma_val * 1.15:
+                touch_idx = i
+                break
+
+        if touch_idx is None:
+            return None
+
+        touch_date = df_jail.index[touch_idx]
+        base_price = float(df_jail['Close'].iloc[touch_idx])
+
+        if base_price == 0:
+            return None
+
+        # 取觸碰日之後的 D+1~D+10 (不限於處置期間，可延伸至出關後)
+        df_after = df_calc[df_calc.index > touch_date].head(10)
+
+        returns = []
+        for i in range(10):
+            if i < len(df_after):
+                curr = float(df_after['Close'].iloc[i])
+                prev = float(df_after['Close'].iloc[i - 1]) if i > 0 else base_price
+                if prev != 0:
+                    returns.append(((curr - prev) / prev) * 100)
+                else:
+                    returns.append(None)
+            else:
+                returns.append(None)
+
+        return returns
+
+    except Exception as e:
+        return None
+
 def fetch_stock_data(code, start_date, jail_end_date, market=""):
     """抓取股價與法人資料"""
     try:
@@ -367,6 +449,11 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         while len(post_data) < track_days:
             post_data.append("")
 
+        # ============================
+        # [新增] 計算月線回測數據
+        # ============================
+        ma_touch_returns = get_ma_touch_stats(df, start_date, jail_end_date, pre_pct)
+
         return {
             "status": status,
             "inst_status": inst_status,
@@ -374,7 +461,8 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
             "in_pct": f"{in_pct:+.1f}%",
             "acc_pct": f"{accumulated_pct:+.1f}%",
             "daily_trends": post_data,
-            "release_date": release_date_str
+            "release_date": release_date_str,
+            "ma_touch_returns": ma_touch_returns  # [新增] D+1~D+10，或 None
         }
 
     except Exception as e:
@@ -464,6 +552,15 @@ def main():
     
     # 📌 新增：組合的區間統計 (狀態+法人)
     combo_interval_data = {} # Key: (status, inst), Value: {5: [], 10: [], 15: [], 20: []}
+
+    # ============================
+    # [新增] 月線回測追蹤變數
+    # 條件：上漲進處置 + 月線斜率>1 + 處置期間跌到月線
+    # 追蹤出關日後 D+1~D+10 的每日統計
+    # ============================
+    MA_TOUCH_TRACK_DAYS = 10
+    ma_touch_daily = [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(MA_TOUCH_TRACK_DAYS)]
+    ma_touch_total = {'count': 0, 'wins': 0, 'total_pct': 0.0}
 
     total_count = 0
     update_count = 0
@@ -564,6 +661,29 @@ def main():
                                 # 組合區間 (新增)
                                 combo_interval_data[combo_key][current_day].append(ret)
                         except: pass
+
+        # ============================
+        # [新增] 月線回測統計追蹤
+        # ============================
+        ma_touch_returns = result.get('ma_touch_returns')
+        if ma_touch_returns is not None:
+            compound_ma = 1.0
+            last_valid_acc_ma = 0.0
+            has_any_ma = False
+            for day_idx, ret in enumerate(ma_touch_returns):
+                if ret is not None:
+                    ma_touch_daily[day_idx]['count'] += 1
+                    ma_touch_daily[day_idx]['sum'] += ret
+                    if ret > 0:
+                        ma_touch_daily[day_idx]['wins'] += 1
+                    compound_ma *= (1 + ret / 100)
+                    last_valid_acc_ma = (compound_ma - 1) * 100
+                    has_any_ma = True
+            if has_any_ma:
+                ma_touch_total['count'] += 1
+                ma_touch_total['total_pct'] += last_valid_acc_ma
+                if last_valid_acc_ma > 0:
+                    ma_touch_total['wins'] += 1
         
         total_count += 1
 
@@ -681,6 +801,54 @@ def main():
                     row_vals.append(f"{avg:+.1f}%")
                     
                     right_side_rows.append(row_vals)
+
+    # ============================
+    # [新增] 月線回測統計輸出區塊
+    # 條件篩選：上漲進處置 + 處置期間月線(MA20)斜率>1 + 處置期間跌到月線
+    # 統計：觸碰月線當天收盤後的 D+1~D+10 每日勝率與平均漲跌幅
+    # ============================
+    right_side_rows.append([""] * (2 + MA_TOUCH_TRACK_DAYS))
+
+    t_ma = ma_touch_total['count']
+    wr_ma_overall = (ma_touch_total['wins'] / t_ma * 100) if t_ma > 0 else 0.0
+    avg_ma_overall = ma_touch_total['total_pct'] / t_ma if t_ma > 0 else 0.0
+
+    ma_days_header = [f"D+{i+1}" for i in range(MA_TOUCH_TRACK_DAYS)]
+
+    right_side_rows.append([
+        "",
+        f"📈 上漲進處置 + 月線(MA20)斜率>1 + 處置期間接近月線±15% (共{t_ma}筆 | 整體勝率{wr_ma_overall:.1f}% | D+10累積平均{avg_ma_overall:+.1f}%)"
+    ])
+    right_side_rows.append(["", "篩選條件：處置前漲幅>0% 且 處置期間MA20每日上升>1點 且 處置期間存在 MA20×0.85 ≤ 收盤價 ≤ MA20×1.15 的交易日"])
+    right_side_rows.append(["", "計算基準：第一個符合條件當天的收盤價，往後追蹤 D+1~D+10"])
+    right_side_rows.append(["", ""] + ma_days_header)
+
+
+    # 每日平均漲跌幅
+    avg_row_ma = ["", "平均漲跌幅"]
+    for d in range(MA_TOUCH_TRACK_DAYS):
+        data = ma_touch_daily[d]
+        if data['count'] > 0:
+            avg_row_ma.append(f"{data['sum'] / data['count']:+.1f}%")
+        else:
+            avg_row_ma.append("-")
+    right_side_rows.append(avg_row_ma)
+
+    # 每日勝率
+    wr_row_ma = ["", "勝率"]
+    for d in range(MA_TOUCH_TRACK_DAYS):
+        data = ma_touch_daily[d]
+        if data['count'] > 0:
+            wr_row_ma.append(f"{data['wins'] / data['count'] * 100:.1f}%")
+        else:
+            wr_row_ma.append("-")
+    right_side_rows.append(wr_row_ma)
+
+    # 各日樣本數
+    cnt_row_ma = ["", "樣本數"]
+    for d in range(MA_TOUCH_TRACK_DAYS):
+        cnt_row_ma.append(str(ma_touch_daily[d]['count']))
+    right_side_rows.append(cnt_row_ma)
 
     final_header = header + [""] * (3 + track_days) 
     final_output = [final_header]
@@ -801,6 +969,7 @@ def main():
         print(f"⚠️ 格式化設定失敗 (可能是權限或版本問題): {e}")
 
     print(f"🎉 完成！共掃描 {total_count} 筆，本次更新 {update_count} 筆。")
+    print(f"📈 月線回測命中統計：共 {ma_touch_total['count']} 筆符合條件，整體勝率 {wr_ma_overall:.1f}%，D+10累積平均 {avg_ma_overall:+.1f}%")
 
 if __name__ == "__main__":
     main()
