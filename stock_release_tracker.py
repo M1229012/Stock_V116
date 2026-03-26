@@ -266,17 +266,17 @@ def get_institutional_data(stock_id, start_date, end_date):
 # ============================
 def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
     """
-    計算「上漲進處置 + 處置期間月線(MA20)斜率>1 + 處置期間股價接近月線±15%」後的 D+1~D+20 每日漲跌幅。
+    計算「上漲進處置 + 買進日MA20斜率>1 + 處置期間股價接近月線±15%」後的 D+1~D+20 每日漲跌幅。
 
     條件說明：
     1. pre_pct_val > 0：股票在處置前期間為上漲走勢 (因上漲進入處置)
-    2. 處置期間 MA20 斜率 > 1：月線每日平均上升幅度 > 1 點 (月線仍向上)
-    3. 處置期間至少有一天收盤價落在 MA20 的 ±15% 範圍內
-       即：MA20 * 0.85 <= Close <= MA20 * 1.15
+    2. 處置期間至少有一天收盤價落在 MA20 的 ±15% 範圍內
+       即：MA20 * 0.85 <= Close <= MA20 * 1.15，此日為「買進日」
+    3. 買進日當天 MA20 斜率 > 1：當天MA20 - 前一天MA20 > 1 點
 
     計算邏輯：
-    - 以第一個符合條件的當天收盤價為基準
-    - 回傳 dict：{"returns": [D+1~D+20 漲跌幅, 不足補 None], "slope": 月線斜率(點/日)}
+    - D+1 為買進日隔天漲跌幅，以買進日收盤價為基準，往後追蹤 D+1~D+20
+    - 回傳 dict：{"returns": [D+1~D+20 漲跌幅, 不足補 None], "slope": 買進日 MA20 斜率(點/日)}
     - 若任一條件不符合則回傳 None
     """
     try:
@@ -296,25 +296,39 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
         )
         df_jail = df_calc[mask_jail].dropna(subset=['MA20'])
 
-        if len(df_jail) < 2:
+        if len(df_jail) < 1:
             return None
 
-        # 條件 2: 月線斜率 > 1 (處置期間 MA20 每日平均上升 > 1 點)
-        slope = (df_jail['MA20'].iloc[-1] - df_jail['MA20'].iloc[0]) / len(df_jail)
-        if slope <= 1:
-            return None
-
-        # 條件 3: 找處置期間第一個收盤價在 MA20 ±15% 範圍內的日子
+        # 條件 2: 找處置期間第一個收盤價在 MA20 ±15% 範圍內的日子 (買進日)
         # 即：MA20 * 0.85 <= Close <= MA20 * 1.15
         touch_idx = None
         for i in range(len(df_jail)):
-            ma_val = df_jail['MA20'].iloc[i]
-            close_val = df_jail['Close'].iloc[i]
+            ma_val = float(df_jail['MA20'].iloc[i])
+            close_val = float(df_jail['Close'].iloc[i])
             if ma_val * 0.85 <= close_val <= ma_val * 1.15:
                 touch_idx = i
                 break
 
         if touch_idx is None:
+            return None
+
+        # 條件 3: 計算買進日當天的 MA20 斜率 (當天MA20 - 前一天MA20)
+        touch_ma_now = float(df_jail['MA20'].iloc[touch_idx])
+        if touch_idx > 0:
+            # 前一天在 df_jail 內
+            touch_ma_prev = float(df_jail['MA20'].iloc[touch_idx - 1])
+        else:
+            # touch_idx == 0，需從 df_calc 找 df_jail 第一天的前一個交易日
+            jail_first_loc = df_calc.index.get_loc(df_jail.index[0])
+            if jail_first_loc > 0 and not pd.isna(df_calc['MA20'].iloc[jail_first_loc - 1]):
+                touch_ma_prev = float(df_calc['MA20'].iloc[jail_first_loc - 1])
+            else:
+                return None  # 無法取得前一天 MA20，無法計算斜率
+
+        touch_slope = touch_ma_now - touch_ma_prev
+
+        # 買進日當天斜率必須 > 1
+        if touch_slope <= 1:
             return None
 
         touch_date = df_jail.index[touch_idx]
@@ -323,7 +337,7 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
         if base_price == 0:
             return None
 
-        # 取觸碰日之後的 D+1~D+20 (不限於處置期間，可延伸至出關後)
+        # D+1~D+20：以買進日收盤為基準，取隔天起的 20 個交易日
         df_after = df_calc[df_calc.index > touch_date].head(20)
 
         returns = []
@@ -338,7 +352,7 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
             else:
                 returns.append(None)
 
-        return {"returns": returns, "slope": round(slope, 4)}
+        return {"returns": returns, "slope": round(touch_slope, 4)}
 
     except Exception as e:
         return None
@@ -377,12 +391,19 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
         pre_jail_avg_volume = 0
         
         if mask_before.any():
-            jail_base_p = df[mask_before]['Close'].iloc[-1]
-            pre_jail_avg_volume = df[mask_before]['Volume'].tail(60).mean()
-            target_idx = max(0, len(df[mask_before]) - len(df_jail))
-            pre_entry = df[mask_before]['Open'].iloc[target_idx] if len(df[mask_before]) > target_idx else jail_base_p
-            if pre_entry != 0:
-                pre_pct = ((jail_base_p - pre_entry) / pre_entry) * 100
+            df_before = df[mask_before]
+            pre_jail_avg_volume = df_before['Volume'].tail(60).mean()
+            # 處置前%：處置幾天就往前找同樣天數，用 Close-to-Close 計算累積漲跌幅
+            jail_days = len(df_jail)
+            pre_exit_price = float(df_before['Close'].iloc[-1])   # 處置開始前最後一天收盤
+            if jail_days > 0 and len(df_before) >= jail_days:
+                pre_entry_price = float(df_before['Close'].iloc[-jail_days])
+            elif not df_before.empty:
+                pre_entry_price = float(df_before['Close'].iloc[0])
+            else:
+                pre_entry_price = pre_exit_price
+            if pre_entry_price != 0:
+                pre_pct = ((pre_exit_price - pre_entry_price) / pre_entry_price) * 100
 
         jail_end_price = 0
         if not df_jail.empty:
@@ -463,7 +484,7 @@ def fetch_stock_data(code, start_date, jail_end_date, market=""):
             "acc_pct": f"{accumulated_pct:+.1f}%",
             "daily_trends": post_data,
             "release_date": release_date_str,
-            "ma_touch_returns": ma_touch_returns  # [新增] D+1~D+10，或 None
+            "ma_touch_returns": ma_touch_returns  # [新增] D+1~D+20，或 None
         }
 
     except Exception as e:
@@ -556,13 +577,14 @@ def main():
 
     # ============================
     # [新增] 月線回測追蹤變數
-    # 條件：上漲進處置 + 月線斜率>1 + 處置期間跌到月線
-    # 追蹤出關日後 D+1~D+10 的每日統計
+    # 條件：上漲進處置 + 買進日MA20斜率>1 + 處置期間收盤價在月線±15%範圍內
+    # 追蹤買進日後 D+1~D+20 的每日統計
     # ============================
-    MA_TOUCH_TRACK_DAYS = 10
+    MA_TOUCH_TRACK_DAYS = 20  # 追蹤 D+1~D+20
     ma_touch_daily = [{'sum': 0.0, 'wins': 0, 'count': 0} for _ in range(MA_TOUCH_TRACK_DAYS)]
     ma_touch_total = {'count': 0, 'wins': 0, 'total_pct': 0.0}
-    ma_detail_list = []  # [新增] 逐筆個股明細，用於寫入「月線回測個股明細」工作表
+    ma_detail_list = []       # [新增] 逐筆個股明細，用於寫入「月線回測個股明細」工作表
+    ma_slope_buckets = {}     # [新增] 月線斜率區間統計，Key: 斜率下限(float，以0.1為單位)
 
     total_count = 0
     update_count = 0
@@ -670,9 +692,9 @@ def main():
         ma_touch_returns = result.get('ma_touch_returns')
         if ma_touch_returns is not None:
             ma_returns_list = ma_touch_returns['returns']   # D+1~D+20 列表
-            ma_slope_val = ma_touch_returns['slope']        # 月線斜率 (點/日)
+            ma_slope_val = ma_touch_returns['slope']        # 買進日當天 MA20 斜率 (點/日)
 
-            # 前 10 天累計進入匯總統計
+            # D+1~D+20 每日統計 + 累積計算
             compound_ma = 1.0
             last_valid_acc_ma = 0.0
             has_any_ma = False
@@ -692,6 +714,32 @@ def main():
                 if last_valid_acc_ma > 0:
                     ma_touch_total['wins'] += 1
 
+            # [新增] 月線斜率區間統計 (每 0.1 一組，如 1.0~1.1、1.1~1.2...)
+            # bucket_key 為斜率無條件捨去至最近 0.1，e.g. 1.35 -> 1.3、2.07 -> 2.0
+            bucket_key = int(ma_slope_val * 10) / 10
+            if bucket_key not in ma_slope_buckets:
+                ma_slope_buckets[bucket_key] = {
+                    'count': 0,
+                    'wins_d10': 0, 'd10_sum': 0.0,
+                    'wins_d20': 0, 'd20_sum': 0.0
+                }
+            bk = ma_slope_buckets[bucket_key]
+            bk['count'] += 1
+            # 計算 D+10 累積報酬
+            comp_d10 = 1.0
+            for i in range(10):
+                r = ma_returns_list[i] if i < len(ma_returns_list) else None
+                if r is not None:
+                    comp_d10 *= (1 + r / 100)
+            d10_ret = (comp_d10 - 1) * 100
+            bk['d10_sum'] += d10_ret
+            if d10_ret > 0:
+                bk['wins_d10'] += 1
+            # D+20 累積
+            bk['d20_sum'] += last_valid_acc_ma
+            if last_valid_acc_ma > 0:
+                bk['wins_d20'] += 1
+
             # [新增] 收集個股明細 (D+1~D+20)
             detail_row = [
                 result['release_date'],                 # 出關日期
@@ -699,9 +747,9 @@ def main():
                 name,                                   # 股名
                 result['status'],                       # 狀態
                 result['inst_status'],                  # 法人動向
-                result['pre_pct'],                      # 處置前%
-                result['in_pct'],                       # 處置中%
-                f"{ma_slope_val:+.4f}"                  # 月線斜率(點/日)
+                result['pre_pct'],                      # 處置前 N 天漲跌幅 (同處置天數)
+                result['in_pct'],                       # 處置期間累積漲跌幅
+                f"{ma_slope_val:+.4f}"                  # 買進日 MA20 斜率(點/日)
             ]
             for i in range(20):
                 ret = ma_returns_list[i] if i < len(ma_returns_list) else None
@@ -843,10 +891,10 @@ def main():
 
     right_side_rows.append([
         "",
-        f"📈 上漲進處置 + 月線(MA20)斜率>1 + 處置期間接近月線±15% (共{t_ma}筆 | 整體勝率{wr_ma_overall:.1f}% | D+10累積平均{avg_ma_overall:+.1f}%)"
+        f"📈 上漲進處置 + 買進日MA20斜率>1 + 處置期間接近月線±15% (共{t_ma}筆 | 整體勝率{wr_ma_overall:.1f}% | D+20累積平均{avg_ma_overall:+.1f}%)"
     ])
-    right_side_rows.append(["", "篩選條件：處置前漲幅>0% 且 處置期間MA20每日上升>1點 且 處置期間存在 MA20×0.85 ≤ 收盤價 ≤ MA20×1.15 的交易日"])
-    right_side_rows.append(["", "計算基準：第一個符合條件當天的收盤價，往後追蹤 D+1~D+10"])
+    right_side_rows.append(["", "篩選條件：處置前漲幅>0% 且 買進日MA20斜率(當日MA20-前日MA20)>1點 且 處置期間存在 MA20×0.85 ≤ 收盤價 ≤ MA20×1.15 的交易日"])
+    right_side_rows.append(["", "計算基準：第一個符合條件當天(買進日)的收盤價，D+1 為隔日漲跌幅，往後追蹤至 D+20"])
     right_side_rows.append(["", ""] + ma_days_header)
 
 
@@ -875,6 +923,31 @@ def main():
     for d in range(MA_TOUCH_TRACK_DAYS):
         cnt_row_ma.append(str(ma_touch_daily[d]['count']))
     right_side_rows.append(cnt_row_ma)
+
+    # ============================
+    # [新增] 月線斜率區間勝率統計表 (每 0.1 一組)
+    # ============================
+    right_side_rows.append([""] * 8)
+    right_side_rows.append([
+        "", "📊 月線斜率區間勝率統計 (每0.1一組)",
+        "樣本數", "D+10勝率", "D+10平均漲跌", "D+20勝率", "D+20平均漲跌"
+    ])
+    right_side_rows.append([
+        "", "說明：斜率 = 買進日當天MA20 - 前一天MA20 (點)，區間為無條件捨去至 0.1"
+    ])
+    for bk_key in sorted(ma_slope_buckets.keys()):
+        bk = ma_slope_buckets[bk_key]
+        t_bk = bk['count']
+        wr_d10 = (bk['wins_d10'] / t_bk * 100) if t_bk > 0 else 0.0
+        avg_d10 = bk['d10_sum'] / t_bk if t_bk > 0 else 0.0
+        wr_d20 = (bk['wins_d20'] / t_bk * 100) if t_bk > 0 else 0.0
+        avg_d20 = bk['d20_sum'] / t_bk if t_bk > 0 else 0.0
+        bk_label = f"{bk_key:.1f}~{bk_key + 0.1:.1f}"
+        right_side_rows.append([
+            "", bk_label, t_bk,
+            f"{wr_d10:.1f}%", f"{avg_d10:+.1f}%",
+            f"{wr_d20:.1f}%", f"{avg_d20:+.1f}%"
+        ])
 
     final_header = header + [""] * (3 + track_days) 
     final_output = [final_header]
