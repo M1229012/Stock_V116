@@ -1088,18 +1088,26 @@ def main():
     ma_detail_list.sort(key=lambda x: x[0], reverse=True)
 
     ma_detail_output = [ma_detail_header] + ma_detail_list
-    ws_ma_detail.update(ma_detail_output, value_input_option="USER_ENTERED")
+    ws_ma_detail.update(ma_detail_output, value_input_option="RAW")
     print(f"✅ 已寫入 {len(ma_detail_list)} 筆個股明細至「{MA_TOUCH_DETAIL_WORKSHEET}」")
 
     # 條件格式化：D+1~D+20 正值紅底、負值綠底 (與主工作表相同配色)
     if len(ma_detail_list) > 0:
         try:
-            detail_ranges = [{
-                "sheetId": ws_ma_detail.id,
-                "startRowIndex": 1,
-                "startColumnIndex": 8,   # D+1 從第 9 欄(index=8) 開始
-                "endColumnIndex": 28     # D+20 到第 28 欄
-            }]
+            detail_ranges = [
+                {
+                    "sheetId": ws_ma_detail.id,
+                    "startRowIndex": 1,
+                    "startColumnIndex": 5,   # 處置前% (index=5)
+                    "endColumnIndex": 7      # 處置中% (index=6)，不含月線斜率(index=7)
+                },
+                {
+                    "sheetId": ws_ma_detail.id,
+                    "startRowIndex": 1,
+                    "startColumnIndex": 8,   # D+1 (index=8)
+                    "endColumnIndex": 28     # D+20 (index=27)
+                }
+            ]
             detail_positive_rule = {
                 "addConditionalFormatRule": {
                     "rule": {
