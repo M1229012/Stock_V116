@@ -325,9 +325,12 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
             else:
                 return None  # 無法取得前一天 MA20，無法計算斜率
 
-        touch_slope = touch_ma_now - touch_ma_prev
+        # 斜率 = (今日MA20 - 昨日MA20) / 昨日MA20 × 100%
+        if touch_ma_prev == 0:
+            return None
+        touch_slope = ((touch_ma_now - touch_ma_prev) / touch_ma_prev) * 100
 
-        # 買進日當天斜率必須 > 1
+        # 買進日當天斜率必須 > 1 (即月線一天上漲超過 1%)
         if touch_slope <= 1:
             return None
 
@@ -749,7 +752,7 @@ def main():
                 result['inst_status'],                  # 法人動向
                 result['pre_pct'],                      # 處置前 N 天漲跌幅 (同處置天數)
                 result['in_pct'],                       # 處置期間累積漲跌幅
-                f"{ma_slope_val:+.4f}"                  # 買進日 MA20 斜率(點/日)
+                f"{ma_slope_val:+.4f}%"                  # 買進日 MA20 斜率(%)
             ]
             for i in range(20):
                 ret = ma_returns_list[i] if i < len(ma_returns_list) else None
@@ -1074,8 +1077,8 @@ def main():
     print("💾 寫入「月線回測個股明細」工作表...")
     ma_detail_header = [
         "出關日期", "股號", "股名", "狀態", "法人動向",
-        "處置前%", "處置中%", "月線斜率(點/日)"
-    ] + [f"D+{i+1}" for i in range(20)]
+        "處置前%", "處置中%", "月線斜率(%)"
+    ] + [f"D+{i+1}" for i in range(20)] + ["D+1~D+20累積"]
 
     try:
         ws_ma_detail = sh.worksheet(MA_TOUCH_DETAIL_WORKSHEET)
@@ -1087,7 +1090,99 @@ def main():
     # 按出關日期降冪排序
     ma_detail_list.sort(key=lambda x: x[0], reverse=True)
 
-    ma_detail_output = [ma_detail_header] + ma_detail_list
+    # ============================
+    # [新增] 每支股票 D+1~D+20 累積漲跌幅，附加在每列最後
+    # ============================
+    for row in ma_detail_list:
+        compound = 1.0
+        has_data = False
+        for d in range(20):
+            col_idx = 8 + d  # D+1 在 index 8
+            if col_idx < len(row) and row[col_idx] != "":
+                try:
+                    r = float(str(row[col_idx]).replace('%', '').replace('+', ''))
+                    compound *= (1 + r / 100)
+                    has_data = True
+                except:
+                    break
+            else:
+                break  # 遇到空格就停止（後面也沒有資料）
+        if has_data:
+            row.append(f"{(compound - 1) * 100:+.1f}%")
+        else:
+            row.append("")
+
+    # ============================
+    # [新增] 摘要統計列（放在所有個股資料下方）
+    # 勝率：以買進日為標準，D+N 累積報酬 > 0 的比例
+    # 平均漲跌幅：D+N 當天漲跌幅所有股票的平均
+    # 賺錢股平均：D+N 當天 > 0 的股票平均
+    # 賠錢股平均：D+N 當天 < 0 的股票平均
+    # ============================
+    win_rate_row     = ["", "勝率(以買進日累積)",     "", "", "", "", "", ""]
+    avg_return_row   = ["", "平均漲跌幅(當日)",       "", "", "", "", "", ""]
+    avg_win_row      = ["", "賺錢股平均漲跌幅",       "", "", "", "", "", ""]
+    avg_lose_row     = ["", "賠錢股平均漲跌幅",       "", "", "", "", "", ""]
+
+    for day_idx in range(20):
+        col_idx = 8 + day_idx  # D+(day_idx+1) 所在欄位
+
+        # 1. 勝率：累積到第 day_idx+1 天的複利報酬 > 0
+        cum_rets = []
+        for row in ma_detail_list:
+            cmp = 1.0
+            valid = True
+            for d in range(day_idx + 1):
+                ci = 8 + d
+                if ci < len(row) and row[ci] != "":
+                    try:
+                        r = float(str(row[ci]).replace('%', '').replace('+', ''))
+                        cmp *= (1 + r / 100)
+                    except:
+                        valid = False; break
+                else:
+                    valid = False; break
+            if valid:
+                cum_rets.append((cmp - 1) * 100)
+
+        if cum_rets:
+            wins = sum(1 for x in cum_rets if x > 0)
+            win_rate_row.append(f"{wins / len(cum_rets) * 100:.1f}%")
+        else:
+            win_rate_row.append("-")
+
+        # 2. 平均漲跌幅（當日 D+N 那格的值）
+        daily_vals = []
+        for row in ma_detail_list:
+            if col_idx < len(row) and row[col_idx] != "":
+                try:
+                    daily_vals.append(float(str(row[col_idx]).replace('%', '').replace('+', '')))
+                except:
+                    pass
+
+        if daily_vals:
+            avg_return_row.append(f"{sum(daily_vals) / len(daily_vals):+.1f}%")
+        else:
+            avg_return_row.append("-")
+
+        # 3. 賺錢股平均 / 賠錢股平均（當日）
+        pos_vals = [v for v in daily_vals if v > 0]
+        neg_vals = [v for v in daily_vals if v < 0]
+        avg_win_row.append(f"{sum(pos_vals) / len(pos_vals):+.1f}%" if pos_vals else "-")
+        avg_lose_row.append(f"{sum(neg_vals) / len(neg_vals):+.1f}%" if neg_vals else "-")
+
+    # 摘要列最後補「D+1~D+20累積」欄對齊（空白）
+    win_rate_row.append("")
+    avg_return_row.append("")
+    avg_win_row.append("")
+    avg_lose_row.append("")
+
+    ma_detail_output = (
+        [ma_detail_header]
+        + ma_detail_list
+        + [[""]]  # 空行分隔
+        + [win_rate_row, avg_return_row, avg_win_row, avg_lose_row]
+    )
     ws_ma_detail.update(ma_detail_output, value_input_option="RAW")
     print(f"✅ 已寫入 {len(ma_detail_list)} 筆個股明細至「{MA_TOUCH_DETAIL_WORKSHEET}」")
 
@@ -1105,7 +1200,7 @@ def main():
                     "sheetId": ws_ma_detail.id,
                     "startRowIndex": 1,
                     "startColumnIndex": 8,   # D+1 (index=8)
-                    "endColumnIndex": 28     # D+20 (index=27)
+                    "endColumnIndex": 29     # D+20 (index=27) + D+1~D+20累積 (index=28)
                 }
             ]
             detail_positive_rule = {
