@@ -266,17 +266,17 @@ def get_institutional_data(stock_id, start_date, end_date):
 # ============================
 def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
     """
-    計算「上漲進處置 + 買進日MA20斜率>1 + 處置期間股價接近月線±15%」後的 D+1~D+20 每日漲跌幅。
+    計算「上漲進處置 + 買進日MA20斜率>1% + 處置期間股價接近月線±5%」後的 D+1~D+20 每日漲跌幅。
 
     條件說明：
     1. pre_pct_val > 0：股票在處置前期間為上漲走勢 (因上漲進入處置)
-    2. 處置期間至少有一天收盤價落在 MA20 的 ±15% 範圍內
-       即：MA20 * 0.85 <= Close <= MA20 * 1.15，此日為「買進日」
-    3. 買進日當天 MA20 斜率 > 1：當天MA20 - 前一天MA20 > 1 點
+    2. 處置期間至少有一天收盤價落在 MA20 的 ±5% 範圍內
+       即：MA20 * 0.95 <= Close <= MA20 * 1.05，此日為「買進日」
+    3. 買進日當天 MA20 斜率 > 1%：(當天MA20 - 前一天MA20) / 前一天MA20 × 100 > 1
 
     計算邏輯：
     - D+1 為買進日隔天漲跌幅，以買進日收盤價為基準，往後追蹤 D+1~D+20
-    - 回傳 dict：{"returns": [D+1~D+20 漲跌幅, 不足補 None], "slope": 買進日 MA20 斜率(點/日)}
+    - 回傳 dict：{"returns": [D+1~D+20 漲跌幅, 不足補 None], "slope": 買進日 MA20 斜率(%)}
     - 若任一條件不符合則回傳 None
     """
     try:
@@ -299,13 +299,13 @@ def get_ma_touch_stats(df, start_date, end_date, pre_pct_val):
         if len(df_jail) < 1:
             return None
 
-        # 條件 2: 找處置期間第一個收盤價在 MA20 ±15% 範圍內的日子 (買進日)
-        # 即：MA20 * 0.85 <= Close <= MA20 * 1.15
+        # 條件 2: 找處置期間第一個收盤價在 MA20 ±5% 範圍內的日子 (買進日)
+        # 即：MA20 * 0.95 <= Close <= MA20 * 1.05
         touch_idx = None
         for i in range(len(df_jail)):
             ma_val = float(df_jail['MA20'].iloc[i])
             close_val = float(df_jail['Close'].iloc[i])
-            if ma_val * 0.85 <= close_val <= ma_val * 1.15:
+            if ma_val * 0.95 <= close_val <= ma_val * 1.05:
                 touch_idx = i
                 break
 
@@ -896,7 +896,7 @@ def main():
         "",
         f"📈 上漲進處置 + 買進日MA20斜率>1 + 處置期間接近月線±15% (共{t_ma}筆 | 整體勝率{wr_ma_overall:.1f}% | D+20累積平均{avg_ma_overall:+.1f}%)"
     ])
-    right_side_rows.append(["", "篩選條件：處置前漲幅>0% 且 買進日MA20斜率(當日MA20-前日MA20)>1點 且 處置期間存在 MA20×0.85 ≤ 收盤價 ≤ MA20×1.15 的交易日"])
+    right_side_rows.append(["", "篩選條件：處置前漲幅>0% 且 買進日MA20斜率(今日MA20-昨日MA20)/昨日MA20×100>1% 且 處置期間存在 MA20×0.95 ≤ 收盤價 ≤ MA20×1.05 的交易日"])
     right_side_rows.append(["", "計算基準：第一個符合條件當天(買進日)的收盤價，D+1 為隔日漲跌幅，往後追蹤至 D+20"])
     right_side_rows.append(["", ""] + ma_days_header)
 
@@ -932,11 +932,11 @@ def main():
     # ============================
     right_side_rows.append([""] * 8)
     right_side_rows.append([
-        "", "📊 月線斜率區間勝率統計 (每0.1一組)",
+        "", "📊 月線斜率區間勝率統計 (每0.1%一組)",
         "樣本數", "D+10勝率", "D+10平均漲跌", "D+20勝率", "D+20平均漲跌"
     ])
     right_side_rows.append([
-        "", "說明：斜率 = 買進日當天MA20 - 前一天MA20 (點)，區間為無條件捨去至 0.1"
+        "", "說明：斜率 = (今日MA20 - 昨日MA20) / 昨日MA20 × 100%，區間為無條件捨去至 0.1%"
     ])
     for bk_key in sorted(ma_slope_buckets.keys()):
         bk = ma_slope_buckets[bk_key]
@@ -945,7 +945,7 @@ def main():
         avg_d10 = bk['d10_sum'] / t_bk if t_bk > 0 else 0.0
         wr_d20 = (bk['wins_d20'] / t_bk * 100) if t_bk > 0 else 0.0
         avg_d20 = bk['d20_sum'] / t_bk if t_bk > 0 else 0.0
-        bk_label = f"{bk_key:.1f}~{bk_key + 0.1:.1f}"
+        bk_label = f"{bk_key:.1f}%~{bk_key + 0.1:.1f}%"
         right_side_rows.append([
             "", bk_label, t_bk,
             f"{wr_d10:.1f}%", f"{avg_d10:+.1f}%",
