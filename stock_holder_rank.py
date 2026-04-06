@@ -134,16 +134,14 @@ def fmt_change(x):
 
 def parse_code_name(raw_str):
     raw_str = str(raw_str).strip().replace("卅卅", "碁")
-    match = re.match(r'(\d{4})\s*(.*)', raw_str)
+    # ← 修正：\d{4,6} 同時支援 4 位與 6 位股票代號
+    match = re.match(r'(\d{4,6})\s*(.*)', raw_str)
     if match:
         return match.group(1), match.group(2).strip()
-    return raw_str[:4], raw_str[4:].strip()
+    return raw_str[:6], raw_str[6:].strip()
 
 
 def draw_clean_table(ax, df, title, accent_color, header_dark):
-    """
-    金融終端機風格：深色底、大字體、清晰間距
-    """
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_axis_off()
@@ -170,12 +168,12 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
     # ---- 版面 ----
     n_rows   = len(df)
     header_h = 0.064
-    total_h  = 0.88           # 稍微縮短，讓上下留出呼吸空間
+    total_h  = 0.88
     row_h    = (total_h - header_h) / n_rows
-    top_y    = 0.955          # 從稍低處開始，避免頂部被截
+    top_y    = 0.955
 
-    # ---- 欄位 ----
-    col_widths = [0.09, 0.16, 0.43, 0.32]
+    # ---- 欄位（代號欄從 0.16 加寬至 0.19，股票名稱欄對應縮減） ----
+    col_widths = [0.09, 0.19, 0.40, 0.32]
     col_labels = ["排名", "代號", "股票名稱", "大戶增減%"]
     col_aligns = ['center', 'center', 'left', 'center']
     x_starts = []
@@ -184,7 +182,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
         x_starts.append(acc)
         acc += w
 
-    # ---- 整體表格背景（改用 Rectangle 避免圓角被截） ----
+    # ---- 整體表格背景 ----
     bg_rect = patches.Rectangle(
         (0.005, top_y - total_h - 0.01), 0.99, total_h + 0.015,
         linewidth=1.2,
@@ -207,7 +205,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
     )
     ax.add_patch(accent_bar)
 
-    # ---- 區塊標題（表格上方） ----
+    # ---- 區塊標題 ----
     ax.text(
         0.018, top_y + 0.015,
         title,
@@ -339,7 +337,6 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         figsize=(22, 16),
         facecolor=BG_MAIN
     )
-    # wspace 加大讓兩表之間有明顯間距，left/right 留邊避免截斷
     fig.subplots_adjust(left=0.03, right=0.97, top=0.88, bottom=0.03, wspace=0.12)
 
     # ---- 頂部橫條 ----
