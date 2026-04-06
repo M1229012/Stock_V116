@@ -316,7 +316,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
                     txt_color, fw = TEXT_NEG, 'bold'
                 else:
                     txt_color, fw = TEXT_MUTED, 'normal'
-                fs = 15  # 增減數字最大
+                fs = 25  # 增減數字最大
 
             text_x = xst + w / 2 if align == 'center' else xst + 0.02
             ax.text(
