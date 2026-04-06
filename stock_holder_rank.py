@@ -244,7 +244,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
             label,
             transform=ax.transAxes,
             ha=align, va='center',
-            fontsize=13, fontweight='bold',
+            fontsize=20, fontweight='bold',
             fontproperties=FONT_PROP,
             color=TEXT_HEADER,
             zorder=3
@@ -308,7 +308,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
             elif col_i == 1:
                 txt_color, fw, fs = TEXT_MUTED, 'normal', 20
             elif col_i == 2:
-                txt_color, fw, fs = TEXT_MAIN, 'normal', 25
+                txt_color, fw, fs = TEXT_MAIN, 'normal', 20
             else:  # 增減欄
                 if chg_val > 0:
                     txt_color, fw = TEXT_POS, 'bold'
@@ -371,7 +371,7 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         0.5, 0.945,
         "每週大股東籌碼強勢榜  Top 20",
         ha='center', va='center',
-        fontsize=26, fontweight='bold',
+        fontsize=35, fontweight='bold',
         fontproperties=FONT_PROP,
         color='#FFFFFF',
         zorder=2
@@ -380,7 +380,7 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         0.5, 0.905,
         f"資料統計日期：{date_str}",
         ha='center', va='center',
-        fontsize=13,
+        fontsize=20,
         fontproperties=FONT_PROP,
         color='#7BA8C8',
         zorder=2
@@ -397,7 +397,7 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         )
     else:
         ax_listed.text(0.5, 0.5, '無資料', ha='center', va='center',
-                       fontsize=16, fontproperties=FONT_PROP, color='#7BA8C8')
+                       fontsize=20, fontproperties=FONT_PROP, color='#7BA8C8')
         ax_listed.set_facecolor(BG_MAIN)
         ax_listed.set_axis_off()
 
@@ -412,7 +412,7 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         )
     else:
         ax_otc.text(0.5, 0.5, '無資料', ha='center', va='center',
-                    fontsize=16, fontproperties=FONT_PROP, color='#7BA8C8')
+                    fontsize=20, fontproperties=FONT_PROP, color='#7BA8C8')
         ax_otc.set_facecolor(BG_MAIN)
         ax_otc.set_axis_off()
 
