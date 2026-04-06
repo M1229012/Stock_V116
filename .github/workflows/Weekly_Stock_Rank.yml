@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas requests selenium webdriver-manager lxml wcwidth
+          pip install pandas requests selenium webdriver-manager lxml wcwidth matplotlib
 
       - name: Run Stock Holder Rank Script
         env:
