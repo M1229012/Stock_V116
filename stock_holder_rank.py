@@ -304,11 +304,11 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
                     txt_color, fw = BRONZE, 'bold'
                 else:
                     txt_color, fw = TEXT_MUTED, 'normal'
-                fs = 13
+                fs = 20
             elif col_i == 1:
-                txt_color, fw, fs = TEXT_MUTED, 'normal', 13
+                txt_color, fw, fs = TEXT_MUTED, 'normal', 20
             elif col_i == 2:
-                txt_color, fw, fs = TEXT_MAIN, 'normal', 14
+                txt_color, fw, fs = TEXT_MAIN, 'normal', 25
             else:  # 增減欄
                 if chg_val > 0:
                     txt_color, fw = TEXT_POS, 'bold'
@@ -316,7 +316,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
                     txt_color, fw = TEXT_NEG, 'bold'
                 else:
                     txt_color, fw = TEXT_MUTED, 'normal'
-                fs = 25  # 增減數字最大
+                fs = 20  # 增減數字最大
 
             text_x = xst + w / 2 if align == 'center' else xst + 0.02
             ax.text(
