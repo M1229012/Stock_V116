@@ -140,30 +140,42 @@ def parse_code_name(raw_str):
     return raw_str[:4], raw_str[4:].strip()
 
 
-def draw_clean_table(ax, df, title, accent_color):
+def draw_clean_table(ax, df, title, accent_color, header_dark):
+    """
+    金融終端機風格：深色底、大字體、清晰間距
+    """
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_axis_off()
 
-    # ---- 顏色定義 ----
-    COLOR_HEADER_BG   = accent_color
-    COLOR_HEADER_TEXT = '#FFFFFF'
-    COLOR_ROW_ODD     = '#FFFFFF'
-    COLOR_ROW_EVEN    = '#EEF4FF'
-    COLOR_TEXT        = '#1A1A1A'
-    COLOR_POSITIVE    = '#CC0000'
-    COLOR_NEGATIVE    = '#006600'
-    COLOR_BORDER      = '#C8C8C8'
-    COLOR_RANK_BG     = '#F7F7F7'
+    # ---- 顏色 ----
+    BG_TABLE    = '#1C2B3A'        # 表格底色（深藍灰）
+    BG_ROW_ODD  = '#1C2B3A'        # 奇數列
+    BG_ROW_EVEN = '#243447'        # 偶數列（稍淺）
+    BG_HEADER   = header_dark      # Header 深色底
+    BG_RANK     = '#162030'        # 排名欄更深底色
+    ACCENT      = accent_color     # 強調色（標題列左邊線 / Header 上緣線）
 
-    # ---- 版面參數 ----
+    TEXT_HEADER = '#FFFFFF'
+    TEXT_MAIN   = '#E8EFF7'        # 主要文字（接近白）
+    TEXT_MUTED  = '#8FA8C0'        # 次要文字（代號、排名）
+    TEXT_POS    = '#FF6B6B'        # 正漲（亮紅）
+    TEXT_NEG    = '#4CD964'        # 負跌（亮綠）
+    GOLD        = '#FFD060'        # 第一名
+    SILVER      = '#C0C8D4'        # 第二名
+    BRONZE      = '#E8A070'        # 第三名
+    BORDER_DARK = '#0D1B2A'        # 格線（深）
+    BORDER_MID  = '#2E4560'        # 格線（中）
+
+    # ---- 版面 ----
     n_rows   = len(df)
-    header_h = 0.058
-    row_h    = (0.90 - header_h) / n_rows
-    top_y    = 0.96
+    header_h = 0.064
+    total_h  = 0.91
+    row_h    = (total_h - header_h) / n_rows
+    top_y    = 0.975
 
-    # ---- 欄位設定 ----
-    col_widths = [0.10, 0.17, 0.44, 0.29]
+    # ---- 欄位 ----
+    col_widths = [0.09, 0.16, 0.43, 0.32]
     col_labels = ["排名", "代號", "股票名稱", "大戶增減%"]
     col_aligns = ['center', 'center', 'left', 'center']
     x_starts = []
@@ -172,43 +184,69 @@ def draw_clean_table(ax, df, title, accent_color):
         x_starts.append(acc)
         acc += w
 
-    # ---- 區塊標題 ----
+    # ---- 整體表格背景 ----
+    bg_rect = patches.FancyBboxPatch(
+        (0, top_y - total_h - 0.005), 1, total_h + 0.01,
+        boxstyle="round,pad=0.005",
+        linewidth=1.5,
+        edgecolor=BORDER_MID,
+        facecolor=BG_TABLE,
+        transform=ax.transAxes,
+        clip_on=False,
+        zorder=0
+    )
+    ax.add_patch(bg_rect)
+
+    # ---- 左側強調色縱條 ----
+    accent_bar = patches.Rectangle(
+        (0, top_y - total_h - 0.005), 0.008, total_h + 0.01,
+        linewidth=0,
+        facecolor=ACCENT,
+        transform=ax.transAxes,
+        clip_on=False,
+        zorder=1
+    )
+    ax.add_patch(accent_bar)
+
+    # ---- 區塊標題（表格上方） ----
     ax.text(
-        0.0, top_y + 0.005,
+        0.012, top_y + 0.01,
         title,
         transform=ax.transAxes,
         ha='left', va='bottom',
-        fontsize=14, fontweight='bold',
+        fontsize=16, fontweight='bold',
         fontproperties=FONT_PROP,
-        color=accent_color
+        color=ACCENT
     )
 
-    header_top = top_y - 0.012
+    header_top = top_y - 0.005
 
-    # ---- Header ----
+    # ---- Header 列 ----
+    header_rect = patches.Rectangle(
+        (0, header_top - header_h), 1, header_h,
+        linewidth=0,
+        facecolor=BG_HEADER,
+        transform=ax.transAxes,
+        clip_on=False,
+        zorder=1
+    )
+    ax.add_patch(header_rect)
+
+    # Header 上緣強調線
+    ax.plot([0, 1], [header_top, header_top],
+            color=ACCENT, linewidth=2,
+            transform=ax.transAxes, clip_on=False, zorder=2)
+
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
-        rect = patches.FancyBboxPatch(
-            (xst + 0.002, header_top - header_h + 0.002),
-            w - 0.004, header_h - 0.004,
-            boxstyle="round,pad=0.003",
-            linewidth=0,
-            edgecolor='none',
-            facecolor=COLOR_HEADER_BG,
-            transform=ax.transAxes,
-            clip_on=False,
-            zorder=2
-        )
-        ax.add_patch(rect)
-
-        text_x = xst + w / 2 if align == 'center' else xst + 0.018
+        text_x = xst + w / 2 if align == 'center' else xst + 0.02
         ax.text(
             text_x, header_top - header_h / 2,
             label,
             transform=ax.transAxes,
             ha=align, va='center',
-            fontsize=11.5, fontweight='bold',
+            fontsize=13, fontweight='bold',
             fontproperties=FONT_PROP,
-            color=COLOR_HEADER_TEXT,
+            color=TEXT_HEADER,
             zorder=3
         )
 
@@ -223,132 +261,129 @@ def draw_clean_table(ax, df, title, accent_color):
 
         rank_num = row_i + 1
         row_data = [f"{rank_num:02d}", code, name, chg_str]
-
         y_top = header_top - header_h - row_i * row_h
-        bg_color = COLOR_ROW_ODD if row_i % 2 == 0 else COLOR_ROW_EVEN
+        bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
+
+        # 列底色
+        row_rect = patches.Rectangle(
+            (0, y_top - row_h), 1, row_h,
+            linewidth=0,
+            facecolor=bg_color,
+            transform=ax.transAxes,
+            clip_on=False,
+            zorder=1
+        )
+        ax.add_patch(row_rect)
+
+        # 列底部分隔線
+        ax.plot([0.008, 1], [y_top - row_h, y_top - row_h],
+                color=BORDER_DARK, linewidth=0.6,
+                transform=ax.transAxes, clip_on=False, zorder=2)
 
         for col_i, (xst, w, val, align) in enumerate(zip(x_starts, col_widths, row_data, col_aligns)):
-            cell_bg = COLOR_RANK_BG if col_i == 0 else bg_color
 
-            rect = patches.Rectangle(
-                (xst, y_top - row_h), w, row_h,
-                linewidth=0.6,
-                edgecolor=COLOR_BORDER,
-                facecolor=cell_bg,
-                transform=ax.transAxes,
-                clip_on=False,
-                zorder=1
-            )
-            ax.add_patch(rect)
+            # 排名欄獨立底色
+            if col_i == 0:
+                rank_bg = patches.Rectangle(
+                    (xst, y_top - row_h), w, row_h,
+                    linewidth=0,
+                    facecolor=BG_RANK,
+                    transform=ax.transAxes,
+                    clip_on=False,
+                    zorder=1
+                )
+                ax.add_patch(rank_bg)
 
             # 文字顏色
             if col_i == 0:
                 if rank_num == 1:
-                    txt_color = '#B8860B'
-                    fw = 'bold'
+                    txt_color, fw = GOLD, 'bold'
                 elif rank_num == 2:
-                    txt_color = '#808080'
-                    fw = 'bold'
+                    txt_color, fw = SILVER, 'bold'
                 elif rank_num == 3:
-                    txt_color = '#A0522D'
-                    fw = 'bold'
+                    txt_color, fw = BRONZE, 'bold'
                 else:
-                    txt_color = '#555555'
-                    fw = 'normal'
-            elif col_i == 3:
+                    txt_color, fw = TEXT_MUTED, 'normal'
+                fs = 13
+            elif col_i == 1:
+                txt_color, fw, fs = TEXT_MUTED, 'normal', 13
+            elif col_i == 2:
+                txt_color, fw, fs = TEXT_MAIN, 'normal', 14
+            else:  # 增減欄
                 if chg_val > 0:
-                    txt_color = COLOR_POSITIVE
-                    fw = 'bold'
+                    txt_color, fw = TEXT_POS, 'bold'
                 elif chg_val < 0:
-                    txt_color = COLOR_NEGATIVE
-                    fw = 'bold'
+                    txt_color, fw = TEXT_NEG, 'bold'
                 else:
-                    txt_color = COLOR_TEXT
-                    fw = 'normal'
-            else:
-                txt_color = COLOR_TEXT
-                fw = 'normal'
+                    txt_color, fw = TEXT_MUTED, 'normal'
+                fs = 15  # 增減數字最大
 
-            text_x = xst + w / 2 if align == 'center' else xst + 0.018
+            text_x = xst + w / 2 if align == 'center' else xst + 0.02
             ax.text(
                 text_x, y_top - row_h / 2,
                 val,
                 transform=ax.transAxes,
                 ha=align, va='center',
-                fontsize=10.5, fontweight=fw,
+                fontsize=fs, fontweight=fw,
                 fontproperties=FONT_PROP,
                 color=txt_color,
-                zorder=2
+                zorder=3
             )
-
-        # ---- 右側增減幅度橫條 ----
-        if chg_val != 0:
-            bar_col_x = x_starts[3]
-            bar_col_w = col_widths[3]
-            bar_max_w = bar_col_w * 0.85
-            bar_h     = row_h * 0.18
-            bar_y     = y_top - row_h + row_h * 0.06
-
-            all_vals = []
-            for _, r in df.iterrows():
-                try:
-                    all_vals.append(abs(float(fmt_change(r['總增減']).replace('%', ''))))
-                except:
-                    pass
-            max_v = max(all_vals) if all_vals else 1
-
-            bar_len   = (abs(chg_val) / max_v) * bar_max_w
-            bar_color = '#FFAAAA' if chg_val > 0 else '#AADDAA'
-
-            bar_rect = patches.Rectangle(
-                (bar_col_x + 0.005, bar_y),
-                bar_len, bar_h,
-                linewidth=0,
-                facecolor=bar_color,
-                transform=ax.transAxes,
-                clip_on=False,
-                zorder=1,
-                alpha=0.55
-            )
-            ax.add_patch(bar_rect)
 
 
 def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
+    # ---- 畫布：深藍色背景 ----
+    BG_MAIN    = '#0D1B2A'   # 整體深藍背景
+    BG_TOPBAR  = '#0A1520'   # 頂部更深
+
     fig, (ax_listed, ax_otc) = plt.subplots(
         1, 2,
-        figsize=(20, 15),
-        facecolor='#F8F9FA'
+        figsize=(22, 16),
+        facecolor=BG_MAIN
     )
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.91, bottom=0.03, wspace=0.07)
+    fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.025, wspace=0.06)
 
-    # ---- 頂部色條裝飾 ----
-    fig.add_artist(patches.FancyBboxPatch(
-        (0, 0.935), 1, 0.065,
-        boxstyle="square,pad=0",
-        facecolor='#1E3A5F',
+    # ---- 頂部橫條 ----
+    top_bar = patches.Rectangle(
+        (0, 0.89), 1, 0.11,
+        linewidth=0,
+        facecolor=BG_TOPBAR,
         transform=fig.transFigure,
         clip_on=False,
         zorder=0
+    )
+    fig.add_artist(top_bar)
+
+    # 頂部色線（上市藍 | 上櫃綠 漸層分割）
+    fig.add_artist(patches.Rectangle(
+        (0, 0.99), 0.5, 0.01,
+        linewidth=0, facecolor='#3B82F6',
+        transform=fig.transFigure, clip_on=False, zorder=1
+    ))
+    fig.add_artist(patches.Rectangle(
+        (0.5, 0.99), 0.5, 0.01,
+        linewidth=0, facecolor='#22C55E',
+        transform=fig.transFigure, clip_on=False, zorder=1
     ))
 
     # ---- 大標題 ----
     fig.text(
-        0.5, 0.965,
+        0.5, 0.945,
         "每週大股東籌碼強勢榜  Top 20",
         ha='center', va='center',
-        fontsize=22, fontweight='bold',
+        fontsize=26, fontweight='bold',
         fontproperties=FONT_PROP,
         color='#FFFFFF',
-        zorder=1
+        zorder=2
     )
     fig.text(
-        0.5, 0.942,
+        0.5, 0.905,
         f"資料統計日期：{date_str}",
         ha='center', va='center',
-        fontsize=12,
+        fontsize=13,
         fontproperties=FONT_PROP,
-        color='#AACCFF',
-        zorder=1
+        color='#7BA8C8',
+        zorder=2
     )
 
     # ---- 上市 ----
@@ -357,12 +392,13 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
             ax_listed,
             listed_df.reset_index(drop=True),
             title="▌ 上市排行",
-            accent_color='#1D4ED8'
+            accent_color='#3B82F6',    # 藍
+            header_dark='#162340'
         )
     else:
         ax_listed.text(0.5, 0.5, '無資料', ha='center', va='center',
-                       fontsize=14, fontproperties=FONT_PROP, color='#888888')
-        ax_listed.set_facecolor('#F8F9FA')
+                       fontsize=16, fontproperties=FONT_PROP, color='#7BA8C8')
+        ax_listed.set_facecolor(BG_MAIN)
         ax_listed.set_axis_off()
 
     # ---- 上櫃 ----
@@ -371,12 +407,13 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
             ax_otc,
             otc_df.reset_index(drop=True),
             title="▌ 上櫃排行",
-            accent_color='#15803D'
+            accent_color='#22C55E',    # 綠
+            header_dark='#112318'
         )
     else:
         ax_otc.text(0.5, 0.5, '無資料', ha='center', va='center',
-                    fontsize=14, fontproperties=FONT_PROP, color='#888888')
-        ax_otc.set_facecolor('#F8F9FA')
+                    fontsize=16, fontproperties=FONT_PROP, color='#7BA8C8')
+        ax_otc.set_facecolor(BG_MAIN)
         ax_otc.set_axis_off()
 
     buf = BytesIO()
