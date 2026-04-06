@@ -149,30 +149,30 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
     ax.set_axis_off()
 
     # ---- 顏色 ----
-    BG_TABLE    = '#1C2B3A'        # 表格底色（深藍灰）
-    BG_ROW_ODD  = '#1C2B3A'        # 奇數列
-    BG_ROW_EVEN = '#243447'        # 偶數列（稍淺）
-    BG_HEADER   = header_dark      # Header 深色底
-    BG_RANK     = '#162030'        # 排名欄更深底色
-    ACCENT      = accent_color     # 強調色（標題列左邊線 / Header 上緣線）
+    BG_TABLE    = '#1C2B3A'
+    BG_ROW_ODD  = '#1C2B3A'
+    BG_ROW_EVEN = '#243447'
+    BG_HEADER   = header_dark
+    BG_RANK     = '#162030'
+    ACCENT      = accent_color
 
     TEXT_HEADER = '#FFFFFF'
-    TEXT_MAIN   = '#E8EFF7'        # 主要文字（接近白）
-    TEXT_MUTED  = '#8FA8C0'        # 次要文字（代號、排名）
-    TEXT_POS    = '#FF6B6B'        # 正漲（亮紅）
-    TEXT_NEG    = '#4CD964'        # 負跌（亮綠）
-    GOLD        = '#FFD060'        # 第一名
-    SILVER      = '#C0C8D4'        # 第二名
-    BRONZE      = '#E8A070'        # 第三名
-    BORDER_DARK = '#0D1B2A'        # 格線（深）
-    BORDER_MID  = '#2E4560'        # 格線（中）
+    TEXT_MAIN   = '#E8EFF7'
+    TEXT_MUTED  = '#8FA8C0'
+    TEXT_POS    = '#FF6B6B'
+    TEXT_NEG    = '#4CD964'
+    GOLD        = '#FFD060'
+    SILVER      = '#C0C8D4'
+    BRONZE      = '#E8A070'
+    BORDER_DARK = '#0D1B2A'
+    BORDER_MID  = '#2E4560'
 
     # ---- 版面 ----
     n_rows   = len(df)
     header_h = 0.064
-    total_h  = 0.91
+    total_h  = 0.88           # 稍微縮短，讓上下留出呼吸空間
     row_h    = (total_h - header_h) / n_rows
-    top_y    = 0.975
+    top_y    = 0.955          # 從稍低處開始，避免頂部被截
 
     # ---- 欄位 ----
     col_widths = [0.09, 0.16, 0.43, 0.32]
@@ -184,11 +184,10 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
         x_starts.append(acc)
         acc += w
 
-    # ---- 整體表格背景 ----
-    bg_rect = patches.FancyBboxPatch(
-        (0, top_y - total_h - 0.005), 1, total_h + 0.01,
-        boxstyle="round,pad=0.005",
-        linewidth=1.5,
+    # ---- 整體表格背景（改用 Rectangle 避免圓角被截） ----
+    bg_rect = patches.Rectangle(
+        (0.005, top_y - total_h - 0.01), 0.99, total_h + 0.015,
+        linewidth=1.2,
         edgecolor=BORDER_MID,
         facecolor=BG_TABLE,
         transform=ax.transAxes,
@@ -199,7 +198,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
 
     # ---- 左側強調色縱條 ----
     accent_bar = patches.Rectangle(
-        (0, top_y - total_h - 0.005), 0.008, total_h + 0.01,
+        (0.005, top_y - total_h - 0.01), 0.009, total_h + 0.015,
         linewidth=0,
         facecolor=ACCENT,
         transform=ax.transAxes,
@@ -210,7 +209,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
 
     # ---- 區塊標題（表格上方） ----
     ax.text(
-        0.012, top_y + 0.01,
+        0.018, top_y + 0.015,
         title,
         transform=ax.transAxes,
         ha='left', va='bottom',
@@ -219,11 +218,11 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
         color=ACCENT
     )
 
-    header_top = top_y - 0.005
+    header_top = top_y
 
     # ---- Header 列 ----
     header_rect = patches.Rectangle(
-        (0, header_top - header_h), 1, header_h,
+        (0.005, header_top - header_h), 0.99, header_h,
         linewidth=0,
         facecolor=BG_HEADER,
         transform=ax.transAxes,
@@ -233,8 +232,8 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
     ax.add_patch(header_rect)
 
     # Header 上緣強調線
-    ax.plot([0, 1], [header_top, header_top],
-            color=ACCENT, linewidth=2,
+    ax.plot([0.005, 0.995], [header_top, header_top],
+            color=ACCENT, linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
 
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
@@ -266,7 +265,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
 
         # 列底色
         row_rect = patches.Rectangle(
-            (0, y_top - row_h), 1, row_h,
+            (0.005, y_top - row_h), 0.99, row_h,
             linewidth=0,
             facecolor=bg_color,
             transform=ax.transAxes,
@@ -276,7 +275,7 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
         ax.add_patch(row_rect)
 
         # 列底部分隔線
-        ax.plot([0.008, 1], [y_top - row_h, y_top - row_h],
+        ax.plot([0.014, 0.995], [y_top - row_h, y_top - row_h],
                 color=BORDER_DARK, linewidth=0.6,
                 transform=ax.transAxes, clip_on=False, zorder=2)
 
@@ -309,14 +308,14 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
                 txt_color, fw, fs = TEXT_MUTED, 'normal', 20
             elif col_i == 2:
                 txt_color, fw, fs = TEXT_MAIN, 'normal', 20
-            else:  # 增減欄
+            else:
                 if chg_val > 0:
                     txt_color, fw = TEXT_POS, 'bold'
                 elif chg_val < 0:
                     txt_color, fw = TEXT_NEG, 'bold'
                 else:
                     txt_color, fw = TEXT_MUTED, 'normal'
-                fs = 20  # 增減數字最大
+                fs = 20
 
             text_x = xst + w / 2 if align == 'center' else xst + 0.02
             ax.text(
@@ -332,16 +331,16 @@ def draw_clean_table(ax, df, title, accent_color, header_dark):
 
 
 def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
-    # ---- 畫布：深藍色背景 ----
-    BG_MAIN    = '#0D1B2A'   # 整體深藍背景
-    BG_TOPBAR  = '#0A1520'   # 頂部更深
+    BG_MAIN   = '#0D1B2A'
+    BG_TOPBAR = '#0A1520'
 
     fig, (ax_listed, ax_otc) = plt.subplots(
         1, 2,
         figsize=(22, 16),
         facecolor=BG_MAIN
     )
-    fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.025, wspace=0.06)
+    # wspace 加大讓兩表之間有明顯間距，left/right 留邊避免截斷
+    fig.subplots_adjust(left=0.03, right=0.97, top=0.88, bottom=0.03, wspace=0.12)
 
     # ---- 頂部橫條 ----
     top_bar = patches.Rectangle(
@@ -354,15 +353,15 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
     )
     fig.add_artist(top_bar)
 
-    # 頂部色線（上市藍 | 上櫃綠 漸層分割）
+    # 頂部色線：左金黃 | 右青藍
     fig.add_artist(patches.Rectangle(
         (0, 0.99), 0.5, 0.01,
-        linewidth=0, facecolor='#3B82F6',
+        linewidth=0, facecolor='#F59E0B',
         transform=fig.transFigure, clip_on=False, zorder=1
     ))
     fig.add_artist(patches.Rectangle(
         (0.5, 0.99), 0.5, 0.01,
-        linewidth=0, facecolor='#22C55E',
+        linewidth=0, facecolor='#06B6D4',
         transform=fig.transFigure, clip_on=False, zorder=1
     ))
 
@@ -386,14 +385,14 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         zorder=2
     )
 
-    # ---- 上市 ----
+    # ---- 上市（金黃） ----
     if listed_df is not None and not listed_df.empty:
         draw_clean_table(
             ax_listed,
             listed_df.reset_index(drop=True),
             title="▌ 上市排行",
-            accent_color='#3B82F6',    # 藍
-            header_dark='#162340'
+            accent_color='#F59E0B',
+            header_dark='#2A1E00'
         )
     else:
         ax_listed.text(0.5, 0.5, '無資料', ha='center', va='center',
@@ -401,14 +400,14 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
         ax_listed.set_facecolor(BG_MAIN)
         ax_listed.set_axis_off()
 
-    # ---- 上櫃 ----
+    # ---- 上櫃（青藍） ----
     if otc_df is not None and not otc_df.empty:
         draw_clean_table(
             ax_otc,
             otc_df.reset_index(drop=True),
             title="▌ 上櫃排行",
-            accent_color='#22C55E',    # 綠
-            header_dark='#112318'
+            accent_color='#06B6D4',
+            header_dark='#002A33'
         )
     else:
         ax_otc.text(0.5, 0.5, '無資料', ha='center', va='center',
