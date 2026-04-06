@@ -141,32 +141,29 @@ def parse_code_name(raw_str):
 
 
 def draw_clean_table(ax, df, title, accent_color):
-    """
-    仿照圖片風格：白底、藍色/綠色 Header、斑馬紋淺灰列
-    """
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_axis_off()
 
     # ---- 顏色定義 ----
-    COLOR_HEADER_BG   = accent_color       # Header 底色
-    COLOR_HEADER_TEXT = '#FFFFFF'          # Header 文字
-    COLOR_ROW_ODD     = '#FFFFFF'          # 奇數列底色
-    COLOR_ROW_EVEN    = '#F0F4FF'          # 偶數列底色（極淺藍）
-    COLOR_TEXT        = '#1A1A1A'          # 一般文字
-    COLOR_POSITIVE    = '#CC0000'          # 正漲（台股紅）
-    COLOR_NEGATIVE    = '#006600'          # 負跌（台股綠）
-    COLOR_GOLD        = '#B8860B'          # 前三名
-    COLOR_BORDER      = '#D0D0D0'          # 格線
+    COLOR_HEADER_BG   = accent_color
+    COLOR_HEADER_TEXT = '#FFFFFF'
+    COLOR_ROW_ODD     = '#FFFFFF'
+    COLOR_ROW_EVEN    = '#EEF4FF'
+    COLOR_TEXT        = '#1A1A1A'
+    COLOR_POSITIVE    = '#CC0000'
+    COLOR_NEGATIVE    = '#006600'
+    COLOR_BORDER      = '#C8C8C8'
+    COLOR_RANK_BG     = '#F7F7F7'
 
     # ---- 版面參數 ----
     n_rows   = len(df)
-    header_h = 0.052       # Header 列高
-    row_h    = (0.92 - header_h) / n_rows  # 每資料列高度
-    top_y    = 0.96        # 從頂端開始畫
+    header_h = 0.058
+    row_h    = (0.90 - header_h) / n_rows
+    top_y    = 0.96
 
-    # ---- 欄位寬度（比例）& X 起點 ----
-    col_widths = [0.10, 0.16, 0.44, 0.30]
+    # ---- 欄位設定 ----
+    col_widths = [0.10, 0.17, 0.44, 0.29]
     col_labels = ["排名", "代號", "股票名稱", "大戶增減%"]
     col_aligns = ['center', 'center', 'left', 'center']
     x_starts = []
@@ -175,44 +172,47 @@ def draw_clean_table(ax, df, title, accent_color):
         x_starts.append(acc)
         acc += w
 
-    # ---- 標題列（區塊標題）----
-    title_y = top_y + 0.005
+    # ---- 區塊標題 ----
     ax.text(
-        0.0, title_y, title,
+        0.0, top_y + 0.005,
+        title,
         transform=ax.transAxes,
         ha='left', va='bottom',
-        fontsize=11, fontweight='bold',
+        fontsize=14, fontweight='bold',
         fontproperties=FONT_PROP,
         color=accent_color
     )
 
-    header_top = top_y - 0.01
+    header_top = top_y - 0.012
 
-    # ---- 畫 Header ----
+    # ---- Header ----
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
         rect = patches.FancyBboxPatch(
-            (xst, header_top - header_h), w, header_h,
-            boxstyle="square,pad=0",
-            linewidth=0.5,
-            edgecolor=COLOR_BORDER,
+            (xst + 0.002, header_top - header_h + 0.002),
+            w - 0.004, header_h - 0.004,
+            boxstyle="round,pad=0.003",
+            linewidth=0,
+            edgecolor='none',
             facecolor=COLOR_HEADER_BG,
             transform=ax.transAxes,
-            clip_on=False
+            clip_on=False,
+            zorder=2
         )
         ax.add_patch(rect)
 
-        text_x = xst + w / 2 if align == 'center' else xst + 0.01
+        text_x = xst + w / 2 if align == 'center' else xst + 0.018
         ax.text(
             text_x, header_top - header_h / 2,
             label,
             transform=ax.transAxes,
             ha=align, va='center',
-            fontsize=9.5, fontweight='bold',
+            fontsize=11.5, fontweight='bold',
             fontproperties=FONT_PROP,
-            color=COLOR_HEADER_TEXT
+            color=COLOR_HEADER_TEXT,
+            zorder=3
         )
 
-    # ---- 畫資料列 ----
+    # ---- 資料列 ----
     for row_i, (_, row) in enumerate(df.iterrows()):
         code, name = parse_code_name(row['股票代號/名稱'])
         chg_str = fmt_change(row['總增減'])
@@ -228,26 +228,34 @@ def draw_clean_table(ax, df, title, accent_color):
         bg_color = COLOR_ROW_ODD if row_i % 2 == 0 else COLOR_ROW_EVEN
 
         for col_i, (xst, w, val, align) in enumerate(zip(x_starts, col_widths, row_data, col_aligns)):
-            # 底色
+            cell_bg = COLOR_RANK_BG if col_i == 0 else bg_color
+
             rect = patches.Rectangle(
                 (xst, y_top - row_h), w, row_h,
-                linewidth=0.5,
+                linewidth=0.6,
                 edgecolor=COLOR_BORDER,
-                facecolor=bg_color,
+                facecolor=cell_bg,
                 transform=ax.transAxes,
-                clip_on=False
+                clip_on=False,
+                zorder=1
             )
             ax.add_patch(rect)
 
-            # 文字顏色邏輯
-            if col_i == 0:  # 排名欄
-                if rank_num <= 3:
-                    txt_color = COLOR_GOLD
+            # 文字顏色
+            if col_i == 0:
+                if rank_num == 1:
+                    txt_color = '#B8860B'
+                    fw = 'bold'
+                elif rank_num == 2:
+                    txt_color = '#808080'
+                    fw = 'bold'
+                elif rank_num == 3:
+                    txt_color = '#A0522D'
                     fw = 'bold'
                 else:
-                    txt_color = COLOR_TEXT
+                    txt_color = '#555555'
                     fw = 'normal'
-            elif col_i == 3:  # 增減欄
+            elif col_i == 3:
                 if chg_val > 0:
                     txt_color = COLOR_POSITIVE
                     fw = 'bold'
@@ -261,46 +269,86 @@ def draw_clean_table(ax, df, title, accent_color):
                 txt_color = COLOR_TEXT
                 fw = 'normal'
 
-            text_x = xst + w / 2 if align == 'center' else xst + 0.015
+            text_x = xst + w / 2 if align == 'center' else xst + 0.018
             ax.text(
                 text_x, y_top - row_h / 2,
                 val,
                 transform=ax.transAxes,
                 ha=align, va='center',
-                fontsize=9, fontweight=fw,
+                fontsize=10.5, fontweight=fw,
                 fontproperties=FONT_PROP,
-                color=txt_color
+                color=txt_color,
+                zorder=2
             )
+
+        # ---- 右側增減幅度橫條 ----
+        if chg_val != 0:
+            bar_col_x = x_starts[3]
+            bar_col_w = col_widths[3]
+            bar_max_w = bar_col_w * 0.85
+            bar_h     = row_h * 0.18
+            bar_y     = y_top - row_h + row_h * 0.06
+
+            all_vals = []
+            for _, r in df.iterrows():
+                try:
+                    all_vals.append(abs(float(fmt_change(r['總增減']).replace('%', ''))))
+                except:
+                    pass
+            max_v = max(all_vals) if all_vals else 1
+
+            bar_len   = (abs(chg_val) / max_v) * bar_max_w
+            bar_color = '#FFAAAA' if chg_val > 0 else '#AADDAA'
+
+            bar_rect = patches.Rectangle(
+                (bar_col_x + 0.005, bar_y),
+                bar_len, bar_h,
+                linewidth=0,
+                facecolor=bar_color,
+                transform=ax.transAxes,
+                clip_on=False,
+                zorder=1,
+                alpha=0.55
+            )
+            ax.add_patch(bar_rect)
 
 
 def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
-    """
-    產生包含上市 / 上櫃兩張表格的圖片，回傳 BytesIO
-    白底乾淨版
-    """
     fig, (ax_listed, ax_otc) = plt.subplots(
         1, 2,
-        figsize=(16, 13),
-        facecolor='#FFFFFF'
+        figsize=(20, 15),
+        facecolor='#F8F9FA'
     )
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.01, wspace=0.08)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.91, bottom=0.03, wspace=0.07)
+
+    # ---- 頂部色條裝飾 ----
+    fig.add_artist(patches.FancyBboxPatch(
+        (0, 0.935), 1, 0.065,
+        boxstyle="square,pad=0",
+        facecolor='#1E3A5F',
+        transform=fig.transFigure,
+        clip_on=False,
+        zorder=0
+    ))
 
     # ---- 大標題 ----
     fig.text(
-        0.5, 0.97,
-        f"每週大股東籌碼強勢榜  Top 20",
+        0.5, 0.965,
+        "每週大股東籌碼強勢榜  Top 20",
         ha='center', va='center',
-        fontsize=17, fontweight='bold',
+        fontsize=22, fontweight='bold',
         fontproperties=FONT_PROP,
-        color='#1A1A2E'
+        color='#FFFFFF',
+        zorder=1
     )
     fig.text(
-        0.5, 0.945,
+        0.5, 0.942,
         f"資料統計日期：{date_str}",
         ha='center', va='center',
-        fontsize=10,
+        fontsize=12,
         fontproperties=FONT_PROP,
-        color='#555555'
+        color='#AACCFF',
+        zorder=1
     )
 
     # ---- 上市 ----
@@ -309,12 +357,12 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
             ax_listed,
             listed_df.reset_index(drop=True),
             title="▌ 上市排行",
-            accent_color='#2563EB'   # 藍色系
+            accent_color='#1D4ED8'
         )
     else:
         ax_listed.text(0.5, 0.5, '無資料', ha='center', va='center',
                        fontsize=14, fontproperties=FONT_PROP, color='#888888')
-        ax_listed.set_facecolor('#FFFFFF')
+        ax_listed.set_facecolor('#F8F9FA')
         ax_listed.set_axis_off()
 
     # ---- 上櫃 ----
@@ -323,21 +371,13 @@ def generate_rank_image(listed_df, otc_df, date_str) -> BytesIO:
             ax_otc,
             otc_df.reset_index(drop=True),
             title="▌ 上櫃排行",
-            accent_color='#16A34A'   # 綠色系
+            accent_color='#15803D'
         )
     else:
         ax_otc.text(0.5, 0.5, '無資料', ha='center', va='center',
                     fontsize=14, fontproperties=FONT_PROP, color='#888888')
-        ax_otc.set_facecolor('#FFFFFF')
+        ax_otc.set_facecolor('#F8F9FA')
         ax_otc.set_axis_off()
-
-    # ---- 底部註記 ----
-    fig.text(
-        0.5, 0.005,
-        "資料來源：norway.twsthr.info　　紅字＝大戶增加　綠字＝大戶減少　金字＝前三名",
-        ha='center', va='bottom',
-        fontsize=8, fontproperties=FONT_PROP, color='#999999'
-    )
 
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight',
