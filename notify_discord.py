@@ -4,6 +4,7 @@ import os
 import json
 import re
 import time
+import random
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -24,17 +25,35 @@ JAIL_EXIT_THRESHOLD = 5
 # 🛠️ 工具函式
 # ============================
 def connect_google_sheets():
-    """連線 Google Sheets"""
-    try:
-        if not os.path.exists(SERVICE_KEY_FILE):
-            print("❌ 找不到 service_key.json")
-            return None
-        gc = gspread.service_account(filename=SERVICE_KEY_FILE)
-        sh = gc.open(SHEET_NAME)
-        return sh
-    except Exception as e:
-        print(f"❌ Google Sheet 連線失敗: {e}")
+    """連線 Google Sheets (含指數退避重試,解決 Google API 偶發 5xx/429 錯誤)"""
+    if not os.path.exists(SERVICE_KEY_FILE):
+        print("❌ 找不到 service_key.json")
         return None
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            gc = gspread.service_account(filename=SERVICE_KEY_FILE)
+            sh = gc.open(SHEET_NAME)
+            if attempt > 0:
+                print(f"✅ 第 {attempt + 1} 次重試成功")
+            return sh
+        except gspread.exceptions.APIError as e:
+            msg = str(e)
+            is_retryable = any(code in msg for code in ['429', '500', '502', '503', '504'])
+            if is_retryable and attempt < max_retries - 1:
+                wait = (2 ** attempt) + random.uniform(0, 1)  # 1s, 2s, 4s, 8s, 16s
+                print(f"⚠️ Google API 暫時性錯誤,{wait:.1f}秒後重試 ({attempt + 1}/{max_retries}): {msg[:80]}")
+                time.sleep(wait)
+                continue
+            print(f"❌ Google Sheet 連線失敗 (不可重試): {e}")
+            return None
+        except Exception as e:
+            print(f"❌ 未預期錯誤: {e}")
+            return None
+
+    print(f"❌ 重試 {max_retries} 次後仍失敗")
+    return None
 
 def send_discord_webhook(embeds):
     """發送訊息到 Discord"""
@@ -186,7 +205,7 @@ def check_status_split(sh, releasing_codes):
     # 瀕臨處置排序
     ent.sort(key=lambda x: (x['days'], x['code']))
     
-    # 【新增：正在處置排序】先按時間（越快出關越上面），再按股號
+    # 【新增:正在處置排序】先按時間(越快出關越上面),再按股號
     def get_inj_sort_key(item):
         p = item.get('period', '')
         # 取得結束日期字串 (YYYY/MM/DD) 作為第一排序基準
@@ -235,10 +254,10 @@ def main():
             chunk = stats['entering'][i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"### 🚨 處置倒數！{total} 檔股票瀕臨處置\n")
+                desc_lines.append(f"### 🚨 處置倒數!{total} 檔股票瀕臨處置\n")
             for s in chunk:
                 icon = "🔥" if s['days'] == 1 else "⚠️"
-                # 修改此處文字：明日強制入獄 -> 明日開始處置
+                # 修改此處文字:明日強制入獄 -> 明日開始處置
                 msg = "明日開始處置" if s['days'] == 1 else f"處置倒數 {s['days']} 天"
                 desc_lines.append(f"{icon} **{s['code']} {s['name']}** |  `{msg}`")
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 15158332}])
@@ -252,19 +271,19 @@ def main():
             chunk = rel[i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"### 🔓 越關越大尾？{total} 檔股票即將出關\n")
+                desc_lines.append(f"### 🔓 越關越大尾?{total} 檔股票即將出關\n")
             for s in chunk:
-                # 第一行：名稱與日期
+                # 第一行:名稱與日期
                 desc_lines.append(f"**{s['code']} {s['name']}** | 剩 {s['days']} 天 ({s['date']})")
-                # 第二行：依照圖片格式 ▸ 資訊
+                # 第二行:依照圖片格式 ▸ 資訊
                 desc_lines.append(f"▸ {s['status']} {s['price']}")
                 # 間隔空行
                 desc_lines.append("")
             
-            # 說明文字僅在最後一段訊息結尾，且上方僅留空一行
+            # 說明文字僅在最後一段訊息結尾,且上方僅留空一行
             if i + chunk_size >= total:
                 if desc_lines and desc_lines[-1] == "": desc_lines.pop() # 移除最後一個空行
-                desc_lines.append("\n---\n*💡 說明：處置前 N 天 vs 處置中 N 天 (同天數對比)*")
+                desc_lines.append("\n---\n*💡 說明:處置前 N 天 vs 處置中 N 天 (同天數對比)*")
             
             send_discord_webhook([{"description": "\n".join(desc_lines), "color": 3066993}])
             time.sleep(2)
@@ -277,7 +296,7 @@ def main():
             chunk = stats['in_jail'][i : i + chunk_size]
             desc_lines = []
             if i == 0:
-                desc_lines.append(f"### ⛓️ 還能噴嗎？{total} 檔股票正在處置\n")
+                desc_lines.append(f"### ⛓️ 還能噴嗎?{total} 檔股票正在處置\n")
             for s in chunk:
                 pd_display = s['period'].replace('2026/', '').replace('-', '-')
                 desc_lines.append(f"🔒 **{s['code']} {s['name']}** |  `{pd_display}`")
