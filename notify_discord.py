@@ -622,6 +622,8 @@ TOPBAR_TITLE_FONT_SIZE = 38
 TOPBAR_SUBTITLE_FONT_SIZE = 17
 TOPBAR_ICON_FONT_SIZE = 20
 TOPBAR_ICON_GAP = 0.022
+TOPBAR_TITLE_X = 0.5
+TOPBAR_SUBTITLE_X = 0.5
 
 
 def draw_topbar(fig, theme, total, page_info=""):
@@ -637,7 +639,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_obj = fig.text(0.5, 0.955, clean_display_text(theme['title']),
+    title_obj = fig.text(TOPBAR_TITLE_X, 0.955, clean_display_text(theme['title']),
                          ha='center', va='center',
                          fontsize=title_fontsize, fontweight='bold',
                          fontproperties=FONT_BOLD,
@@ -659,7 +661,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(0.5, 0.92, clean_display_text(sub),
+    fig.text(TOPBAR_SUBTITLE_X, 0.92, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -799,10 +801,6 @@ def draw_entering_image(data):
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
     
-    draw_watermark(fig)
-
-    draw_watermark(fig)
-
     draw_watermark(fig)
 
     buf = BytesIO()
@@ -954,6 +952,8 @@ def draw_releasing_image(data):
                 fontsize=16, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
     
+    draw_watermark(fig)
+
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -1085,6 +1085,8 @@ def draw_injail_image(data):
                 fontsize=14, fontweight='bold',
                 fontproperties=FONT_BOLD, color='#A8C8E0', zorder=3)
     
+    draw_watermark(fig)
+
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
