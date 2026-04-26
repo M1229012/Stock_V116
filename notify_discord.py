@@ -923,7 +923,7 @@ def draw_releasing_image(data):
 
         ax.text(x_starts[0] + col_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=17, fontweight=rank_fw,
+                fontsize=20, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
         ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
