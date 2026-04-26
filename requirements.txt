@@ -12,3 +12,4 @@ nest_asyncio
 workalendar
 selenium
 webdriver-manager
+matplotlib
