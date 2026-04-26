@@ -20,9 +20,21 @@ from matplotlib import font_manager
 # ============================
 # ⚙️ 設定區
 # ============================
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST", "").strip()
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
+
+# 啟動時診斷:檢查環境變數狀態 (不會印出 webhook 內容,只印長度)
+if not DISCORD_WEBHOOK_URL:
+    print("=" * 60)
+    print("❌ 嚴重錯誤: 環境變數 DISCORD_WEBHOOK_URL 未設定或為空")
+    print("   請至 GitHub repo → Settings → Secrets and variables")
+    print("   → Actions,確認有名為 DISCORD_WEBHOOK_URL 的 Secret,")
+    print("   且內容不為空")
+    print("=" * 60)
+else:
+    # 只印長度,不印內容,確認 Secret 真的有值
+    print(f"✅ DISCORD_WEBHOOK_URL 已載入 (長度: {len(DISCORD_WEBHOOK_URL)} 字元)")
 
 JAIL_ENTER_THRESHOLD = 3   
 JAIL_EXIT_THRESHOLD = 5    
@@ -61,6 +73,16 @@ def load_chinese_bold_font():
 
 FONT_PROP = load_chinese_font()
 FONT_BOLD = load_chinese_bold_font()
+
+# 設定 matplotlib 全域預設字型,避免出現未指定 fontproperties 的文字 fallback 到 DejaVu Sans 變成方塊
+try:
+    plt.rcParams['font.sans-serif'] = [
+        'Noto Sans CJK TC', 'Noto Sans CJK JP', 'Noto Sans CJK SC',
+        'DejaVu Sans'
+    ]
+    plt.rcParams['axes.unicode_minus'] = False
+except Exception as e:
+    print(f"⚠️ matplotlib 字型設定失敗: {e}")
 
 # ---- 共用顏色 ----
 BG_MAIN     = '#0D1B2A'
