@@ -16,6 +16,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import font_manager
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from PIL import Image
 
 # ============================
 # ⚙️ 設定區
@@ -42,57 +44,123 @@ JAIL_EXIT_THRESHOLD = 5
 # ============================
 # 🎨 圖片風格設定
 # ============================
+CJK_FONT_PATH = None
+CJK_BOLD_FONT_PATH = None
+EMOJI_FONT_PATH = None
+EMOJI_IMAGE_CACHE = {}
+FONT_DOWNLOAD_DIR = os.path.join(os.getenv("RUNNER_TEMP", "/tmp"), "stock_monitor_fonts")
+
+
+def _download_font_if_needed(url, filename):
+    """在 GitHub Actions 沒有安裝中文字型時，自動下載 Noto CJK 字型到暫存目錄。"""
+    try:
+        os.makedirs(FONT_DOWNLOAD_DIR, exist_ok=True)
+        font_path = os.path.join(FONT_DOWNLOAD_DIR, filename)
+        if os.path.exists(font_path) and os.path.getsize(font_path) > 1024 * 1024:
+            return font_path
+
+        print(f"⚠️ 系統找不到中文字型，嘗試下載備援字型: {filename}")
+        response = requests.get(url, timeout=20)
+        if response.status_code == 200 and response.content:
+            with open(font_path, "wb") as f:
+                f.write(response.content)
+            if os.path.getsize(font_path) > 1024 * 1024:
+                print(f"✅ 備援中文字型下載成功: {font_path}")
+                return font_path
+        print(f"⚠️ 備援中文字型下載失敗: HTTP {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ 備援中文字型下載錯誤: {e}")
+    return None
+
+
 def load_chinese_font():
     """載入中文字型 (含詳細診斷)"""
+    global CJK_FONT_PATH
     search_paths = [
+        # GitHub Actions / Ubuntu 常見路徑
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Regular.otf",
         "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Regular.otf",
         "/usr/local/share/fonts/NotoSansCJKtc-Regular.otf",
+        "/usr/local/share/fonts/NotoSansTC-Regular.otf",
+        # Windows / macOS 常見路徑
         "C:/Windows/Fonts/msjh.ttc",
+        "C:/Windows/Fonts/mingliu.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+    ]
+    for path in search_paths:
+        if os.path.exists(path):
+            font_manager.fontManager.addfont(path)
+            CJK_FONT_PATH = path
+            print(f"✅ 中文字型載入成功: {path}")
+            return font_manager.FontProperties(fname=path)
+    fallback_path = _download_font_if_needed(
+        "https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf",
+        "NotoSansCJKtc-Regular.otf"
+    )
+    if fallback_path and os.path.exists(fallback_path):
+        font_manager.fontManager.addfont(fallback_path)
+        CJK_FONT_PATH = fallback_path
+        return font_manager.FontProperties(fname=fallback_path)
+
+    print("❌ 嚴重錯誤: 找不到任何中文字型! 請確認 GitHub Actions 已安裝 fonts-noto-cjk")
+    return font_manager.FontProperties(family="DejaVu Sans")
+
+
+def load_chinese_bold_font():
+    """載入中文粗體字型"""
+    global CJK_BOLD_FONT_PATH
+    search_paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Bold.otf",
+        "/usr/local/share/fonts/NotoSansCJKtc-Bold.otf",
+        "/usr/local/share/fonts/NotoSansTC-Bold.otf",
+        "C:/Windows/Fonts/msjhbd.ttc",
         "/System/Library/Fonts/PingFang.ttc",
     ]
     for path in search_paths:
         if os.path.exists(path):
             font_manager.fontManager.addfont(path)
-            print(f"✅ 中文字型載入成功: {path}")
-            return font_manager.FontProperties(fname=path)
-    print("❌ 嚴重錯誤: 找不到任何中文字型! 請確認 GitHub Actions 已安裝 fonts-noto-cjk")
-    return font_manager.FontProperties()
-
-def load_chinese_bold_font():
-    """載入中文粗體字型"""
-    search_paths = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Bold.otf",
-    ]
-    for path in search_paths:
-        if os.path.exists(path):
-            font_manager.fontManager.addfont(path)
+            CJK_BOLD_FONT_PATH = path
             print(f"✅ 中文粗體載入成功: {path}")
             return font_manager.FontProperties(fname=path)
+    fallback_path = _download_font_if_needed(
+        "https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Bold.otf",
+        "NotoSansCJKtc-Bold.otf"
+    )
+    if fallback_path and os.path.exists(fallback_path):
+        font_manager.fontManager.addfont(fallback_path)
+        CJK_BOLD_FONT_PATH = fallback_path
+        return font_manager.FontProperties(fname=fallback_path)
+
     print("⚠️ 找不到中文粗體字型,使用一般中文字型代替")
+    CJK_BOLD_FONT_PATH = CJK_FONT_PATH
     return load_chinese_font()
 
+
 def load_emoji_font():
-    """載入 emoji 字型 (彩色 emoji)"""
+    """載入 emoji 字型。注意: Matplotlib 對彩色 emoji 字型支援不完整,圖片內 emoji 會改用 Twemoji PNG 疊圖。"""
+    global EMOJI_FONT_PATH
     search_paths = [
         "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
         "/usr/share/fonts/noto/NotoColorEmoji.ttf",
         "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+        "C:/Windows/Fonts/seguiemj.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
     ]
     for path in search_paths:
         if os.path.exists(path):
-            try:
-                font_manager.fontManager.addfont(path)
-                print(f"✅ Emoji 字型載入成功: {path}")
-                return font_manager.FontProperties(fname=path)
-            except Exception as e:
-                print(f"⚠️ Emoji 字型 {path} 載入失敗: {e}")
-                continue
-    print("⚠️ 找不到 Emoji 字型,emoji 可能顯示為方塊。建議在 yml 加裝 fonts-noto-color-emoji")
+            # 只記錄路徑,不要交給 Matplotlib 直接載入。
+            # 原因: Noto Color Emoji / Apple Color Emoji 屬於彩色 emoji 字型,
+            # Matplotlib 在部分 Linux Actions 環境會顯示方塊、缺字,甚至載入失敗。
+            EMOJI_FONT_PATH = path
+            print(f"✅ Emoji 字型偵測成功: {path}")
+            return None
+    print("⚠️ 找不到 Emoji 字型。圖片內 emoji 將優先使用 Twemoji PNG,失敗時改用安全符號替代")
     return None
+
 
 # 重建 matplotlib 字型快取 (Actions 環境每次都是全新的,但保險起見)
 try:
@@ -106,17 +174,176 @@ FONT_BOLD = load_chinese_bold_font()
 FONT_EMOJI = load_emoji_font()
 
 # 設定 matplotlib 全域預設字型 fallback 鏈
-# 順序: 中文字型 → emoji 字型 → DejaVu Sans
+# 順序: 已載入中文字型 → 常見中文字型名稱 → DejaVu Sans
 try:
-    sans_list = ['Noto Sans CJK TC', 'Noto Sans CJK JP', 'Noto Sans CJK SC']
-    if FONT_EMOJI is not None:
-        sans_list.append('Noto Color Emoji')
-    sans_list.append('DejaVu Sans')
+    sans_list = []
+    for font_path in [CJK_FONT_PATH, CJK_BOLD_FONT_PATH]:
+        if font_path:
+            try:
+                sans_list.append(font_manager.FontProperties(fname=font_path).get_name())
+            except Exception:
+                pass
+    sans_list.extend([
+        'Noto Sans CJK TC',
+        'Noto Sans CJK JP',
+        'Noto Sans CJK SC',
+        'Microsoft JhengHei',
+        'PingFang TC',
+        'Arial Unicode MS',
+        'DejaVu Sans'
+    ])
+    # 去除重複,保留順序
+    sans_list = list(dict.fromkeys(sans_list))
+    plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = sans_list
     plt.rcParams['axes.unicode_minus'] = False
     print(f"✅ matplotlib 字型優先順序: {sans_list}")
 except Exception as e:
     print(f"⚠️ matplotlib 字型設定失敗: {e}")
+
+
+# ============================
+# 🧹 文字清洗工具
+# ============================
+_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
+
+# 將半形英數字轉為全形，用於股票名稱中英混排時避免顯示歪掉
+def to_fullwidth(s):
+    res = []
+    for char in str(s):
+        code = ord(char)
+        if 0x21 <= code <= 0x7E:
+            res.append(chr(code + 0xFEE0))
+        elif code == 0x20:
+            res.append(chr(0x3000))
+        else:
+            res.append(char)
+    return "".join(res)
+
+
+def clean_cell(s) -> str:
+    s = "" if s is None else str(s)
+    # 保留全形字，不做 NFKC，避免中文與全形英數又被轉回半形
+    s = s.replace("\xa0", " ")
+    s = _ZERO_WIDTH_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def fix_common_cjk_mojibake(s) -> str:
+    """修正常見中文字資料來源亂碼。"""
+    s = clean_cell(s)
+    replacements = {
+        "卅卅": "碁",
+    }
+    for bad, good in replacements.items():
+        s = s.replace(bad, good)
+    return s
+
+
+def clean_display_text(s, fullwidth_ascii=False) -> str:
+    s = fix_common_cjk_mojibake(s)
+    if fullwidth_ascii:
+        s = to_fullwidth(s)
+    return s
+
+
+EMOJI_FALLBACK_SYMBOLS = {
+    "🚨": "!",
+    "🔓": "OPEN",
+    "⛓️": "LOCK",
+    "👑": "★",
+    "🔥": "▲",
+    "💀": "▼",
+    "📉": "↓",
+    "🧊": "◆",
+    "❓": "?",
+}
+
+
+def _twemoji_codepoints(emoji_text):
+    """將 emoji 轉為 Twemoji 檔名用 codepoint。"""
+    return "-".join(f"{ord(ch):x}" for ch in emoji_text if ord(ch) != 0xfe0f)
+
+
+def _twemoji_codepoints_keep_vs16(emoji_text):
+    """保留 VS16 的 Twemoji codepoint,部分符號 emoji 需要這個版本。"""
+    return "-".join(f"{ord(ch):x}" for ch in emoji_text)
+
+
+def get_twemoji_image(emoji_text):
+    """下載並快取 Twemoji PNG,用來避開 Matplotlib 無法穩定顯示彩色 emoji 的問題。"""
+    if emoji_text in EMOJI_IMAGE_CACHE:
+        return EMOJI_IMAGE_CACHE[emoji_text]
+
+    candidates = []
+    keep_vs16 = _twemoji_codepoints_keep_vs16(emoji_text)
+    no_vs16 = _twemoji_codepoints(emoji_text)
+    if keep_vs16:
+        candidates.append(keep_vs16)
+    if no_vs16 and no_vs16 not in candidates:
+        candidates.append(no_vs16)
+
+    base_urls = [
+        "https://raw.githubusercontent.com/jdecked/twemoji/main/assets/72x72",
+        "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72",
+    ]
+
+    for code in candidates:
+        for base_url in base_urls:
+            url = f"{base_url}/{code}.png"
+            try:
+                response = requests.get(url, timeout=2.5)
+                if response.status_code == 200 and response.content:
+                    img = Image.open(BytesIO(response.content)).convert("RGBA")
+                    EMOJI_IMAGE_CACHE[emoji_text] = img
+                    return img
+            except Exception:
+                continue
+
+    EMOJI_IMAGE_CACHE[emoji_text] = None
+    return None
+
+
+def draw_emoji_image(ax, emoji_text, x, y, fontsize=18, transform=None, zorder=5, fallback_color="#FFFFFF"):
+    """在 Matplotlib 圖上以 PNG 疊上 emoji；下載失敗時使用安全符號，避免方塊或缺字。"""
+    transform = transform or ax.transAxes
+    img = get_twemoji_image(emoji_text)
+
+    if img is not None:
+        imagebox = OffsetImage(img, zoom=max(0.18, fontsize / 42.0), resample=True)
+        ab = AnnotationBbox(
+            imagebox,
+            (x, y),
+            xycoords=transform,
+            frameon=False,
+            pad=0,
+            box_alignment=(0.5, 0.5),
+            zorder=zorder
+        )
+        ab.set_clip_on(False)
+        ax.add_artist(ab)
+        return True
+
+    fallback = EMOJI_FALLBACK_SYMBOLS.get(emoji_text, "")
+    if fallback:
+        ax.text(x, y, fallback,
+                transform=transform, ha='center', va='center',
+                fontsize=fontsize, fontweight='bold',
+                fontproperties=FONT_BOLD, color=fallback_color,
+                zorder=zorder)
+    return False
+
+
+def draw_emoji_on_fig(fig, emoji_text, x, y, fontsize=34, zorder=5):
+    """用 figure 座標疊上 emoji。"""
+    if not fig.axes:
+        ax = fig.add_axes([0, 0, 1, 1], frameon=False)
+        ax.set_axis_off()
+    else:
+        ax = fig.axes[0]
+    return draw_emoji_image(ax, emoji_text, x, y, fontsize=fontsize, transform=fig.transFigure, zorder=zorder)
+
 
 # ---- 共用顏色 ----
 BG_MAIN     = '#0D1B2A'
@@ -146,9 +373,9 @@ DAYS_WARN_FG   = '#1A1A1A'
 DAYS_NORMAL_BG = '#2E4560'
 DAYS_NORMAL_FG = '#E8EFF7'
 
-THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '🚨 處置倒數  瀕臨處置監控', 'subtitle_text': '瀕臨處置 (3日內)'}
-THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '🔓 越關越大尾  即將出關監控', 'subtitle_text': '即將出關 (5日內)'}
-THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '⛓️ 還能噴嗎  正在處置監控', 'subtitle_text': '處置中股票名單'}
+THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)'}
+THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)'}
+THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單'}
 
 
 # ============================
@@ -294,6 +521,7 @@ def get_price_rank_info(code, period_str, market):
         elif in_pct < -5:  icon, status_text = "📉", "走勢疲軟"
         else:              icon, status_text = "🧊", "多空膠著"
         
+        status_text = clean_display_text(status_text)
         pre_str = f"{'+' if pre_pct > 0 else ''}{pre_pct:.1f}"
         in_str  = f"{'+' if in_pct > 0 else ''}{in_pct:.1f}"
         return icon, status_text, pre_str, in_str
@@ -315,7 +543,7 @@ def check_status_split(sh, releasing_codes):
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
         if code in releasing_codes or code in seen: continue
-        name, days_str, reason = row.get('名稱', ''), str(row.get('最快處置天數', '99')), str(row.get('處置觸發原因', ''))
+        name, days_str, reason = clean_display_text(row.get('名稱', '')), str(row.get('最快處置天數', '99')), clean_display_text(row.get('處置觸發原因', ''))
         if not days_str.isdigit(): continue
         d = int(days_str) + 1  
         if "處置中" in reason:
@@ -354,7 +582,7 @@ def check_releasing_stocks(sh):
             dt = parse_roc_date(row.get('出關日期', ''))
             res.append({
                 "code": code,
-                "name": row.get('名稱', ''),
+                "name": clean_display_text(row.get('名稱', '')),
                 "days": d,
                 "date": dt.strftime("%m/%d") if dt else "??/??",
                 "icon": icon,
@@ -401,15 +629,18 @@ def draw_topbar(fig, theme, total, page_info=""):
         linewidth=0, facecolor=theme['accent'],
         transform=fig.transFigure, clip_on=False, zorder=1
     ))
-    fig.text(0.5, 0.955, theme['title'],
+    fig.text(0.5, 0.955, clean_display_text(theme['title']),
              ha='center', va='center',
              fontsize=38, fontweight='bold',
              fontproperties=FONT_BOLD,
              color='#FFFFFF', zorder=2)
+    if theme.get('title_icon'):
+        # 標題 emoji 原本過大，這裡只縮小標題圖示，不影響表格內狀態 emoji
+        draw_emoji_on_fig(fig, theme['title_icon'], 0.315, 0.955, fontsize=24, zorder=4)
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
-    if page_info: sub += f"  |  {page_info}"
-    fig.text(0.5, 0.92, sub,
+    if page_info: sub += f"  |  {clean_display_text(page_info)}"
+    fig.text(0.5, 0.92, clean_display_text(sub),
              ha='center', va='center',
              fontsize=19,
              fontproperties=FONT_PROP,
@@ -427,7 +658,7 @@ def draw_table_frame(ax, theme, subtitle, top_y, total_h):
         linewidth=0, facecolor=theme['accent'],
         transform=ax.transAxes, clip_on=False, zorder=1
     ))
-    ax.text(0.018, top_y + 0.015, f"▌ {subtitle}",
+    ax.text(0.018, top_y + 0.015, f"▌ {clean_display_text(subtitle)}",
             transform=ax.transAxes, ha='left', va='bottom',
             fontsize=19, fontweight='bold',
             fontproperties=FONT_BOLD, color=theme['accent'])
@@ -474,13 +705,13 @@ def draw_entering_image(data):
     
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
         text_x = xst + w/2 if align == 'center' else xst + 0.015
-        ax.text(text_x, header_top - header_h/2, label,
+        ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
                 fontsize=20, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
     
     for row_i, row in enumerate(data):
-        code, name, days = row['code'], row['name'], row['days']
+        code, name, days = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), row['days']
         rank_num = row_i + 1
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
@@ -530,7 +761,7 @@ def draw_entering_image(data):
             transform=ax.transAxes, clip_on=False, zorder=2
         ))
         
-        label_text = "明日處置" if days == 1 else f"剩 {days} 天"
+        label_text = clean_display_text("明日處置" if days == 1 else f"剩 {days} 天")
         ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, label_text,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
@@ -584,14 +815,14 @@ def draw_releasing_image(data):
     
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
         text_x = xst + w/2 if align == 'center' else xst + 0.012
-        ax.text(text_x, header_top - header_h/2, label,
+        ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
     
     for row_i, row in enumerate(data):
-        code, name, days, date = row['code'], row['name'], row['days'], row['date']
-        icon, status_text = row['icon'], row['status_text']
+        code, name, days, date = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), row['days'], clean_display_text(row['date'])
+        icon, status_text = row['icon'], clean_display_text(row['status_text'])
         pre_pct, in_pct = row['pre_pct'], row['in_pct']
         rank_num = row_i + 1
         y_top = header_top - header_h - row_i * row_h
@@ -641,7 +872,7 @@ def draw_releasing_image(data):
             linewidth=0, facecolor=bg_clr,
             transform=ax.transAxes, clip_on=False, zorder=2
         ))
-        ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, f"剩 {days} 天",
+        ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
@@ -652,11 +883,25 @@ def draw_releasing_image(data):
         elif "走勢疲軟" in status_text: st_color = '#4CD964'
         else:                         st_color = TEXT_MUTED
         
-        ax.text(x_starts[4] + col_widths[4]/2, y_top - row_h/2,
-                f"{icon} {status_text}",
-                transform=ax.transAxes, ha='center', va='center',
-                fontsize=16, fontweight='bold',
-                fontproperties=FONT_BOLD, color=st_color, zorder=3)
+        status_center_x = x_starts[4] + col_widths[4]/2
+        status_y = y_top - row_h/2
+        status_icon_x = x_starts[4] + col_widths[4] * 0.28
+        status_text_x = x_starts[4] + col_widths[4] * 0.58
+        emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
+                                    fontsize=16, transform=ax.transAxes,
+                                    zorder=4, fallback_color=st_color)
+        if emoji_ok:
+            ax.text(status_text_x, status_y, status_text,
+                    transform=ax.transAxes, ha='center', va='center',
+                    fontsize=16, fontweight='bold',
+                    fontproperties=FONT_BOLD, color=st_color, zorder=3)
+        else:
+            icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
+            ax.text(status_center_x, status_y,
+                    f"{icon_fallback} {status_text}",
+                    transform=ax.transAxes, ha='center', va='center',
+                    fontsize=16, fontweight='bold',
+                    fontproperties=FONT_BOLD, color=st_color, zorder=3)
         
         ax.text(x_starts[5] + col_widths[5]/2, y_top - row_h/2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
@@ -727,7 +972,7 @@ def draw_injail_image(data):
         
         for sub_i, (xst, w, label, align) in enumerate(zip(sub_x_starts, sub_x_widths, sub_labels, sub_aligns)):
             text_x = xst + w/2 if align == 'center' else xst + 0.008
-            ax.text(text_x, header_top - header_h/2, label,
+            ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                     transform=ax.transAxes, ha=align, va='center',
                     fontsize=15, fontweight='bold',
                     fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
@@ -740,7 +985,7 @@ def draw_injail_image(data):
                     transform=ax.transAxes, clip_on=False, zorder=2)
     
     for idx, row in enumerate(data):
-        code, name, period = row['code'], row['name'], row['period']
+        code, name, period = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), clean_display_text(row['period'])
         col_idx = idx // rows_per_col
         row_idx = idx % rows_per_col
         if col_idx >= n_cols: break
@@ -791,11 +1036,11 @@ def draw_injail_image(data):
                 parts = period.split("-")
                 start_p = parts[0].strip().replace("2026/", "")
                 end_p   = parts[1].strip().replace("2026/", "")
-                period_display = f"{start_p}-{end_p}"
+                period_display = clean_display_text(f"{start_p}-{end_p}")
             else:
                 period_display = period
         except:
-            period_display = period
+            period_display = clean_display_text(period)
         
         ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, period_display,
                 transform=ax.transAxes, ha='center', va='center',
