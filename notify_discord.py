@@ -698,81 +698,66 @@ def draw_watermark(fig):
              color='#FFFFFF', alpha=WATERMARK_ALPHA, zorder=10)
 
 
-# ============================
-# 📐 動態版面參數
-# ============================
-AXES_VERTICAL_FRACTION = 0.84
-DYNAMIC_TABLE_MAX_H = 0.86
-DYNAMIC_HEADER_H = 0.05
-
-DYNAMIC_SINGLE_MIN_FIG_H = 7.2
-DYNAMIC_SINGLE_MAX_FIG_H = 18.0
-DYNAMIC_SINGLE_BASE_IN = 4.45
-DYNAMIC_ENTERING_ROW_IN = 0.54
-DYNAMIC_RELEASING_ROW_IN = 0.56
-
-DYNAMIC_INJAIL_MIN_FIG_H = 7.2
-DYNAMIC_INJAIL_MAX_FIG_H = 18.0
-DYNAMIC_INJAIL_BASE_IN = 4.45
-DYNAMIC_INJAIL_ROW_IN = 0.48
+UNIFIED_SUBPLOT_LEFT = 0.025
+UNIFIED_SUBPLOT_RIGHT = 0.975
+UNIFIED_SUBPLOT_TOP = 0.88
+UNIFIED_SUBPLOT_BOTTOM = 0.04
+TABLE_TOP_Y = 0.96
+TABLE_TOTAL_H = 0.86
 
 
-def get_dynamic_table_layout(row_count, row_in, min_fig_h, max_fig_h, base_in):
-    """依資料列數動態計算圖片高度與表格高度，避免資料少時列距過大、資料多時過度擁擠。"""
-    row_count = max(1, int(row_count))
-    fig_h = base_in + (row_count * row_in)
-    fig_h = max(min_fig_h, min(max_fig_h, fig_h))
-
-    row_h_by_inch = row_in / (fig_h * AXES_VERTICAL_FRACTION)
-    total_h = DYNAMIC_HEADER_H + (row_count * row_h_by_inch)
-
-    if total_h > DYNAMIC_TABLE_MAX_H:
-        total_h = DYNAMIC_TABLE_MAX_H
-
-    row_h = (total_h - DYNAMIC_HEADER_H) / row_count
-    return fig_h, DYNAMIC_HEADER_H, total_h, row_h, 0.96
+def calc_dynamic_fig_h(n, *, base_h, per_row_h, min_h, max_h):
+    return max(min_h, min(max_h, base_h + n * per_row_h))
 
 
-def get_injail_column_count(n):
-    """處置中股票依資料量動態切換欄數：少量集中，中量平衡，大量壓縮。"""
-    if n <= 8:
+def get_injail_n_cols(n):
+    if n <= 12:
         return 1
-    if n <= 22:
+    elif n <= 40:
         return 2
-    return 3
+    else:
+        return 3
+
+
+def save_figure_to_buffer(fig):
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 
 def draw_entering_image(data):
     """瀕臨處置 - 單欄詳細圖"""
     theme = THEME_ENTERING
     n = len(data)
-    fig_h, header_h, total_h, row_h, top_y = get_dynamic_table_layout(
-        n,
-        row_in=DYNAMIC_ENTERING_ROW_IN,
-        min_fig_h=DYNAMIC_SINGLE_MIN_FIG_H,
-        max_fig_h=DYNAMIC_SINGLE_MAX_FIG_H,
-        base_in=DYNAMIC_SINGLE_BASE_IN
-    )
+    fig_h = calc_dynamic_fig_h(n, base_h=6.6, per_row_h=0.38, min_h=8.6, max_h=16.8)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.04)
+    fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
+                        top=UNIFIED_SUBPLOT_TOP, bottom=UNIFIED_SUBPLOT_BOTTOM)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
 
     draw_topbar(fig, theme, n)
-    
+
+    header_h = 0.05
+    total_h = TABLE_TOTAL_H
+    row_h = (total_h - header_h) / max(n, 1)
+    top_y = TABLE_TOP_Y
+
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
-    
+
     col_widths = [0.10, 0.20, 0.40, 0.30]
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'center', 'left', 'center']
-    
+
     x_starts = []
     acc = 0
     for w in col_widths:
         x_starts.append(acc); acc += w
-    
+
     header_top = top_y
-    
+
     ax.add_patch(patches.Rectangle(
         (0.005, header_top - header_h), 0.99, header_h,
         linewidth=0, facecolor=theme['header'],
@@ -781,20 +766,20 @@ def draw_entering_image(data):
     ax.plot([0.005, 0.995], [header_top, header_top],
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
-    
+
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
         text_x = xst + w/2 if align == 'center' else xst + 0.015
         ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
                 fontsize=20, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
-    
+
     for row_i, row in enumerate(data):
         code, name, days = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), row['days']
         rank_num = row_i + 1
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
-        
+
         ax.add_patch(patches.Rectangle(
             (0.005, y_top - row_h), 0.99, row_h,
             linewidth=0, facecolor=bg_color,
@@ -808,12 +793,12 @@ def draw_entering_image(data):
             linewidth=0, facecolor=BG_RANK,
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
-        
+
         if rank_num == 1:   rank_color, rank_fw = GOLD, 'bold'
         elif rank_num == 2: rank_color, rank_fw = SILVER, 'bold'
         elif rank_num == 3: rank_color, rank_fw = BRONZE, 'bold'
         else:               rank_color, rank_fw = TEXT_MUTED, 'normal'
-        
+
         ax.text(x_starts[0] + col_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight=rank_fw,
@@ -826,66 +811,62 @@ def draw_entering_image(data):
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=19, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
-        
+
         bg_clr, fg_clr = get_days_style(days)
         capsule_w = col_widths[3] * 0.6
         capsule_h = row_h * 0.62
         capsule_x = x_starts[3] + (col_widths[3] - capsule_w) / 2
         capsule_y = y_top - row_h/2 - capsule_h/2
-        
+
         ax.add_patch(patches.FancyBboxPatch(
             (capsule_x, capsule_y), capsule_w, capsule_h,
             boxstyle="round,pad=0.002,rounding_size=0.014",
             linewidth=0, facecolor=bg_clr,
             transform=ax.transAxes, clip_on=False, zorder=2
         ))
-        
+
         label_text = clean_display_text("明日處置" if days == 1 else f"剩 {days} 天")
         ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, label_text,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
-    
-    draw_watermark(fig)
 
-    buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    draw_watermark(fig)
+    return save_figure_to_buffer(fig)
 
 
 def draw_releasing_image(data):
     """即將出關 - 單欄詳細含績效"""
     theme = THEME_RELEASING
     n = len(data)
-    fig_h, header_h, total_h, row_h, top_y = get_dynamic_table_layout(
-        n,
-        row_in=DYNAMIC_RELEASING_ROW_IN,
-        min_fig_h=DYNAMIC_SINGLE_MIN_FIG_H,
-        max_fig_h=DYNAMIC_SINGLE_MAX_FIG_H,
-        base_in=DYNAMIC_SINGLE_BASE_IN
-    )
+    fig_w = 16.2
+    fig_h = calc_dynamic_fig_h(n, base_h=7.4, per_row_h=0.46, min_h=10.2, max_h=23.5)
 
-    fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.04)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
+    fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
+                        top=UNIFIED_SUBPLOT_TOP, bottom=UNIFIED_SUBPLOT_BOTTOM)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
 
     draw_topbar(fig, theme, n)
-    
+
+    header_h = 0.05
+    total_h = TABLE_TOTAL_H
+    row_h = (total_h - header_h) / max(n, 1)
+    top_y = TABLE_TOP_Y
+
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
-    
-    col_widths = [0.05, 0.10, 0.16, 0.14, 0.18, 0.12, 0.12, 0.13]
+
+    col_widths = [0.05, 0.09, 0.18, 0.12, 0.20, 0.11, 0.11, 0.14]
     col_labels = ["#", "代號", "名稱", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'center', 'center', 'center', 'center', 'center']
-    
+
     x_starts = []
     acc = 0
     for w in col_widths:
         x_starts.append(acc); acc += w
-    
+
     header_top = top_y
-    
+
     ax.add_patch(patches.Rectangle(
         (0.005, header_top - header_h), 0.99, header_h,
         linewidth=0, facecolor=theme['header'],
@@ -894,14 +875,14 @@ def draw_releasing_image(data):
     ax.plot([0.005, 0.995], [header_top, header_top],
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
-    
+
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
         text_x = xst + w/2 if align == 'center' else xst + 0.012
         ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
-                fontsize=18, fontweight='bold',
+                fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
-    
+
     for row_i, row in enumerate(data):
         code, name, days, date = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), row['days'], clean_display_text(row['date'])
         icon, status_text = row['icon'], clean_display_text(row['status_text'])
@@ -909,7 +890,7 @@ def draw_releasing_image(data):
         rank_num = row_i + 1
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
-        
+
         ax.add_patch(patches.Rectangle(
             (0.005, y_top - row_h), 0.99, row_h,
             linewidth=0, facecolor=bg_color,
@@ -923,31 +904,31 @@ def draw_releasing_image(data):
             linewidth=0, facecolor=BG_RANK,
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
-        
+
         if rank_num == 1:   rank_color, rank_fw = GOLD, 'bold'
         elif rank_num == 2: rank_color, rank_fw = SILVER, 'bold'
         elif rank_num == 3: rank_color, rank_fw = BRONZE, 'bold'
         else:               rank_color, rank_fw = TEXT_MUTED, 'normal'
-        
+
         ax.text(x_starts[0] + col_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=16, fontweight=rank_fw,
+                fontsize=15, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
         ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=18, fontweight='bold',
+                fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
         ax.text(x_starts[2] + 0.012, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
-                fontsize=17, fontproperties=FONT_PROP,
+                fontsize=15, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
-        
+
         bg_clr, fg_clr = get_days_style(days)
-        capsule_w = col_widths[3] * 0.78
+        capsule_w = col_widths[3] * 0.80
         capsule_h = row_h * 0.62
         capsule_x = x_starts[3] + (col_widths[3] - capsule_w) / 2
         capsule_y = y_top - row_h/2 - capsule_h/2
-        
+
         ax.add_patch(patches.FancyBboxPatch(
             (capsule_x, capsule_y), capsule_w, capsule_h,
             boxstyle="round,pad=0.002,rounding_size=0.012",
@@ -956,81 +937,76 @@ def draw_releasing_image(data):
         ))
         ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=16, fontweight='bold',
+                fontsize=14, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
-        
+
         if "妖股" in status_text:    st_color = '#FFD060'
         elif "強勢" in status_text:  st_color = '#FF6B6B'
         elif "人去樓空" in status_text: st_color = '#9B59B6'
         elif "走勢疲軟" in status_text: st_color = '#4CD964'
         else:                         st_color = TEXT_MUTED
-        
+
         status_center_x = x_starts[4] + col_widths[4]/2
         status_y = y_top - row_h/2
-        status_icon_x = x_starts[4] + col_widths[4] * 0.28
-        status_text_x = x_starts[4] + col_widths[4] * 0.58
+        status_icon_x = x_starts[4] + col_widths[4] * 0.24
+        status_text_x = x_starts[4] + col_widths[4] * 0.60
         emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
-                                    fontsize=16, transform=ax.transAxes,
+                                    fontsize=15, transform=ax.transAxes,
                                     zorder=4, fallback_color=st_color)
         if emoji_ok:
             ax.text(status_text_x, status_y, status_text,
                     transform=ax.transAxes, ha='center', va='center',
-                    fontsize=16, fontweight='bold',
+                    fontsize=14, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
             ax.text(status_center_x, status_y,
                     f"{icon_fallback} {status_text}",
                     transform=ax.transAxes, ha='center', va='center',
-                    fontsize=16, fontweight='bold',
+                    fontsize=14, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
-        
+
         ax.text(x_starts[5] + col_widths[5]/2, y_top - row_h/2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=17, fontweight='bold',
+                fontsize=15, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(pre_pct), zorder=3)
         ax.text(x_starts[6] + col_widths[6]/2, y_top - row_h/2, f"{in_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=17, fontweight='bold',
+                fontsize=15, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
         ax.text(x_starts[7] + col_widths[7]/2, y_top - row_h/2, date,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=16, fontproperties=FONT_PROP,
+                fontsize=14, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
-    
-    draw_watermark(fig)
 
-    buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    draw_watermark(fig)
+    return save_figure_to_buffer(fig)
 
 
 def draw_injail_image(data):
-    """處置中 - 動態欄數並列"""
+    """處置中 - 動態欄數版"""
     theme = THEME_INJAIL
     n = len(data)
-    n_cols = get_injail_column_count(n)
-    rows_per_col = (n + n_cols - 1) // n_cols
-    fig_h, header_h, total_h, row_h, top_y = get_dynamic_table_layout(
-        rows_per_col,
-        row_in=DYNAMIC_INJAIL_ROW_IN,
-        min_fig_h=DYNAMIC_INJAIL_MIN_FIG_H,
-        max_fig_h=DYNAMIC_INJAIL_MAX_FIG_H,
-        base_in=DYNAMIC_INJAIL_BASE_IN
-    )
+    n_cols = get_injail_n_cols(n)
+    rows_per_col = max(1, (n + n_cols - 1) // n_cols)
+    fig_h = calc_dynamic_fig_h(rows_per_col, base_h=7.0, per_row_h=0.42, min_h=9.8, max_h=18.2)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.04)
+    fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
+                        top=UNIFIED_SUBPLOT_TOP, bottom=UNIFIED_SUBPLOT_BOTTOM)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
 
     draw_topbar(fig, theme, n)
-    
+
+    header_h = 0.05
+    total_h = TABLE_TOTAL_H
+    row_h = (total_h - header_h) / rows_per_col
+    top_y = TABLE_TOP_Y
+
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
-    
+
     header_top = top_y
-    
+
     ax.add_patch(patches.Rectangle(
         (0.005, header_top - header_h), 0.99, header_h,
         linewidth=0, facecolor=theme['header'],
@@ -1039,14 +1015,14 @@ def draw_injail_image(data):
     ax.plot([0.005, 0.995], [header_top, header_top],
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
-    
+
     col_total_w = 0.99
     col_unit_w = col_total_w / n_cols
     col_xs = [0.005 + i * col_unit_w for i in range(n_cols)]
     sub_col_widths_ratio = [0.10, 0.18, 0.30, 0.42]
     sub_labels = ["#", "代號", "名稱", "處置期間"]
     sub_aligns = ['center', 'center', 'left', 'center']
-    
+
     for col_idx in range(n_cols):
         col_x_start = col_xs[col_idx]
         sub_x_starts = []
@@ -1054,91 +1030,77 @@ def draw_injail_image(data):
         for r in sub_col_widths_ratio:
             sub_x_starts.append(col_x_start + acc * col_unit_w); acc += r
         sub_x_widths = [r * col_unit_w for r in sub_col_widths_ratio]
-        
+
         for sub_i, (xst, w, label, align) in enumerate(zip(sub_x_starts, sub_x_widths, sub_labels, sub_aligns)):
             text_x = xst + w/2 if align == 'center' else xst + 0.008
             ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                     transform=ax.transAxes, ha=align, va='center',
                     fontsize=15, fontweight='bold',
                     fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
-        
+
         if col_idx < n_cols - 1:
             divider_x = col_x_start + col_unit_w
             ax.plot([divider_x, divider_x],
                     [top_y - total_h - 0.01, header_top - header_h],
                     color=BORDER_MID, linewidth=0.8,
                     transform=ax.transAxes, clip_on=False, zorder=2)
-    
+
     for idx, row in enumerate(data):
         code, name, period = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), clean_display_text(row['period'])
         col_idx = idx // rows_per_col
         row_idx = idx % rows_per_col
-        if col_idx >= n_cols: break
-        
+        if col_idx >= n_cols:
+            break
+
         col_x_start = col_xs[col_idx]
         sub_x_starts = []
         acc = 0
         for r in sub_col_widths_ratio:
             sub_x_starts.append(col_x_start + acc * col_unit_w); acc += r
         sub_x_widths = [r * col_unit_w for r in sub_col_widths_ratio]
-        
+
         global_idx = idx + 1
         y_top = header_top - header_h - row_idx * row_h
         bg_color = BG_ROW_ODD if row_idx % 2 == 0 else BG_ROW_EVEN
-        
+
         ax.add_patch(patches.Rectangle(
             (col_x_start, y_top - row_h), col_unit_w, row_h,
             linewidth=0, facecolor=bg_color,
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
+        ax.plot([col_x_start, col_x_start + col_unit_w], [y_top - row_h, y_top - row_h],
+                color=BORDER_DARK, linewidth=0.6,
+                transform=ax.transAxes, clip_on=False, zorder=2)
         ax.add_patch(patches.Rectangle(
             (sub_x_starts[0], y_top - row_h), sub_x_widths[0], row_h,
             linewidth=0, facecolor=BG_RANK,
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
-        
-        if global_idx == 1:   rank_color = GOLD
-        elif global_idx == 2: rank_color = SILVER
-        elif global_idx == 3: rank_color = BRONZE
-        else:                 rank_color = TEXT_MUTED
-        
+
+        if global_idx == 1:   rank_color, rank_fw = GOLD, 'bold'
+        elif global_idx == 2: rank_color, rank_fw = SILVER, 'bold'
+        elif global_idx == 3: rank_color, rank_fw = BRONZE, 'bold'
+        else:                 rank_color, rank_fw = TEXT_MUTED, 'normal'
+
         ax.text(sub_x_starts[0] + sub_x_widths[0]/2, y_top - row_h/2, f"{global_idx:02d}",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=14, fontweight='bold',
+                fontsize=14, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
         ax.text(sub_x_starts[1] + sub_x_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=16, fontweight='bold',
+                fontsize=15, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
         ax.text(sub_x_starts[2] + 0.008, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=15, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
-        
-        # 處置中只顯示日期 (像範例 04/24-04/29)
-        try:
-            if "/" in period and "-" in period:
-                parts = period.split("-")
-                start_p = parts[0].strip().replace("2026/", "")
-                end_p   = parts[1].strip().replace("2026/", "")
-                period_display = clean_display_text(f"{start_p}-{end_p}")
-            else:
-                period_display = period
-        except:
-            period_display = clean_display_text(period)
-        
-        ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, period_display,
+        ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, period,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=14, fontweight='bold',
-                fontproperties=FONT_BOLD, color='#A8C8E0', zorder=3)
-    
-    draw_watermark(fig)
+                fontsize=14, fontproperties=FONT_PROP,
+                color=TEXT_MAIN, zorder=3)
 
-    buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    draw_watermark(fig)
+    return save_figure_to_buffer(fig)
 
 
 # ============================
