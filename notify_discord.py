@@ -374,8 +374,8 @@ DAYS_NORMAL_BG = '#2E4560'
 DAYS_NORMAL_FG = '#E8EFF7'
 
 THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 38}
-THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 42}
-THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 34}
+THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 38}
+THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 38}
 
 
 # ============================
@@ -710,7 +710,7 @@ def draw_entering_image(data):
     
     draw_topbar(fig, theme, n)
     
-    header_h = 0.075
+    header_h = 0.05
     total_h = 0.86
     row_h = (total_h - header_h) / n
     top_y = 0.96
@@ -822,7 +822,7 @@ def draw_releasing_image(data):
     
     draw_topbar(fig, theme, n)
     
-    header_h = 0.062
+    header_h = 0.05
     total_h = 0.86
     row_h = (total_h - header_h) / n
     top_y = 0.96
