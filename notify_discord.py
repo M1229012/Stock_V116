@@ -27,14 +27,14 @@ SERVICE_KEY_FILE = "service_key.json"
 # 啟動時診斷:檢查環境變數狀態 (不會印出 webhook 內容,只印長度)
 if not DISCORD_WEBHOOK_URL:
     print("=" * 60)
-    print("❌ 嚴重錯誤: 環境變數 DISCORD_WEBHOOK_URL 未設定或為空")
+    print("❌ 嚴重錯誤: 環境變數 DISCORD_WEBHOOK_URL_TEST 未設定或為空")
     print("   請至 GitHub repo → Settings → Secrets and variables")
-    print("   → Actions,確認有名為 DISCORD_WEBHOOK_URL 的 Secret,")
+    print("   → Actions,確認有名為 DISCORD_WEBHOOK_URL_TEST 的 Secret,")
     print("   且內容不為空")
     print("=" * 60)
 else:
     # 只印長度,不印內容,確認 Secret 真的有值
-    print(f"✅ DISCORD_WEBHOOK_URL 已載入 (長度: {len(DISCORD_WEBHOOK_URL)} 字元)")
+    print(f"✅ DISCORD_WEBHOOK_URL_TEST 已載入 (長度: {len(DISCORD_WEBHOOK_URL)} 字元)")
 
 JAIL_ENTER_THRESHOLD = 3   
 JAIL_EXIT_THRESHOLD = 5    
@@ -43,7 +43,7 @@ JAIL_EXIT_THRESHOLD = 5
 # 🎨 圖片風格設定
 # ============================
 def load_chinese_font():
-    """載入中文字型 (沿用週報的搜尋邏輯)"""
+    """載入中文字型 (含詳細診斷)"""
     search_paths = [
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Regular.otf",
@@ -55,7 +55,9 @@ def load_chinese_font():
     for path in search_paths:
         if os.path.exists(path):
             font_manager.fontManager.addfont(path)
+            print(f"✅ 中文字型載入成功: {path}")
             return font_manager.FontProperties(fname=path)
+    print("❌ 嚴重錯誤: 找不到任何中文字型! 請確認 GitHub Actions 已安裝 fonts-noto-cjk")
     return font_manager.FontProperties()
 
 def load_chinese_bold_font():
@@ -68,19 +70,51 @@ def load_chinese_bold_font():
     for path in search_paths:
         if os.path.exists(path):
             font_manager.fontManager.addfont(path)
+            print(f"✅ 中文粗體載入成功: {path}")
             return font_manager.FontProperties(fname=path)
+    print("⚠️ 找不到中文粗體字型,使用一般中文字型代替")
     return load_chinese_font()
+
+def load_emoji_font():
+    """載入 emoji 字型 (彩色 emoji)"""
+    search_paths = [
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+    ]
+    for path in search_paths:
+        if os.path.exists(path):
+            try:
+                font_manager.fontManager.addfont(path)
+                print(f"✅ Emoji 字型載入成功: {path}")
+                return font_manager.FontProperties(fname=path)
+            except Exception as e:
+                print(f"⚠️ Emoji 字型 {path} 載入失敗: {e}")
+                continue
+    print("⚠️ 找不到 Emoji 字型,emoji 可能顯示為方塊。建議在 yml 加裝 fonts-noto-color-emoji")
+    return None
+
+# 重建 matplotlib 字型快取 (Actions 環境每次都是全新的,但保險起見)
+try:
+    cache_dir = matplotlib.get_cachedir()
+    print(f"📂 matplotlib 快取目錄: {cache_dir}")
+except Exception as e:
+    print(f"⚠️ 取得快取路徑失敗: {e}")
 
 FONT_PROP = load_chinese_font()
 FONT_BOLD = load_chinese_bold_font()
+FONT_EMOJI = load_emoji_font()
 
-# 設定 matplotlib 全域預設字型,避免出現未指定 fontproperties 的文字 fallback 到 DejaVu Sans 變成方塊
+# 設定 matplotlib 全域預設字型 fallback 鏈
+# 順序: 中文字型 → emoji 字型 → DejaVu Sans
 try:
-    plt.rcParams['font.sans-serif'] = [
-        'Noto Sans CJK TC', 'Noto Sans CJK JP', 'Noto Sans CJK SC',
-        'DejaVu Sans'
-    ]
+    sans_list = ['Noto Sans CJK TC', 'Noto Sans CJK JP', 'Noto Sans CJK SC']
+    if FONT_EMOJI is not None:
+        sans_list.append('Noto Color Emoji')
+    sans_list.append('DejaVu Sans')
+    plt.rcParams['font.sans-serif'] = sans_list
     plt.rcParams['axes.unicode_minus'] = False
+    print(f"✅ matplotlib 字型優先順序: {sans_list}")
 except Exception as e:
     print(f"⚠️ matplotlib 字型設定失敗: {e}")
 
@@ -791,7 +825,7 @@ def main():
         print(f"📊 產生瀕臨處置圖片 ({len(stats['entering'])} 檔)...")
         try:
             buf = draw_entering_image(stats['entering'])
-            send_discord_image(buf, content_text=f"### 🚨 處置倒數!{len(stats['entering'])} 檔股票瀕臨處置")
+            send_discord_image(buf)
             time.sleep(2)
         except Exception as e:
             print(f"❌ 瀕臨處置圖片產生失敗: {e}")
@@ -801,7 +835,7 @@ def main():
         print(f"📊 產生即將出關圖片 ({len(rel)} 檔)...")
         try:
             buf = draw_releasing_image(rel)
-            send_discord_image(buf, content_text=f"### 🔓 越關越大尾?{len(rel)} 檔股票即將出關\n*💡 處置前 N 天 vs 處置中 N 天 (同天數對比)*")
+            send_discord_image(buf)
             time.sleep(2)
         except Exception as e:
             print(f"❌ 即將出關圖片產生失敗: {e}")
@@ -811,7 +845,7 @@ def main():
         print(f"📊 產生處置中圖片 ({len(stats['in_jail'])} 檔)...")
         try:
             buf = draw_injail_image(stats['in_jail'])
-            send_discord_image(buf, content_text=f"### ⛓️ 還能噴嗎?{len(stats['in_jail'])} 檔股票正在處置")
+            send_discord_image(buf)
             time.sleep(2)
         except Exception as e:
             print(f"❌ 處置中圖片產生失敗: {e}")
