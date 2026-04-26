@@ -618,6 +618,12 @@ def get_days_style(days):
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
 
 
+TOPBAR_TITLE_FONT_SIZE = 38
+TOPBAR_SUBTITLE_FONT_SIZE = 19
+TOPBAR_ICON_FONT_SIZE = 20
+TOPBAR_ICON_GAP = 0.012
+
+
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
         (0, 0.91), 1, 0.09,
@@ -629,20 +635,32 @@ def draw_topbar(fig, theme, total, page_info=""):
         linewidth=0, facecolor=theme['accent'],
         transform=fig.transFigure, clip_on=False, zorder=1
     ))
-    fig.text(0.5, 0.955, clean_display_text(theme['title']),
-             ha='center', va='center',
-             fontsize=38, fontweight='bold',
-             fontproperties=FONT_BOLD,
-             color='#FFFFFF', zorder=2)
+
+    title_obj = fig.text(0.5, 0.955, clean_display_text(theme['title']),
+                         ha='center', va='center',
+                         fontsize=TOPBAR_TITLE_FONT_SIZE, fontweight='bold',
+                         fontproperties=FONT_BOLD,
+                         color='#FFFFFF', zorder=2)
+
     if theme.get('title_icon'):
-        # 標題 emoji 原本過大，這裡只縮小標題圖示，不影響表格內狀態 emoji
-        draw_emoji_on_fig(fig, theme['title_icon'], 0.315, 0.955, fontsize=24, zorder=4)
+        # 先讓 Matplotlib 計算標題實際寬度，再把 emoji 放在標題左側，避免重疊
+        try:
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+            bbox = title_obj.get_window_extent(renderer=renderer)
+            bbox_fig = bbox.transformed(fig.transFigure.inverted())
+            icon_x = max(0.05, bbox_fig.x0 - TOPBAR_ICON_GAP)
+            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
+        except Exception:
+            # 若 bbox 計算失敗，退回較保守的位置
+            draw_emoji_on_fig(fig, theme['title_icon'], 0.26, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
+
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
     fig.text(0.5, 0.92, clean_display_text(sub),
              ha='center', va='center',
-             fontsize=19,
+             fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
              color='#7BA8C8', zorder=2)
 
