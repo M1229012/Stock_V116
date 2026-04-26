@@ -643,29 +643,41 @@ def draw_topbar(fig, theme, total, page_info=""):
     title_y = 0.955
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
-    icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
+    title_text = clean_display_text(theme['title'])
 
-    title_obj = fig.text(TOPBAR_TITLE_X, title_y, clean_display_text(theme['title']),
+    title_obj = fig.text(TOPBAR_TITLE_X, title_y, title_text,
                          ha='center', va='center',
                          fontsize=title_fontsize, fontweight='bold',
                          fontproperties=FONT_BOLD,
                          color='#FFFFFF', zorder=2)
 
     if theme.get('title_icon'):
-        # 以「emoji + 標題文字」整組置中，而不是只讓文字置中。
-        # 這樣不同圖片寬度下，標題區視覺中心會一致，不會因 emoji 在左側而看起來偏掉。
+        # 以實際量測到的「標題文字寬度 + emoji 顯示寬度 + 間距」來整組置中，
+        # 避免不同圖片寬度 / 不同標題長度下仍看起來不一致。
         try:
             fig.canvas.draw()
-            title_obj.set_position((TOPBAR_TITLE_X + (icon_width + icon_gap) / 2, title_y))
-            fig.canvas.draw()
             renderer = fig.canvas.get_renderer()
-            bbox = title_obj.get_window_extent(renderer=renderer)
-            bbox_fig = bbox.transformed(fig.transFigure.inverted())
-            icon_x = max(0.05, bbox_fig.x0 - icon_gap - icon_width / 2)
-            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y, fontsize=icon_fontsize, zorder=4)
+            title_bbox = title_obj.get_window_extent(renderer=renderer)
+            fig_w_px = max(fig.canvas.get_width_height()[0], 1)
+            title_w_fig = title_bbox.width / fig_w_px
+
+            # draw_emoji_image 使用 72x72 的 Twemoji PNG，zoom 為 max(0.18, fontsize / 42.0)
+            icon_zoom = max(0.18, icon_fontsize / 42.0)
+            icon_w_px = 72.0 * icon_zoom
+            icon_w_fig = icon_w_px / fig_w_px
+
+            total_group_w = title_w_fig + icon_gap + icon_w_fig
+            group_left_x = 0.5 - total_group_w / 2
+            icon_x = group_left_x + icon_w_fig / 2
+            title_x = group_left_x + icon_w_fig + icon_gap + title_w_fig / 2
+
+            title_obj.set_position((title_x, title_y))
+            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y,
+                              fontsize=icon_fontsize, zorder=4)
         except Exception:
-            # 若 bbox 計算失敗，退回較保守的位置
-            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
+            # 若量測失敗，退回安全位置
+            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y,
+                              fontsize=icon_fontsize, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
