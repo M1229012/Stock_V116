@@ -959,8 +959,8 @@ def draw_releasing_image(data):
 
         status_center_x = x_starts[4] + col_widths[4]/2
         status_y = y_top - row_h/2
-        status_icon_x = x_starts[4] + col_widths[4] * 0.30
-        status_text_x = x_starts[4] + col_widths[4] * 0.50
+        status_icon_x = x_starts[4] + col_widths[4] * 0.26
+        status_text_x = x_starts[4] + col_widths[4] * 0.60
         emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
                                     fontsize=15, transform=ax.transAxes,
                                     zorder=4, fallback_color=st_color)
