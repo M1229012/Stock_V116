@@ -622,6 +622,7 @@ TOPBAR_TITLE_FONT_SIZE = 38
 TOPBAR_SUBTITLE_FONT_SIZE = 17
 TOPBAR_ICON_FONT_SIZE = 20
 TOPBAR_ICON_GAP = 0.022
+TOPBAR_ICON_WIDTH_INCH = 0.28
 TOPBAR_TITLE_X = 0.5
 TOPBAR_SUBTITLE_X = 0.5
 
@@ -639,24 +640,32 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_obj = fig.text(TOPBAR_TITLE_X, 0.955, clean_display_text(theme['title']),
+    title_y = 0.955
+    icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
+    icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
+    icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
+
+    title_obj = fig.text(TOPBAR_TITLE_X, title_y, clean_display_text(theme['title']),
                          ha='center', va='center',
                          fontsize=title_fontsize, fontweight='bold',
                          fontproperties=FONT_BOLD,
                          color='#FFFFFF', zorder=2)
 
     if theme.get('title_icon'):
-        # 先讓 Matplotlib 計算標題實際寬度，再把 emoji 放在標題左側，避免重疊
+        # 以「emoji + 標題文字」整組置中，而不是只讓文字置中。
+        # 這樣不同圖片寬度下，標題區視覺中心會一致，不會因 emoji 在左側而看起來偏掉。
         try:
+            fig.canvas.draw()
+            title_obj.set_position((TOPBAR_TITLE_X + (icon_width + icon_gap) / 2, title_y))
             fig.canvas.draw()
             renderer = fig.canvas.get_renderer()
             bbox = title_obj.get_window_extent(renderer=renderer)
             bbox_fig = bbox.transformed(fig.transFigure.inverted())
-            icon_x = max(0.05, bbox_fig.x0 - TOPBAR_ICON_GAP)
-            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
+            icon_x = max(0.05, bbox_fig.x0 - icon_gap - icon_width / 2)
+            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y, fontsize=icon_fontsize, zorder=4)
         except Exception:
             # 若 bbox 計算失敗，退回較保守的位置
-            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
+            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
