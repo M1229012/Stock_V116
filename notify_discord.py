@@ -704,10 +704,21 @@ UNIFIED_SUBPLOT_TOP = 0.895
 UNIFIED_SUBPLOT_BOTTOM = 0.022
 TABLE_TOP_Y = 0.968
 TABLE_TOTAL_H = 0.905
+TABLE_HEADER_H_INCH = 0.42
+TABLE_HEADER_H_MIN = 0.020
+TABLE_HEADER_H_MAX = 0.070
 
 
 def calc_dynamic_fig_h(n, *, base_h, per_row_h, min_h, max_h):
     return max(min_h, min(max_h, base_h + n * per_row_h))
+
+
+def calc_header_h(fig_h):
+    """依圖片實際高度反推表頭比例，讓三張圖的表頭視覺高度一致。"""
+    axes_h_inch = fig_h * (UNIFIED_SUBPLOT_TOP - UNIFIED_SUBPLOT_BOTTOM)
+    if axes_h_inch <= 0:
+        return 0.05
+    return max(TABLE_HEADER_H_MIN, min(TABLE_HEADER_H_MAX, TABLE_HEADER_H_INCH / axes_h_inch))
 
 
 def get_injail_n_cols(n):
@@ -740,7 +751,7 @@ def draw_entering_image(data):
 
     draw_topbar(fig, theme, n)
 
-    header_h = 0.05
+    header_h = calc_header_h(fig_h)
     total_h = TABLE_TOTAL_H
     row_h = (total_h - header_h) / max(n, 1)
     top_y = TABLE_TOP_Y
@@ -849,7 +860,7 @@ def draw_releasing_image(data):
 
     draw_topbar(fig, theme, n)
 
-    header_h = 0.05
+    header_h = calc_header_h(fig_h)
     total_h = TABLE_TOTAL_H
     row_h = (total_h - header_h) / max(n, 1)
     top_y = TABLE_TOP_Y
@@ -998,7 +1009,7 @@ def draw_injail_image(data):
 
     draw_topbar(fig, theme, n)
 
-    header_h = 0.05
+    header_h = calc_header_h(fig_h)
     total_h = TABLE_TOTAL_H
     row_h = (total_h - header_h) / rows_per_col
     top_y = TABLE_TOP_Y
