@@ -704,7 +704,7 @@ UNIFIED_SUBPLOT_TOP = 0.895
 UNIFIED_SUBPLOT_BOTTOM = 0.022
 TABLE_TOP_Y = 0.968
 TABLE_TOTAL_H = 0.905
-TABLE_HEADER_H_INCH = 0.42
+TABLE_HEADER_H_INCH = 0.50
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
 
@@ -959,8 +959,8 @@ def draw_releasing_image(data):
 
         status_center_x = x_starts[4] + col_widths[4]/2
         status_y = y_top - row_h/2
-        status_icon_x = x_starts[4] + col_widths[4] * 0.24
-        status_text_x = x_starts[4] + col_widths[4] * 0.60
+        status_icon_x = x_starts[4] + col_widths[4] * 0.30
+        status_text_x = x_starts[4] + col_widths[4] * 0.50
         emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
                                     fontsize=15, transform=ax.transAxes,
                                     zorder=4, fallback_color=st_color)
