@@ -373,9 +373,9 @@ DAYS_WARN_FG   = '#1A1A1A'
 DAYS_NORMAL_BG = '#2E4560'
 DAYS_NORMAL_FG = '#E8EFF7'
 
-THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 38}
-THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 38}
-THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 38}
+THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 30}
+THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 30}
+THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 30}
 
 
 # ============================
