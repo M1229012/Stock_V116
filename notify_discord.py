@@ -948,7 +948,7 @@ def draw_releasing_image(data):
         ))
         ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=14, fontweight='bold',
+                fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
         if "妖股" in status_text:    st_color = '#FFD060'
@@ -967,27 +967,27 @@ def draw_releasing_image(data):
         if emoji_ok:
             ax.text(status_text_x, status_y, status_text,
                     transform=ax.transAxes, ha='center', va='center',
-                    fontsize=14, fontweight='bold',
+                    fontsize=18, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
             ax.text(status_center_x, status_y,
                     f"{icon_fallback} {status_text}",
                     transform=ax.transAxes, ha='center', va='center',
-                    fontsize=14, fontweight='bold',
+                    fontsize=18, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
         ax.text(x_starts[5] + col_widths[5]/2, y_top - row_h/2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=15, fontweight='bold',
+                fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(pre_pct), zorder=3)
         ax.text(x_starts[6] + col_widths[6]/2, y_top - row_h/2, f"{in_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=15, fontweight='bold',
+                fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
         ax.text(x_starts[7] + col_widths[7]/2, y_top - row_h/2, date,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=14, fontproperties=FONT_PROP,
+                fontsize=18, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
 
     draw_watermark(fig)
