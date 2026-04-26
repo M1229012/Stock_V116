@@ -373,9 +373,9 @@ DAYS_WARN_FG   = '#1A1A1A'
 DAYS_NORMAL_BG = '#2E4560'
 DAYS_NORMAL_FG = '#E8EFF7'
 
-THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)'}
-THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)'}
-THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單'}
+THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 38}
+THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 42}
+THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 34}
 
 
 # ============================
@@ -619,9 +619,9 @@ def get_days_style(days):
 
 
 TOPBAR_TITLE_FONT_SIZE = 38
-TOPBAR_SUBTITLE_FONT_SIZE = 19
+TOPBAR_SUBTITLE_FONT_SIZE = 17
 TOPBAR_ICON_FONT_SIZE = 20
-TOPBAR_ICON_GAP = 0.012
+TOPBAR_ICON_GAP = 0.022
 
 
 def draw_topbar(fig, theme, total, page_info=""):
@@ -636,9 +636,10 @@ def draw_topbar(fig, theme, total, page_info=""):
         transform=fig.transFigure, clip_on=False, zorder=1
     ))
 
+    title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
     title_obj = fig.text(0.5, 0.955, clean_display_text(theme['title']),
                          ha='center', va='center',
-                         fontsize=TOPBAR_TITLE_FONT_SIZE, fontweight='bold',
+                         fontsize=title_fontsize, fontweight='bold',
                          fontproperties=FONT_BOLD,
                          color='#FFFFFF', zorder=2)
 
@@ -653,7 +654,7 @@ def draw_topbar(fig, theme, total, page_info=""):
             draw_emoji_on_fig(fig, theme['title_icon'], icon_x, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
         except Exception:
             # 若 bbox 計算失敗，退回較保守的位置
-            draw_emoji_on_fig(fig, theme['title_icon'], 0.26, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
+            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, 0.955, fontsize=TOPBAR_ICON_FONT_SIZE, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
