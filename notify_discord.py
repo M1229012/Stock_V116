@@ -683,13 +683,26 @@ def draw_table_frame(ax, theme, subtitle, top_y, total_h):
             fontproperties=FONT_BOLD, color=theme['accent'])
 
 
+COMMON_FIG_WIDTH = 15
+WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
+WATERMARK_ALPHA = 0.20
+
+
+def draw_watermark(fig):
+    fig.text(0.985, 0.016, clean_display_text(WATERMARK_TEXT),
+             ha='right', va='bottom',
+             fontsize=11,
+             fontproperties=FONT_PROP,
+             color='#FFFFFF', alpha=WATERMARK_ALPHA, zorder=10)
+
+
 def draw_entering_image(data):
     """瀕臨處置 - 單欄詳細圖"""
     theme = THEME_ENTERING
     n = len(data)
-    fig_h = max(8, n * 0.7 + 4)
+    fig_h = max(12, n * 0.55 + 4)
     
-    fig, ax = plt.subplots(figsize=(13, fig_h), facecolor=BG_MAIN)
+    fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.04)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
     
@@ -786,6 +799,12 @@ def draw_entering_image(data):
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
     
+    draw_watermark(fig)
+
+    draw_watermark(fig)
+
+    draw_watermark(fig)
+
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -797,9 +816,9 @@ def draw_releasing_image(data):
     """即將出關 - 單欄詳細含績效"""
     theme = THEME_RELEASING
     n = len(data)
-    fig_h = max(10, n * 0.85 + 4)
+    fig_h = max(14, n * 0.48 + 4)
     
-    fig, ax = plt.subplots(figsize=(15, fig_h), facecolor=BG_MAIN)
+    fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.04)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
     
@@ -946,11 +965,11 @@ def draw_injail_image(data):
     """處置中 - 三欄並列"""
     theme = THEME_INJAIL
     n = len(data)
-    n_cols = 3
+    n_cols = 2
     rows_per_col = (n + n_cols - 1) // n_cols
-    fig_h = max(12, rows_per_col * 0.43 + 4)
+    fig_h = max(14, rows_per_col * 0.42 + 4)
     
-    fig, ax = plt.subplots(figsize=(20, fig_h), facecolor=BG_MAIN)
+    fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.04)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
     
