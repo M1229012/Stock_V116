@@ -698,22 +698,67 @@ def draw_watermark(fig):
              color='#FFFFFF', alpha=WATERMARK_ALPHA, zorder=10)
 
 
+# ============================
+# 📐 動態版面參數
+# ============================
+AXES_VERTICAL_FRACTION = 0.84
+DYNAMIC_TABLE_MAX_H = 0.86
+DYNAMIC_HEADER_H = 0.05
+
+DYNAMIC_SINGLE_MIN_FIG_H = 7.2
+DYNAMIC_SINGLE_MAX_FIG_H = 18.0
+DYNAMIC_SINGLE_BASE_IN = 4.45
+DYNAMIC_ENTERING_ROW_IN = 0.54
+DYNAMIC_RELEASING_ROW_IN = 0.56
+
+DYNAMIC_INJAIL_MIN_FIG_H = 7.2
+DYNAMIC_INJAIL_MAX_FIG_H = 18.0
+DYNAMIC_INJAIL_BASE_IN = 4.45
+DYNAMIC_INJAIL_ROW_IN = 0.48
+
+
+def get_dynamic_table_layout(row_count, row_in, min_fig_h, max_fig_h, base_in):
+    """依資料列數動態計算圖片高度與表格高度，避免資料少時列距過大、資料多時過度擁擠。"""
+    row_count = max(1, int(row_count))
+    fig_h = base_in + (row_count * row_in)
+    fig_h = max(min_fig_h, min(max_fig_h, fig_h))
+
+    row_h_by_inch = row_in / (fig_h * AXES_VERTICAL_FRACTION)
+    total_h = DYNAMIC_HEADER_H + (row_count * row_h_by_inch)
+
+    if total_h > DYNAMIC_TABLE_MAX_H:
+        total_h = DYNAMIC_TABLE_MAX_H
+
+    row_h = (total_h - DYNAMIC_HEADER_H) / row_count
+    return fig_h, DYNAMIC_HEADER_H, total_h, row_h, 0.96
+
+
+def get_injail_column_count(n):
+    """處置中股票依資料量動態切換欄數：少量集中，中量平衡，大量壓縮。"""
+    if n <= 8:
+        return 1
+    if n <= 22:
+        return 2
+    return 3
+
+
 def draw_entering_image(data):
     """瀕臨處置 - 單欄詳細圖"""
     theme = THEME_ENTERING
     n = len(data)
-    fig_h = max(12, n * 0.55 + 4)
-    
+    fig_h, header_h, total_h, row_h, top_y = get_dynamic_table_layout(
+        n,
+        row_in=DYNAMIC_ENTERING_ROW_IN,
+        min_fig_h=DYNAMIC_SINGLE_MIN_FIG_H,
+        max_fig_h=DYNAMIC_SINGLE_MAX_FIG_H,
+        base_in=DYNAMIC_SINGLE_BASE_IN
+    )
+
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.04)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
-    
+
     draw_topbar(fig, theme, n)
-    
-    header_h = 0.05
-    total_h = 0.86
-    row_h = (total_h - header_h) / n
-    top_y = 0.96
     
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
     
@@ -814,18 +859,19 @@ def draw_releasing_image(data):
     """即將出關 - 單欄詳細含績效"""
     theme = THEME_RELEASING
     n = len(data)
-    fig_h = max(14, n * 0.48 + 4)
-    
+    fig_h, header_h, total_h, row_h, top_y = get_dynamic_table_layout(
+        n,
+        row_in=DYNAMIC_RELEASING_ROW_IN,
+        min_fig_h=DYNAMIC_SINGLE_MIN_FIG_H,
+        max_fig_h=DYNAMIC_SINGLE_MAX_FIG_H,
+        base_in=DYNAMIC_SINGLE_BASE_IN
+    )
+
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=0.025, right=0.975, top=0.88, bottom=0.04)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
-    
+
     draw_topbar(fig, theme, n)
-    
-    header_h = 0.05
-    total_h = 0.86
-    row_h = (total_h - header_h) / n
-    top_y = 0.96
     
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
     
@@ -962,23 +1008,24 @@ def draw_releasing_image(data):
 
 
 def draw_injail_image(data):
-    """處置中 - 三欄並列"""
+    """處置中 - 動態欄數並列"""
     theme = THEME_INJAIL
     n = len(data)
-    n_cols = 2
+    n_cols = get_injail_column_count(n)
     rows_per_col = (n + n_cols - 1) // n_cols
-    fig_h = max(14, rows_per_col * 0.42 + 4)
-    
+    fig_h, header_h, total_h, row_h, top_y = get_dynamic_table_layout(
+        rows_per_col,
+        row_in=DYNAMIC_INJAIL_ROW_IN,
+        min_fig_h=DYNAMIC_INJAIL_MIN_FIG_H,
+        max_fig_h=DYNAMIC_INJAIL_MAX_FIG_H,
+        base_in=DYNAMIC_INJAIL_BASE_IN
+    )
+
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.04)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
-    
+
     draw_topbar(fig, theme, n)
-    
-    header_h = 0.05
-    total_h = 0.86
-    row_h = (total_h - header_h) / rows_per_col
-    top_y = 0.96
     
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
     
