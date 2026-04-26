@@ -469,7 +469,7 @@ def get_merged_jail_periods(sh):
                         jail_map[code]['start'] = min(jail_map[code]['start'], s_date)
                         jail_map[code]['end'] = max(jail_map[code]['end'], e_date)
     except: return {}
-    return {c: f"{d['start'].strftime('%Y/%m/%d')}-{d['end'].strftime('%Y/%m/%d')}" for c, d in jail_map.items()}
+    return {c: f"{d['start'].strftime('%m/%d')}-{d['end'].strftime('%m/%d')}" for c, d in jail_map.items()}
 
 
 # ============================
@@ -700,10 +700,10 @@ def draw_watermark(fig):
 
 UNIFIED_SUBPLOT_LEFT = 0.025
 UNIFIED_SUBPLOT_RIGHT = 0.975
-UNIFIED_SUBPLOT_TOP = 0.88
-UNIFIED_SUBPLOT_BOTTOM = 0.04
-TABLE_TOP_Y = 0.96
-TABLE_TOTAL_H = 0.86
+UNIFIED_SUBPLOT_TOP = 0.895
+UNIFIED_SUBPLOT_BOTTOM = 0.022
+TABLE_TOP_Y = 0.968
+TABLE_TOTAL_H = 0.905
 
 
 def calc_dynamic_fig_h(n, *, base_h, per_row_h, min_h, max_h):
@@ -731,7 +731,7 @@ def draw_entering_image(data):
     """瀕臨處置 - 單欄詳細圖"""
     theme = THEME_ENTERING
     n = len(data)
-    fig_h = calc_dynamic_fig_h(n, base_h=6.6, per_row_h=0.38, min_h=8.6, max_h=16.8)
+    fig_h = calc_dynamic_fig_h(n, base_h=5.9, per_row_h=0.36, min_h=7.0, max_h=15.6)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
@@ -989,7 +989,7 @@ def draw_injail_image(data):
     n = len(data)
     n_cols = get_injail_n_cols(n)
     rows_per_col = max(1, (n + n_cols - 1) // n_cols)
-    fig_h = calc_dynamic_fig_h(rows_per_col, base_h=7.0, per_row_h=0.42, min_h=9.8, max_h=18.2)
+    fig_h = calc_dynamic_fig_h(rows_per_col, base_h=6.1, per_row_h=0.39, min_h=7.8, max_h=16.8)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
