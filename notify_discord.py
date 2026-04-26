@@ -16,8 +16,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import font_manager
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
-from PIL import Image
 
 # ============================
 # ⚙️ 設定區
@@ -44,82 +42,57 @@ JAIL_EXIT_THRESHOLD = 5
 # ============================
 # 🎨 圖片風格設定
 # ============================
-CJK_FONT_PATH = None
-CJK_BOLD_FONT_PATH = None
-EMOJI_FONT_PATH = None
-EMOJI_IMAGE_CACHE = {}
-
-
 def load_chinese_font():
     """載入中文字型 (含詳細診斷)"""
-    global CJK_FONT_PATH
     search_paths = [
-        # GitHub Actions / Ubuntu 常見路徑
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
         "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
         "/usr/local/share/fonts/NotoSansCJKtc-Regular.otf",
-        "/usr/local/share/fonts/NotoSansTC-Regular.otf",
-        # Windows / macOS 常見路徑
         "C:/Windows/Fonts/msjh.ttc",
-        "C:/Windows/Fonts/mingliu.ttc",
         "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
     ]
     for path in search_paths:
         if os.path.exists(path):
             font_manager.fontManager.addfont(path)
-            CJK_FONT_PATH = path
             print(f"✅ 中文字型載入成功: {path}")
             return font_manager.FontProperties(fname=path)
     print("❌ 嚴重錯誤: 找不到任何中文字型! 請確認 GitHub Actions 已安裝 fonts-noto-cjk")
-    return font_manager.FontProperties(family="DejaVu Sans")
-
+    return font_manager.FontProperties()
 
 def load_chinese_bold_font():
     """載入中文粗體字型"""
-    global CJK_BOLD_FONT_PATH
     search_paths = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Bold.otf",
-        "/usr/local/share/fonts/NotoSansCJKtc-Bold.otf",
-        "/usr/local/share/fonts/NotoSansTC-Bold.otf",
-        "C:/Windows/Fonts/msjhbd.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
     ]
     for path in search_paths:
         if os.path.exists(path):
             font_manager.fontManager.addfont(path)
-            CJK_BOLD_FONT_PATH = path
             print(f"✅ 中文粗體載入成功: {path}")
             return font_manager.FontProperties(fname=path)
     print("⚠️ 找不到中文粗體字型,使用一般中文字型代替")
-    CJK_BOLD_FONT_PATH = CJK_FONT_PATH
     return load_chinese_font()
 
-
 def load_emoji_font():
-    """載入 emoji 字型。注意: Matplotlib 對彩色 emoji 字型支援不完整,圖片內 emoji 會改用 Twemoji PNG 疊圖。"""
-    global EMOJI_FONT_PATH
+    """載入 emoji 字型 (彩色 emoji)"""
     search_paths = [
         "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
         "/usr/share/fonts/noto/NotoColorEmoji.ttf",
         "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
-        "C:/Windows/Fonts/seguiemj.ttf",
-        "/System/Library/Fonts/Apple Color Emoji.ttc",
     ]
     for path in search_paths:
         if os.path.exists(path):
-            # 只記錄路徑,不要交給 Matplotlib 直接載入。
-            # 原因: Noto Color Emoji / Apple Color Emoji 屬於彩色 emoji 字型,
-            # Matplotlib 在部分 Linux Actions 環境會顯示方塊、缺字,甚至載入失敗。
-            EMOJI_FONT_PATH = path
-            print(f"✅ Emoji 字型偵測成功: {path}")
-            return None
-    print("⚠️ 找不到 Emoji 字型。圖片內 emoji 將優先使用 Twemoji PNG,失敗時改用安全符號替代")
+            try:
+                font_manager.fontManager.addfont(path)
+                print(f"✅ Emoji 字型載入成功: {path}")
+                return font_manager.FontProperties(fname=path)
+            except Exception as e:
+                print(f"⚠️ Emoji 字型 {path} 載入失敗: {e}")
+                continue
+    print("⚠️ 找不到 Emoji 字型,emoji 可能顯示為方塊。建議在 yml 加裝 fonts-noto-color-emoji")
     return None
-
 
 # 重建 matplotlib 字型快取 (Actions 環境每次都是全新的,但保險起見)
 try:
@@ -133,130 +106,17 @@ FONT_BOLD = load_chinese_bold_font()
 FONT_EMOJI = load_emoji_font()
 
 # 設定 matplotlib 全域預設字型 fallback 鏈
-# 順序: 已載入中文字型 → 常見中文字型名稱 → DejaVu Sans
+# 順序: 中文字型 → emoji 字型 → DejaVu Sans
 try:
-    sans_list = []
-    for font_path in [CJK_FONT_PATH, CJK_BOLD_FONT_PATH]:
-        if font_path:
-            try:
-                sans_list.append(font_manager.FontProperties(fname=font_path).get_name())
-            except Exception:
-                pass
-    sans_list.extend([
-        'Noto Sans CJK TC',
-        'Noto Sans CJK JP',
-        'Noto Sans CJK SC',
-        'Microsoft JhengHei',
-        'PingFang TC',
-        'Arial Unicode MS',
-        'DejaVu Sans'
-    ])
-    # 去除重複,保留順序
-    sans_list = list(dict.fromkeys(sans_list))
-    plt.rcParams['font.family'] = 'sans-serif'
+    sans_list = ['Noto Sans CJK TC', 'Noto Sans CJK JP', 'Noto Sans CJK SC']
+    if FONT_EMOJI is not None:
+        sans_list.append('Noto Color Emoji')
+    sans_list.append('DejaVu Sans')
     plt.rcParams['font.sans-serif'] = sans_list
     plt.rcParams['axes.unicode_minus'] = False
     print(f"✅ matplotlib 字型優先順序: {sans_list}")
 except Exception as e:
     print(f"⚠️ matplotlib 字型設定失敗: {e}")
-
-
-EMOJI_FALLBACK_SYMBOLS = {
-    "🚨": "!",
-    "🔓": "OPEN",
-    "⛓️": "LOCK",
-    "👑": "★",
-    "🔥": "▲",
-    "💀": "▼",
-    "📉": "↓",
-    "🧊": "◆",
-    "❓": "?",
-}
-
-
-def _twemoji_codepoints(emoji_text):
-    """將 emoji 轉為 Twemoji 檔名用 codepoint。"""
-    return "-".join(f"{ord(ch):x}" for ch in emoji_text if ord(ch) != 0xfe0f)
-
-
-def _twemoji_codepoints_keep_vs16(emoji_text):
-    """保留 VS16 的 Twemoji codepoint,部分符號 emoji 需要這個版本。"""
-    return "-".join(f"{ord(ch):x}" for ch in emoji_text)
-
-
-def get_twemoji_image(emoji_text):
-    """下載並快取 Twemoji PNG,用來避開 Matplotlib 無法穩定顯示彩色 emoji 的問題。"""
-    if emoji_text in EMOJI_IMAGE_CACHE:
-        return EMOJI_IMAGE_CACHE[emoji_text]
-
-    candidates = []
-    keep_vs16 = _twemoji_codepoints_keep_vs16(emoji_text)
-    no_vs16 = _twemoji_codepoints(emoji_text)
-    if keep_vs16:
-        candidates.append(keep_vs16)
-    if no_vs16 and no_vs16 not in candidates:
-        candidates.append(no_vs16)
-
-    base_urls = [
-        "https://raw.githubusercontent.com/jdecked/twemoji/main/assets/72x72",
-        "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72",
-    ]
-
-    for code in candidates:
-        for base_url in base_urls:
-            url = f"{base_url}/{code}.png"
-            try:
-                response = requests.get(url, timeout=2.5)
-                if response.status_code == 200 and response.content:
-                    img = Image.open(BytesIO(response.content)).convert("RGBA")
-                    EMOJI_IMAGE_CACHE[emoji_text] = img
-                    return img
-            except Exception:
-                continue
-
-    EMOJI_IMAGE_CACHE[emoji_text] = None
-    return None
-
-
-def draw_emoji_image(ax, emoji_text, x, y, fontsize=18, transform=None, zorder=5, fallback_color="#FFFFFF"):
-    """在 Matplotlib 圖上以 PNG 疊上 emoji；下載失敗時使用安全符號，避免方塊或缺字。"""
-    transform = transform or ax.transAxes
-    img = get_twemoji_image(emoji_text)
-
-    if img is not None:
-        imagebox = OffsetImage(img, zoom=max(0.18, fontsize / 42.0), resample=True)
-        ab = AnnotationBbox(
-            imagebox,
-            (x, y),
-            xycoords=transform,
-            frameon=False,
-            pad=0,
-            box_alignment=(0.5, 0.5),
-            zorder=zorder
-        )
-        ab.set_clip_on(False)
-        ax.add_artist(ab)
-        return True
-
-    fallback = EMOJI_FALLBACK_SYMBOLS.get(emoji_text, "")
-    if fallback:
-        ax.text(x, y, fallback,
-                transform=transform, ha='center', va='center',
-                fontsize=fontsize, fontweight='bold',
-                fontproperties=FONT_BOLD, color=fallback_color,
-                zorder=zorder)
-    return False
-
-
-def draw_emoji_on_fig(fig, emoji_text, x, y, fontsize=34, zorder=5):
-    """用 figure 座標疊上 emoji。"""
-    if not fig.axes:
-        ax = fig.add_axes([0, 0, 1, 1], frameon=False)
-        ax.set_axis_off()
-    else:
-        ax = fig.axes[0]
-    return draw_emoji_image(ax, emoji_text, x, y, fontsize=fontsize, transform=fig.transFigure, zorder=zorder)
-
 
 # ---- 共用顏色 ----
 BG_MAIN     = '#0D1B2A'
@@ -286,9 +146,9 @@ DAYS_WARN_FG   = '#1A1A1A'
 DAYS_NORMAL_BG = '#2E4560'
 DAYS_NORMAL_FG = '#E8EFF7'
 
-THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)'}
-THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)'}
-THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單'}
+THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '🚨 處置倒數  瀕臨處置監控', 'subtitle_text': '瀕臨處置 (3日內)'}
+THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '🔓 越關越大尾  即將出關監控', 'subtitle_text': '即將出關 (5日內)'}
+THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '⛓️ 還能噴嗎  正在處置監控', 'subtitle_text': '處置中股票名單'}
 
 
 # ============================
@@ -546,8 +406,6 @@ def draw_topbar(fig, theme, total, page_info=""):
              fontsize=38, fontweight='bold',
              fontproperties=FONT_BOLD,
              color='#FFFFFF', zorder=2)
-    if theme.get('title_icon'):
-        draw_emoji_on_fig(fig, theme['title_icon'], 0.285, 0.955, fontsize=38, zorder=4)
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {page_info}"
@@ -794,25 +652,11 @@ def draw_releasing_image(data):
         elif "走勢疲軟" in status_text: st_color = '#4CD964'
         else:                         st_color = TEXT_MUTED
         
-        status_center_x = x_starts[4] + col_widths[4]/2
-        status_y = y_top - row_h/2
-        status_icon_x = x_starts[4] + col_widths[4] * 0.28
-        status_text_x = x_starts[4] + col_widths[4] * 0.58
-        emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
-                                    fontsize=16, transform=ax.transAxes,
-                                    zorder=4, fallback_color=st_color)
-        if emoji_ok:
-            ax.text(status_text_x, status_y, status_text,
-                    transform=ax.transAxes, ha='center', va='center',
-                    fontsize=16, fontweight='bold',
-                    fontproperties=FONT_BOLD, color=st_color, zorder=3)
-        else:
-            icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
-            ax.text(status_center_x, status_y,
-                    f"{icon_fallback} {status_text}",
-                    transform=ax.transAxes, ha='center', va='center',
-                    fontsize=16, fontweight='bold',
-                    fontproperties=FONT_BOLD, color=st_color, zorder=3)
+        ax.text(x_starts[4] + col_widths[4]/2, y_top - row_h/2,
+                f"{icon} {status_text}",
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=16, fontweight='bold',
+                fontproperties=FONT_BOLD, color=st_color, zorder=3)
         
         ax.text(x_starts[5] + col_widths[5]/2, y_top - row_h/2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
