@@ -687,7 +687,7 @@ def draw_table_frame(ax, theme, subtitle, top_y, total_h):
 
 COMMON_FIG_WIDTH = 15
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
-WATERMARK_ALPHA = 0.20
+WATERMARK_ALPHA = 0.80
 
 
 def draw_watermark(fig):
