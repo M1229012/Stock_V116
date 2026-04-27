@@ -542,7 +542,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         name_weight = 'bold' if i < 3 else 'normal'
         colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
         weights = ['bold', 'bold', name_weight, 'normal', 'bold', 'bold', 'bold']
-        sizes = [9.2, 12, 14 if i < 3 else 12, 12, 12, 12, 12]
+        sizes = [9.2, 12, 14 if i < 3 else 12, 10, 10, 12, 12]
 
         # 前三名排名徽章
         rank_cell_x = col_x[0]
