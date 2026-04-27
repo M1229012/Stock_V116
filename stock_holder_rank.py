@@ -39,6 +39,15 @@ TEXT_RED = "#E53E3E"
 TEXT_GREEN = "#16A34A"
 ACCENT_LISTED = "#3182CE"
 ACCENT_OTC = "#22A06B"
+TOP1_BG = "#FFF4D9"
+TOP2_BG = "#EEF4FF"
+TOP3_BG = "#FDF0E6"
+TOP1_BORDER = "#F2C56B"
+TOP2_BORDER = "#BFD0F3"
+TOP3_BORDER = "#E6B88A"
+TOP1_BADGE = "#F4C95D"
+TOP2_BADGE = "#C9D2E3"
+TOP3_BADGE = "#E6BA8A"
 
 CJK_FONT_PATH = None
 CJK_BOLD_FONT_PATH = None
@@ -493,10 +502,18 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         else:
             code, name, category, price, week_chg, change_val = "", "", "", "", "", 0.0
 
-        bg = "#FFF8E8" if i == 0 else ("#FFFFFF" if i % 2 == 0 else "#F6F8FB")
+        if i == 0:
+            bg, edge, lw = TOP1_BG, TOP1_BORDER, 1.1
+        elif i == 1:
+            bg, edge, lw = TOP2_BG, TOP2_BORDER, 1.0
+        elif i == 2:
+            bg, edge, lw = TOP3_BG, TOP3_BORDER, 1.0
+        else:
+            bg, edge, lw = ("#FFFFFF" if i % 2 == 0 else "#F6F8FB"), None, 0.0
+
         ax.add_patch(patches.Rectangle(
             (x_left, y - row_h), card_w, row_h,
-            linewidth=0, facecolor=bg,
+            linewidth=lw, edgecolor=edge if edge else 'none', facecolor=bg,
             transform=ax.transAxes, zorder=2
         ))
         ax.plot([x_left + 0.010, x_left + card_w - 0.010], [y - row_h, y - row_h],
@@ -522,11 +539,31 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             week_chg,
             chg_display,
         ]
+        name_weight = 'bold' if i < 3 else 'normal'
         colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
-        weights = ['bold', 'bold', 'normal', 'normal', 'bold', 'bold', 'bold']
-        sizes = [8.8, 9.2, 9.2, 8.2, 8.8, 8.8, 9.2]
+        weights = ['bold', 'bold', name_weight, 'normal', 'bold', 'bold', 'bold']
+        sizes = [9.2, 9.5, 9.5 if i < 3 else 9.2, 8.2, 8.8, 8.8, 9.2]
 
-        for j, value in enumerate(values):
+        # 前三名排名徽章
+        rank_cell_x = col_x[0]
+        rank_cell_w = inner_w * col_rel[0]
+        rank_center_x = rank_cell_x + rank_cell_w / 2
+        rank_center_y = y - row_h / 2
+        if i < 3:
+            badge_color = [TOP1_BADGE, TOP2_BADGE, TOP3_BADGE][i]
+            ax.add_patch(patches.Circle(
+                (rank_center_x, rank_center_y), row_h * 0.24,
+                transform=ax.transAxes, facecolor=badge_color,
+                edgecolor='white', linewidth=1.0, zorder=4
+            ))
+            draw_text(ax, rank_center_x, rank_center_y, values[0], size=10.5,
+                      color="#6B4A12" if i == 0 else TEXT_MAIN, weight='bold', ha='center', bold=True)
+            start_j = 1
+        else:
+            start_j = 0
+
+        for j in range(start_j, len(values)):
+            value = values[j]
             cell_x = col_x[j]
             cell_w = inner_w * col_rel[j]
             if aligns[j] == "center":
@@ -544,9 +581,11 @@ def build_rank_image(listed_df, otc_df, display_date):
     """白色風格 + 原版雙欄樣式：上市、上櫃並排，各 20 名。"""
     top_n = 20
     fig_w = 18.0
-    fig_h = 10.8
+    fig_h = 10.6
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=IMG_BG)
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    ax.set_position([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_axis_off()
@@ -565,21 +604,21 @@ def build_rank_image(listed_df, otc_df, display_date):
 
     # 標題區
     ax.add_patch(patches.Rectangle(
-        (0.015, 0.900), 0.970, 0.075,
+        (0.015, 0.905), 0.970, 0.072,
         linewidth=0, facecolor="#FFFFFF",
         transform=ax.transAxes, zorder=1
     ))
     draw_text(ax, 0.5, 0.945, "每週大股東籌碼強勢榜  Top 20",
-              size=20, color=TEXT_MAIN, weight='bold', ha='center', bold=True)
-    draw_text(ax, 0.5, 0.912, f"資料統計日期：{display_date}",
-              size=10.5, color=TEXT_MUTED, ha='center')
+              size=22, color=TEXT_MAIN, weight='bold', ha='center', bold=True)
+    draw_text(ax, 0.5, 0.915, f"資料統計日期：{display_date}",
+              size=11, color=TEXT_MUTED, ha='center')
 
     # 雙欄卡片
-    card_y_top = 0.865
-    card_h = 0.800
-    gap = 0.030
-    card_w = (0.940 - gap) / 2
-    left_x = 0.030
+    card_y_top = 0.852
+    card_h = 0.825
+    gap = 0.020
+    card_w = (0.960 - gap) / 2
+    left_x = 0.020
     right_x = left_x + card_w + gap
 
     draw_rank_table(
@@ -605,7 +644,7 @@ def build_rank_image(listed_df, otc_df, display_date):
         top_n=top_n,
     )
 
-    fig.text(0.985, 0.018, clean_cell(WATERMARK_TEXT),
+    fig.text(0.985, 0.014, clean_cell(WATERMARK_TEXT),
              ha='right', va='bottom',
              fontsize=10,
              fontproperties=FONT_PROP,
