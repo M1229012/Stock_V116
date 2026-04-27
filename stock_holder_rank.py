@@ -448,9 +448,9 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
 
     # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
     # 這裡刻意讓「總增減%」較寬，避免數字擠在一起。
-    col_rel = [0.060, 0.080, 0.160, 0.160, 0.118, 0.168, 0.254]
+    col_rel = [0.060, 0.080, 0.190, 0.160, 0.120, 0.170, 0.255]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
-    aligns = ["center", "center", "left", "left", "right", "right", "right"]
+    aligns = ["center", "center", "left", "left", "right", "left", "right"]
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
