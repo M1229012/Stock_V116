@@ -28,7 +28,7 @@ from PIL import Image
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 BASE_DIR = Path(__file__).resolve().parent
 WATERMARK_IMAGE_PATH = BASE_DIR / "assets" / "ace_watermark.png"
-WATERMARK_IMAGE_ALPHA = 0.055
+WATERMARK_IMAGE_ALPHA = 0.08
 
 # ================= 圖片樣式設定 =================
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
