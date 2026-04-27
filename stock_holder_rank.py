@@ -448,7 +448,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
 
     # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
     # 這裡刻意讓「總增減%」較寬，避免數字擠在一起。
-    col_rel = [0.060, 0.080, 0.190, 0.140, 0.115, 0.165, 0.250]
+    col_rel = [0.060, 0.080, 0.160, 0.160, 0.118, 0.168, 0.254]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
     aligns = ["center", "center", "left", "left", "right", "right", "right"]
 
@@ -646,7 +646,7 @@ def build_rank_image(listed_df, otc_df, display_date):
 
     fig.text(0.985, 0.014, clean_cell(WATERMARK_TEXT),
              ha='right', va='bottom',
-             fontsize=14,
+             fontsize=8,
              fontproperties=FONT_PROP,
              color="#2C3440",
              alpha=WATERMARK_ALPHA,
