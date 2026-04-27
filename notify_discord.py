@@ -305,7 +305,7 @@ def get_twemoji_image(emoji_text):
     return None
 
 
-def draw_emoji_image(ax, emoji_text, x, y, fontsize=18, transform=None, zorder=5, fallback_color="#FFFFFF"):
+def draw_emoji_image(ax, emoji_text, x, y, fontsize=18, transform=None, zorder=5, fallback_color="#4A5565"):
     """在 Matplotlib 圖上以 PNG 疊上 emoji；下載失敗時使用安全符號，避免方塊或缺字。"""
     transform = transform or ax.transAxes
     img = get_twemoji_image(emoji_text)
@@ -346,36 +346,36 @@ def draw_emoji_on_fig(fig, emoji_text, x, y, fontsize=34, zorder=5):
 
 
 # ---- 共用顏色 ----
-BG_MAIN     = '#0D1B2A'
-BG_TOPBAR   = '#0A1520'
-BG_TABLE    = '#1C2B3A'
-BG_ROW_ODD  = '#1C2B3A'
-BG_ROW_EVEN = '#243447'
-BG_RANK     = '#162030'
+BG_MAIN     = '#F5F7FA'
+BG_TOPBAR   = '#EEF2F6'
+BG_TABLE    = '#FFFFFF'
+BG_ROW_ODD  = '#FFFFFF'
+BG_ROW_EVEN = '#F7F9FC'
+BG_RANK     = '#FBFCFE'
 
-TEXT_HEADER = '#FFFFFF'
-TEXT_MAIN   = '#E8EFF7'
-TEXT_MUTED  = '#8FA8C0'
+TEXT_HEADER = '#2F3A4A'
+TEXT_MAIN   = '#2C3440'
+TEXT_MUTED  = '#8A94A6'
 TEXT_POS    = '#FF6B6B'
 TEXT_NEG    = '#4CD964'
-TEXT_FLAT   = '#8FA8C0'
+TEXT_FLAT   = '#8A94A6'
 
 GOLD        = '#FFD060'
 SILVER      = '#C0C8D4'
 BRONZE      = '#E8A070'
-BORDER_DARK = '#0D1B2A'
-BORDER_MID  = '#2E4560'
+BORDER_DARK = '#E6EBF2'
+BORDER_MID  = '#D8E0EA'
 
 DAYS_URGENT_BG = '#FF4757'
 DAYS_URGENT_FG = '#FFFFFF'
 DAYS_WARN_BG   = '#FFA502'
 DAYS_WARN_FG   = '#1A1A1A'
-DAYS_NORMAL_BG = '#2E4560'
-DAYS_NORMAL_FG = '#E8EFF7'
+DAYS_NORMAL_BG = '#E9EEF5'
+DAYS_NORMAL_FG = '#2C3440'
 
-THEME_ENTERING  = {'accent': '#FF4757', 'header': '#3A0A0F', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 30}
-THEME_RELEASING = {'accent': '#10B981', 'header': '#002A33', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 34}
-THEME_INJAIL    = {'accent': '#9B59B6', 'header': '#1F0A2E', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 30}
+THEME_ENTERING  = {'accent': '#E85D6A', 'header': '#FCECEF', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 30}
+THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 34}
+THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 30}
 
 
 # ============================
@@ -643,41 +643,29 @@ def draw_topbar(fig, theme, total, page_info=""):
     title_y = 0.955
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
-    title_text = clean_display_text(theme['title'])
+    icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
 
-    title_obj = fig.text(TOPBAR_TITLE_X, title_y, title_text,
+    title_obj = fig.text(TOPBAR_TITLE_X, title_y, clean_display_text(theme['title']),
                          ha='center', va='center',
                          fontsize=title_fontsize, fontweight='bold',
                          fontproperties=FONT_BOLD,
-                         color='#FFFFFF', zorder=2)
+                         color='#2C3440', zorder=2)
 
     if theme.get('title_icon'):
-        # 以實際量測到的「標題文字寬度 + emoji 顯示寬度 + 間距」來整組置中，
-        # 避免不同圖片寬度 / 不同標題長度下仍看起來不一致。
+        # 以「emoji + 標題文字」整組置中，而不是只讓文字置中。
+        # 這樣不同圖片寬度下，標題區視覺中心會一致，不會因 emoji 在左側而看起來偏掉。
         try:
             fig.canvas.draw()
+            title_obj.set_position((TOPBAR_TITLE_X + (icon_width + icon_gap) / 2, title_y))
+            fig.canvas.draw()
             renderer = fig.canvas.get_renderer()
-            title_bbox = title_obj.get_window_extent(renderer=renderer)
-            fig_w_px = max(fig.canvas.get_width_height()[0], 1)
-            title_w_fig = title_bbox.width / fig_w_px
-
-            # draw_emoji_image 使用 72x72 的 Twemoji PNG，zoom 為 max(0.18, fontsize / 42.0)
-            icon_zoom = max(0.18, icon_fontsize / 42.0)
-            icon_w_px = 72.0 * icon_zoom
-            icon_w_fig = icon_w_px / fig_w_px
-
-            total_group_w = title_w_fig + icon_gap + icon_w_fig
-            group_left_x = 0.5 - total_group_w / 2
-            icon_x = group_left_x + icon_w_fig / 2
-            title_x = group_left_x + icon_w_fig + icon_gap + title_w_fig / 2
-
-            title_obj.set_position((title_x, title_y))
-            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y,
-                              fontsize=icon_fontsize, zorder=4)
+            bbox = title_obj.get_window_extent(renderer=renderer)
+            bbox_fig = bbox.transformed(fig.transFigure.inverted())
+            icon_x = max(0.05, bbox_fig.x0 - icon_gap - icon_width / 2)
+            draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y, fontsize=icon_fontsize, zorder=4)
         except Exception:
-            # 若量測失敗，退回安全位置
-            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y,
-                              fontsize=icon_fontsize, zorder=4)
+            # 若 bbox 計算失敗，退回較保守的位置
+            draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
@@ -686,7 +674,7 @@ def draw_topbar(fig, theme, total, page_info=""):
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
-             color='#7BA8C8', zorder=2)
+             color='#7F8C9B', zorder=2)
 
 
 def draw_table_frame(ax, theme, subtitle, top_y, total_h):
@@ -716,7 +704,7 @@ def draw_watermark(fig):
              ha='right', va='bottom',
              fontsize=11,
              fontproperties=FONT_PROP,
-             color='#FFFFFF', alpha=WATERMARK_ALPHA, zorder=10)
+             color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
 
 UNIFIED_SUBPLOT_LEFT = 0.025
@@ -972,10 +960,10 @@ def draw_releasing_image(data):
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
-        if "妖股" in status_text:    st_color = '#FFD060'
-        elif "強勢" in status_text:  st_color = '#FF6B6B'
+        if "妖股" in status_text:    st_color = '#D69E2E'
+        elif "強勢" in status_text:  st_color = '#E35D6A'
         elif "人去樓空" in status_text: st_color = '#9B59B6'
-        elif "走勢疲軟" in status_text: st_color = '#4CD964'
+        elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
 
         status_center_x = x_starts[4] + col_widths[4]/2
