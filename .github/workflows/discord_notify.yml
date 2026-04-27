@@ -26,7 +26,7 @@ jobs:
     # 產生金鑰
     - name: Create Service Key
       env:
-        GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY }}
+        GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY_TEST }}
       run: |
         python - <<'PY'
         import os
