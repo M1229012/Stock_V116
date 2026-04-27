@@ -447,8 +447,8 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
               size=12, color="#FFFFFF", weight='bold', bold=True, ha='right')
 
     # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
-    # 這裡刻意讓「總增減%」較寬，避免數字擠在一起。
-    col_rel = [0.060, 0.080, 0.200, 0.145, 0.145, 0.195, 0.175]
+    # 重新分配右半部欄位寬度，讓「類別 / 現價 / 週漲跌 / 總增減%」之間的間距更平均。
+    col_rel = [0.060, 0.080, 0.180, 0.160, 0.135, 0.155, 0.230]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
     aligns = ["center", "center", "left", "left", "right", "left", "right"]
 
@@ -474,12 +474,13 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if aligns[i] == "center":
             tx, ha = cell_x + cell_w / 2, "center"
         elif aligns[i] == "right":
-            tx, ha = cell_x + cell_w - 0.006, "right"
+            pad = 0.010 if i == 4 else 0.012 if i == 6 else 0.006
+            tx, ha = cell_x + cell_w - pad, "right"
         else:
             if i == 3:      # 類別
-                tx, ha = cell_x + 0.018, "left"
+                tx, ha = cell_x + 0.014, "left"
             elif i == 5:    # 週漲跌
-                tx, ha = cell_x + 0.026, "left"
+                tx, ha = cell_x + 0.022, "left"
             else:
                 tx, ha = cell_x + 0.006, "left"
         draw_text(ax, tx, header_top - header_h / 2, label, size=12,
@@ -574,12 +575,13 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             if aligns[j] == "center":
                 tx, ha = cell_x + cell_w / 2, "center"
             elif aligns[j] == "right":
-                tx, ha = cell_x + cell_w - 0.006, "right"
+                pad = 0.010 if j == 4 else 0.012 if j == 6 else 0.006
+                tx, ha = cell_x + cell_w - pad, "right"
             else:
                 if j == 3:      # 類別
-                    tx, ha = cell_x + 0.018, "left"
+                    tx, ha = cell_x + 0.014, "left"
                 elif j == 5:    # 週漲跌
-                    tx, ha = cell_x + 0.026, "left"
+                    tx, ha = cell_x + 0.022, "left"
                 else:
                     tx, ha = cell_x + 0.006, "left"
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
@@ -599,18 +601,6 @@ def build_rank_image(listed_df, otc_df, display_date):
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_axis_off()
-
-    # 頂部雙色線，保留你原本暗色版那種辨識感，但整體改成白底
-    fig.add_artist(patches.Rectangle(
-        (0.000, 0.988), 0.500, 0.010,
-        linewidth=0, facecolor="#F59E0B",
-        transform=fig.transFigure, clip_on=False, zorder=2
-    ))
-    fig.add_artist(patches.Rectangle(
-        (0.500, 0.988), 0.500, 0.010,
-        linewidth=0, facecolor="#06B6D4",
-        transform=fig.transFigure, clip_on=False, zorder=2
-    ))
 
     # 標題區
     ax.add_patch(patches.Rectangle(
