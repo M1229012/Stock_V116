@@ -12,7 +12,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 import re
 import time
 import os
-from pathlib import Path
 from datetime import datetime, timedelta
 from wcwidth import wcwidth
 import unicodedata
@@ -22,17 +21,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import font_manager
-from PIL import Image
 
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
-BASE_DIR = Path(__file__).resolve().parent
-WATERMARK_IMAGE_PATH = BASE_DIR / "assets" / "ace_watermark.png"
-WATERMARK_IMAGE_ALPHA = 0.08
 
 # ================= 圖片樣式設定 =================
-WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
-WATERMARK_ALPHA = 0.80
+WATERMARK_TEXT = "股市艾斯\n台股DC討論群"
+WATERMARK_ALPHA = 0.12
+WATERMARK_FONT_SIZE = 74
+WATERMARK_ROTATION = 18
 
 IMG_BG = "#F5F7FA"
 CARD_BG = "#FFFFFF"
@@ -424,30 +421,6 @@ def _shorten_text(text, max_chars):
     return text[:max_chars - 1] + "…"
 
 
-def draw_full_page_image_watermark(ax, image_path=WATERMARK_IMAGE_PATH, alpha=WATERMARK_IMAGE_ALPHA):
-    """將 assets/ace_watermark.png 以滿版透明浮水印方式鋪在圖片中，不影響表格文字閱讀。"""
-    image_path = Path(image_path)
-
-    if not image_path.exists():
-        print(f"⚠️ 找不到圖片浮水印：{image_path}")
-        return False
-
-    try:
-        img = Image.open(image_path).convert("RGBA")
-        ax.imshow(
-            img,
-            extent=(0, 1, 0, 1),
-            transform=ax.transAxes,
-            aspect="auto",
-            alpha=alpha,
-            zorder=2.6
-        )
-        return True
-    except Exception as e:
-        print(f"⚠️ 載入圖片浮水印失敗：{e}")
-        return False
-
-
 def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20):
     """白色版並列表格：上市 / 上櫃各一張卡片，每張保留 7 欄資訊。"""
     title_h = 0.062
@@ -631,9 +604,6 @@ def build_rank_image(listed_df, otc_df, display_date):
     ax.set_ylim(0, 1)
     ax.set_axis_off()
 
-    # 滿版圖片浮水印：放在表格底色之上、文字之下，透明度低，不影響閱讀。
-    draw_full_page_image_watermark(ax)
-
     # 標題區
     ax.add_patch(patches.Rectangle(
         (0.015, 0.905), 0.970, 0.072,
@@ -676,13 +646,20 @@ def build_rank_image(listed_df, otc_df, display_date):
         top_n=top_n,
     )
 
-    fig.text(0.985, 0.014, clean_cell(WATERMARK_TEXT),
-             ha='right', va='bottom',
-             fontsize=8,
-             fontproperties=FONT_PROP,
-             color="#2C3440",
-             alpha=WATERMARK_ALPHA,
-             zorder=10)
+    # 中央大文字浮水印：置中、超大、半透明，但仍不影響表格文字辨識
+    ax.text(
+        0.5, 0.50, WATERMARK_TEXT,
+        transform=ax.transAxes,
+        ha='center', va='center',
+        fontsize=WATERMARK_FONT_SIZE,
+        fontweight='bold',
+        fontproperties=FONT_BOLD,
+        color="#2C3440",
+        alpha=WATERMARK_ALPHA,
+        rotation=WATERMARK_ROTATION,
+        linespacing=1.18,
+        zorder=4
+    )
 
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor())
