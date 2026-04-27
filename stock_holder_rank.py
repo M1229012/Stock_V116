@@ -448,7 +448,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
 
     # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
     # 這裡刻意讓「總增減%」較寬，避免數字擠在一起。
-    col_rel = [0.060, 0.080, 0.200, 0.180, 0.140, 0.170, 0.22]
+    col_rel = [0.060, 0.080, 0.185, 0.150, 0.130, 0.185, 0.210]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
     aligns = ["center", "center", "left", "left", "right", "left", "right"]
 
@@ -476,7 +476,12 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         elif aligns[i] == "right":
             tx, ha = cell_x + cell_w - 0.006, "right"
         else:
-            tx, ha = cell_x + 0.006, "left"
+            if j == 3:      # 類別
+                tx, ha = cell_x + 0.012, "left"
+            elif j == 5:    # 週漲跌
+                tx, ha = cell_x + 0.016, "left"
+            else:
+                tx, ha = cell_x + 0.006, "left"
         draw_text(ax, tx, header_top - header_h / 2, label, size=12,
                   color=TEXT_MUTED, weight='bold', ha=ha, bold=True)
 
