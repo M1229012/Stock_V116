@@ -646,7 +646,7 @@ def build_rank_image(listed_df, otc_df, display_date):
 
     fig.text(0.985, 0.014, clean_cell(WATERMARK_TEXT),
              ha='right', va='bottom',
-             fontsize=10,
+             fontsize=14,
              fontproperties=FONT_PROP,
              color="#2C3440",
              alpha=WATERMARK_ALPHA,
