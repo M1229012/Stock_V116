@@ -476,9 +476,9 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         elif aligns[i] == "right":
             tx, ha = cell_x + cell_w - 0.006, "right"
         else:
-            if j == 3:      # 類別
+            if i == 3:      # 類別
                 tx, ha = cell_x + 0.012, "left"
-            elif j == 5:    # 週漲跌
+            elif i == 5:    # 週漲跌
                 tx, ha = cell_x + 0.016, "left"
             else:
                 tx, ha = cell_x + 0.006, "left"
@@ -576,7 +576,12 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             elif aligns[j] == "right":
                 tx, ha = cell_x + cell_w - 0.006, "right"
             else:
-                tx, ha = cell_x + 0.006, "left"
+                if j == 3:      # 類別
+                    tx, ha = cell_x + 0.012, "left"
+                elif j == 5:    # 週漲跌
+                    tx, ha = cell_x + 0.016, "left"
+                else:
+                    tx, ha = cell_x + 0.006, "left"
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                       color=colors[j], weight=weights[j], ha=ha,
                       bold=(weights[j] == 'bold'))
