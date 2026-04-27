@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y fonts-noto-cjk
       - name: Install dependencies
         run: |
-          pip install pandas requests selenium webdriver-manager lxml wcwidth matplotlib
+          pip install pandas requests selenium webdriver-manager lxml wcwidth matplotlib yfinance
       - name: Clear matplotlib font cache
         run: |
           python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)"
