@@ -36,7 +36,7 @@ jobs:
     # 執行推播
     - name: Run Discord Notification
       env:
-        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
         python notify_discord.py
