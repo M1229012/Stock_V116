@@ -1,6 +1,6 @@
 import requests
 import pandas as pd
-from io import StringIO
+from io import StringIO, BytesIO
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -15,8 +15,91 @@ from datetime import datetime
 from wcwidth import wcwidth
 import unicodedata
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib import font_manager
+
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
+
+# ================= 圖片樣式設定 =================
+WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
+WATERMARK_ALPHA = 0.80
+
+IMG_BG = "#F5F7FA"
+CARD_BG = "#FFFFFF"
+CARD_BORDER = "#DDE5EF"
+HEADER_BG = "#F1F5F9"
+TEXT_MAIN = "#243044"
+TEXT_MUTED = "#718096"
+TEXT_RED = "#E53E3E"
+TEXT_GREEN = "#16A34A"
+ACCENT_LISTED = "#3182CE"
+ACCENT_OTC = "#22A06B"
+
+CJK_FONT_PATH = None
+CJK_BOLD_FONT_PATH = None
+
+
+def load_cjk_font(bold=False):
+    """載入中文字型，讓白底圖片可正常顯示中文。"""
+    global CJK_FONT_PATH, CJK_BOLD_FONT_PATH
+
+    regular_paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Regular.otf",
+        "/usr/local/share/fonts/NotoSansCJKtc-Regular.otf",
+        "C:/Windows/Fonts/msjh.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+    ]
+    bold_paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKtc-Bold.otf",
+        "/usr/local/share/fonts/NotoSansCJKtc-Bold.otf",
+        "C:/Windows/Fonts/msjhbd.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+    ]
+
+    paths = bold_paths if bold else regular_paths
+    for path in paths:
+        if os.path.exists(path):
+            font_manager.fontManager.addfont(path)
+            if bold:
+                CJK_BOLD_FONT_PATH = path
+            else:
+                CJK_FONT_PATH = path
+            return font_manager.FontProperties(fname=path)
+
+    return font_manager.FontProperties(family="DejaVu Sans")
+
+
+FONT_PROP = load_cjk_font(False)
+FONT_BOLD = load_cjk_font(True)
+
+try:
+    sans_list = []
+    for font_path in [CJK_FONT_PATH, CJK_BOLD_FONT_PATH]:
+        if font_path:
+            try:
+                sans_list.append(font_manager.FontProperties(fname=font_path).get_name())
+            except Exception:
+                pass
+    sans_list.extend([
+        "Noto Sans CJK TC",
+        "Noto Sans CJK JP",
+        "Microsoft JhengHei",
+        "PingFang TC",
+        "DejaVu Sans",
+    ])
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = list(dict.fromkeys(sans_list))
+    plt.rcParams["axes.unicode_minus"] = False
+except Exception as e:
+    print(f"⚠️ matplotlib 字型設定失敗: {e}")
 
 def get_norway_rank_logic(url):
     """
@@ -204,6 +287,197 @@ def fmt_change(x):
     v = pd.to_numeric(s, errors='coerce')
     return "-" if pd.isna(v) else f"{v:.2f}"
 
+
+def split_code_name(raw):
+    raw_str = clean_cell(raw)
+    match = re.match(r'(\d{4})\s*(.*)', raw_str)
+    if match:
+        code = clean_cell(match.group(1))
+        name = clean_cell(match.group(2).strip())
+    else:
+        code = clean_cell(raw_str[:4])
+        name = clean_cell(raw_str[4:].strip())
+    name = name.replace("卅卅", "碁")
+    return code, name
+
+
+def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
+              ha='left', va='center', bold=False, alpha=1.0):
+    ax.text(
+        x, y, clean_cell(text),
+        transform=ax.transAxes,
+        ha=ha, va=va,
+        fontsize=size,
+        fontweight=weight,
+        fontproperties=FONT_BOLD if bold else FONT_PROP,
+        color=color,
+        alpha=alpha,
+        zorder=5
+    )
+
+
+def draw_rank_table(ax, df, title, accent, y_top, card_h):
+    left = 0.045
+    width = 0.91
+    row_n = 0 if df is None else len(df)
+    header_h = 0.048
+    title_h = 0.058
+    row_h = (card_h - title_h - header_h - 0.028) / max(row_n, 1)
+
+    ax.add_patch(patches.FancyBboxPatch(
+        (left, y_top - card_h), width, card_h,
+        boxstyle="round,pad=0.006,rounding_size=0.010",
+        linewidth=1.2, edgecolor=CARD_BORDER, facecolor=CARD_BG,
+        transform=ax.transAxes, zorder=1
+    ))
+    ax.add_patch(patches.Rectangle(
+        (left, y_top - title_h), width, title_h,
+        linewidth=0, facecolor=HEADER_BG,
+        transform=ax.transAxes, zorder=2
+    ))
+    ax.add_patch(patches.Rectangle(
+        (left, y_top - title_h), 0.010, title_h,
+        linewidth=0, facecolor=accent,
+        transform=ax.transAxes, zorder=3
+    ))
+
+    draw_text(ax, left + 0.025, y_top - title_h / 2, title, size=14,
+              color=accent, weight='bold', bold=True)
+
+    col_rel = [0.10, 0.17, 0.47, 0.26]
+    labels = ["排名", "代號", "股名", "總增減%"]
+    aligns = ["center", "center", "left", "right"]
+    col_x = [left]
+    acc = 0
+    for w in col_rel[:-1]:
+        acc += w
+        col_x.append(left + width * acc)
+
+    header_top = y_top - title_h
+    ax.add_patch(patches.Rectangle(
+        (left, header_top - header_h), width, header_h,
+        linewidth=0, facecolor="#F8FAFC",
+        transform=ax.transAxes, zorder=2
+    ))
+    ax.plot([left, left + width], [header_top, header_top],
+            transform=ax.transAxes, color=accent, linewidth=1.8, zorder=3)
+    ax.plot([left, left + width], [header_top - header_h, header_top - header_h],
+            transform=ax.transAxes, color=CARD_BORDER, linewidth=0.8, zorder=3)
+
+    for i, label in enumerate(labels):
+        x0 = col_x[i]
+        cw = width * col_rel[i]
+        if aligns[i] == "center":
+            tx = x0 + cw / 2
+            ha = "center"
+        elif aligns[i] == "right":
+            tx = x0 + cw - 0.018
+            ha = "right"
+        else:
+            tx = x0 + 0.018
+            ha = "left"
+        draw_text(ax, tx, header_top - header_h / 2, label, size=11,
+                  color=TEXT_MUTED, weight='bold', ha=ha, bold=True)
+
+    if df is None or df.empty:
+        draw_text(ax, left + width / 2, header_top - header_h - row_h / 2,
+                  "無資料", size=13, color=TEXT_MUTED, ha='center')
+        return
+
+    df = df.reset_index(drop=True)
+    for i, row in df.iterrows():
+        y = header_top - header_h - i * row_h
+        bg = "#FFFFFF" if i % 2 == 0 else "#F8FAFC"
+        ax.add_patch(patches.Rectangle(
+            (left, y - row_h), width, row_h,
+            linewidth=0, facecolor=bg,
+            transform=ax.transAxes, zorder=2
+        ))
+        ax.plot([left, left + width], [y - row_h, y - row_h],
+                transform=ax.transAxes, color="#EDF2F7", linewidth=0.6, zorder=3)
+
+        code, name = split_code_name(row['股票代號/名稱'])
+        change_str = fmt_change(row['總增減'])
+        try:
+            change_val = float(change_str)
+        except:
+            change_val = 0.0
+        chg_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
+        chg_display = "-" if change_str == "-" else f"{change_val:+.2f}"
+
+        values = [f"{i+1:02d}", code, name, chg_display]
+        colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, chg_color]
+        weights = ['bold', 'bold', 'normal', 'bold']
+
+        for j, value in enumerate(values):
+            x0 = col_x[j]
+            cw = width * col_rel[j]
+            if aligns[j] == "center":
+                tx = x0 + cw / 2
+                ha = "center"
+            elif aligns[j] == "right":
+                tx = x0 + cw - 0.018
+                ha = "right"
+            else:
+                tx = x0 + 0.018
+                ha = "left"
+            draw_text(ax, tx, y - row_h / 2, value, size=12,
+                      color=colors[j], weight=weights[j], ha=ha,
+                      bold=(weights[j] == 'bold'))
+
+
+def build_rank_image(listed_df, otc_df, display_date):
+    listed_n = 0 if listed_df is None else len(listed_df)
+    otc_n = 0 if otc_df is None else len(otc_df)
+
+    row_unit = 0.030
+    listed_card_h = 0.130 + max(listed_n, 1) * row_unit
+    otc_card_h = 0.130 + max(otc_n, 1) * row_unit
+    top_area_h = 0.145
+    gap_h = 0.030
+    bottom_h = 0.060
+    total_units = top_area_h + listed_card_h + gap_h + otc_card_h + bottom_h
+    fig_h = max(8.0, min(16.0, total_units * 12.0))
+    fig_w = 9.2
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=IMG_BG)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_axis_off()
+
+    fig.add_artist(patches.Rectangle(
+        (0, 0.94), 1, 0.06,
+        linewidth=0, facecolor="#FFFFFF",
+        transform=fig.transFigure, clip_on=False, zorder=0
+    ))
+
+    draw_text(ax, 0.5, 0.965, "每週大股東籌碼強勢榜 Top 20",
+              size=22, color=TEXT_MAIN, weight='bold', ha='center', bold=True)
+    draw_text(ax, 0.5, 0.925, f"資料統計日期：{display_date}",
+              size=12, color=TEXT_MUTED, ha='center')
+
+    y_top = 0.875
+    draw_rank_table(ax, listed_df.reset_index(drop=True) if listed_df is not None else None,
+                    "上市排行", ACCENT_LISTED, y_top, listed_card_h / total_units)
+    y_top -= listed_card_h / total_units + gap_h / total_units
+    draw_rank_table(ax, otc_df.reset_index(drop=True) if otc_df is not None else None,
+                    "上櫃排行", ACCENT_OTC, y_top, otc_card_h / total_units)
+
+    fig.text(0.985, 0.018, clean_cell(WATERMARK_TEXT),
+             ha='right', va='bottom',
+             fontsize=10,
+             fontproperties=FONT_PROP,
+             color="#2C3440",
+             alpha=WATERMARK_ALPHA,
+             zorder=10)
+
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
 def push_rank_to_dc():
     if not DISCORD_WEBHOOK_URL:
         print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
@@ -302,13 +576,35 @@ def push_rank_to_dc():
 
     # 發送
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-        if response.status_code == 204:
+        image_buf = build_rank_image(
+            listed_df.reset_index(drop=True) if listed_df is not None else None,
+            otc_df.reset_index(drop=True) if otc_df is not None else None,
+            display_date
+        )
+        files = {"file": ("weekly_holder_rank.png", image_buf, "image/png")}
+        data = {
+            "content": f"📊 **每週大股東籌碼強勢榜 Top 20**\n> 📅 **資料統計日期：{display_date}**"
+        }
+        response = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files)
+        if response.status_code in (200, 204):
             print("✅ 推播完成！")
         else:
-            print(f"❌ 推播失敗: {response.status_code}")
+            print(f"❌ 圖片推播失敗: {response.status_code}，改用文字推播")
+            fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+            if fallback.status_code == 204:
+                print("✅ 文字備援推播完成！")
+            else:
+                print(f"❌ 文字備援推播失敗: {fallback.status_code}")
     except Exception as e:
-        print(f"❌ 發送錯誤: {e}")
+        print(f"❌ 圖片發送錯誤: {e}，改用文字推播")
+        try:
+            response = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+            if response.status_code == 204:
+                print("✅ 文字備援推播完成！")
+            else:
+                print(f"❌ 文字備援推播失敗: {response.status_code}")
+        except Exception as inner_e:
+            print(f"❌ 發送錯誤: {inner_e}")
 
 if __name__ == "__main__":
     push_rank_to_dc()
