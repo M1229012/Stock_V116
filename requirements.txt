@@ -1,3 +1,4 @@
+matplotlib
 gspread
 google-auth
 requests
@@ -12,4 +13,3 @@ nest_asyncio
 workalendar
 selenium
 webdriver-manager
-matplotlib
