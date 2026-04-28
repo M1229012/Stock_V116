@@ -502,9 +502,18 @@ def fetch_twse_attention_rows(date_obj, date_str):
             timeout=10,
         )
         if r.status_code != 200:
+            print(f"❌ TWSE 抓取失敗：HTTP {r.status_code}，URL={r.url}")
+            print(f"   回應內容前300字：{r.text[:300]}")
             return None 
 
-        d = r.json()
+        try:
+            d = r.json()
+        except Exception as e:
+            print(f"❌ TWSE JSON 解析失敗：{type(e).__name__}: {e}")
+            print(f"   URL={r.url}")
+            print(f"   回應內容前300字：{r.text[:300]}")
+            return None
+
         for i in d.get("data", []) or []:
             code = str(i[1]).strip()
             name = str(i[2]).strip()
@@ -513,7 +522,9 @@ def fetch_twse_attention_rows(date_obj, date_str):
                 ids = parse_clause_ids_strict(raw)
                 c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
                 rows.append({"日期": date_str, "市場": "TWSE", "代號": code, "名稱": name, "觸犯條款": c_str})
-    except:
+    except Exception as e:
+        print(f"❌ TWSE 抓取例外：{type(e).__name__}: {e}")
+        print(f"   日期={date_str}，查詢參數 startDate/endDate={date_str_nodash}")
         return None 
     return rows
 
@@ -535,17 +546,31 @@ def fetch_tpex_attention_rows(date_obj, date_str):
 
     try:
         s.get("https://www.tpex.org.tw/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ TPEx 初始化 Cookie 失敗：{type(e).__name__}: {e}")
 
+    last_error = None
     for attempt in range(1, 4):
         try:
             r = s.post(url, data=payload, headers=headers, timeout=12)
             if r.status_code != 200:
+                last_error = f"HTTP {r.status_code}"
+                print(f"❌ TPEx 第 {attempt} 次抓取失敗：HTTP {r.status_code}，URL={r.url}")
+                print(f"   payload={payload}")
+                print(f"   回應內容前300字：{r.text[:300]}")
                 time.sleep(0.8)
                 continue
 
-            res = r.json()
+            try:
+                res = r.json()
+            except Exception as e:
+                last_error = f"JSON 解析失敗 {type(e).__name__}: {e}"
+                print(f"❌ TPEx 第 {attempt} 次 JSON 解析失敗：{type(e).__name__}: {e}")
+                print(f"   URL={r.url}")
+                print(f"   payload={payload}")
+                print(f"   回應內容前300字：{r.text[:300]}")
+                time.sleep(0.8)
+                continue
 
             target = []
             if "tables" in res:
@@ -574,9 +599,13 @@ def fetch_tpex_attention_rows(date_obj, date_str):
                 rows.append({"日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": c_str})
 
             return rows
-        except:
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            print(f"❌ TPEx 第 {attempt} 次抓取例外：{type(e).__name__}: {e}")
+            print(f"   日期={date_str}，ROC日期={roc_date}，payload={payload}")
             time.sleep(0.8)
 
+    print(f"❌ TPEx 三次重試皆失敗，最後錯誤：{last_error}")
     return None
 
 def get_daily_data(date_obj):
@@ -587,7 +616,13 @@ def get_daily_data(date_obj):
     tpex_rows = fetch_tpex_attention_rows(date_obj, date_str)
 
     if twse_rows is None or tpex_rows is None:
-        print("❌ 抓取失敗（回傳 None），本輪不寫入狀態，留待下次回補")
+        failed_sources = []
+        if twse_rows is None:
+            failed_sources.append("上市 TWSE")
+        if tpex_rows is None:
+            failed_sources.append("上櫃 TPEx")
+
+        print(f"❌ 抓取失敗：{', '.join(failed_sources)} 回傳 None，本輪不寫入狀態")
         return None
 
     rows = []
@@ -639,6 +674,14 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
 
         if data is None:
             print(f"⚠️ {d_str} 抓取失敗(None)，跳過不更新狀態")
+
+            # 關鍵交易日抓取失敗時直接中止，避免後續使用缺漏資料更新統計表與推播。
+            # 歷史較早日期仍可跳過並留待下次回補；最近強制驗證日與本次運算日不可放行。
+            if d in recent_dates or d == target_trade_date_obj:
+                raise RuntimeError(
+                    f"❌ 關鍵交易日 {d_str} 公告抓取失敗，已停止後續統計更新，避免錯誤資料被推播。"
+                )
+
             continue
 
         official_cnt = len(data)
