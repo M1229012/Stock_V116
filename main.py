@@ -68,10 +68,16 @@ TECH_TRACK_HEADERS = [
     '計算日期', '市場', '代號', '名稱', '狀態', '處置期間',
     '處置開始日', '處置結束日',
     '處置前10日開盤價', '處置前一日收盤價', '處置前10日漲跌幅(%)',
-    '目前價', 'MA20', '距離MA20(%)', '是否符合條件', '失敗原因', '更新時間'
+    '目前價', 'MA20', '距離MA20(%)', '是否符合條件',
+    '曾回測MA20±5%', '回測MA20日期', '回測MA20收盤價', '是否回測後轉強',
+    '失敗原因', '更新時間'
 ]
 TECH_PRE_10D_RISE_THRESHOLD = 20.0
 TECH_MA20_GAP_THRESHOLD = 5.0
+TECH_BREAKOUT_MA20_GAP_THRESHOLD = 10.0
+TECH_TRACK_TRUE_BG = {"red": 1.0, "green": 0.93, "blue": 0.82}
+TECH_TRACK_BREAKOUT_BG = {"red": 0.86, "green": 0.93, "blue": 1.0}
+TECH_TRACK_FALSE_BG = {"red": 1.0, "green": 0.90, "blue": 0.90}
 
 # ==========================================
 # 📆 設定區
@@ -831,7 +837,7 @@ def _fetch_technical_history(code, market, start_date, end_date):
 
 
 def calc_jail_technical_track_row(market, code, name, period, status_label):
-    """計算處置前10日漲跌幅、目前價、MA20 與是否符合凸顯條件。"""
+    """計算處置前10日漲跌幅、目前價、MA20、回測後轉強訊號與是否符合凸顯條件。"""
     now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
     calc_date_str = TARGET_DATE.strftime("%Y-%m-%d")
     code = str(code).replace("'", "").strip()
@@ -846,44 +852,67 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
         calc_date_str, market, f"'{code}", name, status_label, period,
         start_str, end_str,
         "", "", "",
-        "", "", "", "FALSE", "", now_str
+        "", "", "", "FALSE",
+        "FALSE", "", "", "FALSE",
+        "", now_str
     ]
 
     if not sd or not ed:
-        base_row[15] = "處置期間解析失敗"
+        base_row[19] = "處置期間解析失敗"
         return base_row
 
-    fetch_start = sd - timedelta(days=90)
+    fetch_start = sd - timedelta(days=120)
     fetch_end = TARGET_DATE.date() + timedelta(days=2)
     df, ticker_used = _fetch_technical_history(code, market, fetch_start, fetch_end)
 
     if df.empty or 'Open' not in df.columns or 'Close' not in df.columns:
-        base_row[15] = f"無股價資料({ticker_used})"
+        base_row[19] = f"無股價資料({ticker_used})"
         return base_row
 
     df = df.dropna(subset=['Open', 'Close']).copy()
     if df.empty:
-        base_row[15] = f"股價資料為空({ticker_used})"
+        base_row[19] = f"股價資料為空({ticker_used})"
         return base_row
 
     pre_df = df[df.index.date < sd]
     if len(pre_df) < 10:
-        base_row[15] = f"處置前交易日不足10日({len(pre_df)}日)"
+        base_row[19] = f"處置前交易日不足10日({len(pre_df)}日)"
         return base_row
 
     if len(df) < 20:
-        base_row[15] = f"MA20交易日不足20日({len(df)}日)"
+        base_row[19] = f"MA20交易日不足20日({len(df)}日)"
         return base_row
+
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA20_GAP_PCT'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
 
     pre_10_open = float(pre_df.tail(10)['Open'].iloc[0])
     pre_last_close = float(pre_df['Close'].iloc[-1])
     pre_10d_pct = ((pre_last_close - pre_10_open) / pre_10_open) * 100 if pre_10_open > 0 else 0.0
 
     current_price = float(df['Close'].iloc[-1])
-    ma20 = float(df['Close'].tail(20).mean())
+    ma20 = float(df['MA20'].iloc[-1]) if not pd.isna(df['MA20'].iloc[-1]) else 0.0
     ma20_gap_pct = ((current_price - ma20) / ma20) * 100 if ma20 > 0 else 0.0
 
     is_match = (pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD) and (abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
+
+    jail_df = df[df.index.date >= sd].copy()
+    jail_df = jail_df.dropna(subset=['MA20', 'MA20_GAP_PCT'])
+    retest_df = jail_df[jail_df['MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD]
+    has_retested_ma20 = not retest_df.empty
+
+    retest_date_str = ""
+    retest_close = ""
+    if has_retested_ma20:
+        latest_retest = retest_df.iloc[-1]
+        retest_date_str = retest_df.index[-1].strftime("%Y-%m-%d")
+        retest_close = _safe_round(float(latest_retest['Close']), 2)
+
+    is_breakout_after_retest = (
+        pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
+        and has_retested_ma20
+        and ma20_gap_pct >= TECH_BREAKOUT_MA20_GAP_THRESHOLD
+    )
 
     base_row[8] = _safe_round(pre_10_open, 2)
     base_row[9] = _safe_round(pre_last_close, 2)
@@ -892,9 +921,28 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     base_row[12] = _safe_round(ma20, 2)
     base_row[13] = _safe_round(ma20_gap_pct, 2)
     base_row[14] = "TRUE" if is_match else "FALSE"
-    base_row[15] = "" if is_match else f"未符合：處置前10日漲幅需>={TECH_PRE_10D_RISE_THRESHOLD:.0f}%且距離MA20需±{TECH_MA20_GAP_THRESHOLD:.0f}%內"
-    return base_row
+    base_row[15] = "TRUE" if has_retested_ma20 else "FALSE"
+    base_row[16] = retest_date_str
+    base_row[17] = retest_close
+    base_row[18] = "TRUE" if is_breakout_after_retest else "FALSE"
 
+    if is_breakout_after_retest:
+        base_row[19] = f"回測後轉強：曾回到MA20±{TECH_MA20_GAP_THRESHOLD:.0f}%內，目前距離MA20 +{ma20_gap_pct:.2f}%"
+    elif is_match:
+        base_row[19] = ""
+    else:
+        fail_reasons = []
+        if pre_10d_pct < TECH_PRE_10D_RISE_THRESHOLD:
+            fail_reasons.append(f"處置前10日漲幅未達{TECH_PRE_10D_RISE_THRESHOLD:.0f}%")
+        if abs(ma20_gap_pct) > TECH_MA20_GAP_THRESHOLD:
+            fail_reasons.append(f"目前距離MA20未在±{TECH_MA20_GAP_THRESHOLD:.0f}%內")
+        if not has_retested_ma20:
+            fail_reasons.append(f"處置期間尚未回到MA20±{TECH_MA20_GAP_THRESHOLD:.0f}%內")
+        if ma20_gap_pct < TECH_BREAKOUT_MA20_GAP_THRESHOLD:
+            fail_reasons.append(f"尚未上漲離MA20 +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%以上")
+        base_row[19] = "未符合：" + "、".join(fail_reasons)
+
+    return base_row
 
 def build_jail_technical_tracking_rows(stock_latest_end, releasing_codes_map, today_date):
     """建立正在處置與即將出關股票的技術追蹤資料列。"""
@@ -929,6 +977,30 @@ def build_jail_technical_tracking_rows(stock_latest_end, releasing_codes_map, to
     return rows
 
 
+def apply_technical_tracking_row_styles(ws, row_style_targets):
+    """依技術訊號套用列背景：回測後轉強淡藍、回測月線淡橘、其餘淡紅。"""
+    if not row_style_targets:
+        return
+
+    for row_num, is_match, is_breakout in row_style_targets:
+        try:
+            if is_breakout:
+                bg_color = TECH_TRACK_BREAKOUT_BG
+            elif is_match:
+                bg_color = TECH_TRACK_TRUE_BG
+            else:
+                bg_color = TECH_TRACK_FALSE_BG
+
+            ws.format(
+                f"A{row_num}:U{row_num}",
+                {
+                    "backgroundColor": bg_color
+                }
+            )
+        except Exception as e:
+            print(f"⚠️ 技術追蹤列背景色套用失敗 (第 {row_num} 列): {e}")
+
+
 def upsert_jail_technical_tracking_sheet(sh, rows):
     """寫入處置股技術追蹤工作表；同日同股同期間同狀態會更新，不重複新增。"""
     ws = get_or_create_ws(sh, TECH_TRACK_SHEET_NAME, headers=TECH_TRACK_HEADERS, cols=len(TECH_TRACK_HEADERS))
@@ -942,7 +1014,7 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
         ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
         all_values = [TECH_TRACK_HEADERS]
     elif all_values[0] != TECH_TRACK_HEADERS:
-        ws.update(values=[TECH_TRACK_HEADERS], range_name="A1:Q1", value_input_option='USER_ENTERED')
+        ws.update(values=[TECH_TRACK_HEADERS], range_name="A1:U1", value_input_option='USER_ENTERED')
 
     existing_key_to_row = {}
     for row_idx, row in enumerate(all_values[1:], start=2):
@@ -951,23 +1023,33 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
             existing_key_to_row[key] = row_idx
 
     rows_to_append = []
+    row_style_targets = []
     update_count = 0
 
     for row in rows:
         key = f"{str(row[0]).strip()}_{str(row[2]).replace(chr(39), '').strip()}_{str(row[5]).strip()}_{str(row[4]).strip()}"
+        is_match = str(row[14]).upper() == "TRUE"
+        is_breakout = str(row[18]).upper() == "TRUE"
         if key in existing_key_to_row:
             r = existing_key_to_row[key]
-            ws.update(values=[row], range_name=f"A{r}:Q{r}", value_input_option='USER_ENTERED')
+            ws.update(values=[row], range_name=f"A{r}:U{r}", value_input_option='USER_ENTERED')
+            row_style_targets.append((r, is_match, is_breakout))
             update_count += 1
         else:
             rows_to_append.append(row)
             existing_key_to_row[key] = -1
 
     if rows_to_append:
+        append_start_row = len(all_values) + 1
         ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        for offset, row in enumerate(rows_to_append):
+            row_style_targets.append((append_start_row + offset, str(row[14]).upper() == "TRUE", str(row[18]).upper() == "TRUE"))
+
+    apply_technical_tracking_row_styles(ws, row_style_targets)
 
     true_count = sum(1 for r in rows if str(r[14]).upper() == "TRUE")
-    print(f"✅ {TECH_TRACK_SHEET_NAME} 更新完成：新增 {len(rows_to_append)} 筆、更新 {update_count} 筆、符合條件 TRUE {true_count} 筆。")
+    breakout_count = sum(1 for r in rows if str(r[18]).upper() == "TRUE")
+    print(f"✅ {TECH_TRACK_SHEET_NAME} 更新完成：新增 {len(rows_to_append)} 筆、更新 {update_count} 筆、符合回測條件 TRUE {true_count} 筆、回測後轉強 TRUE {breakout_count} 筆。")
 
 def load_precise_db_from_sheet(sh):
     try:
