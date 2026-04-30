@@ -782,35 +782,33 @@ def draw_signal_legend(fig):
     """在圖片底部加入訊號顏色圖例（即將出關 / 處置中使用）。"""
     box_x = 0.028
     box_y = 0.012
-    box_w = 0.62
-    box_h = 0.032
+    box_w = 0.47
+    box_h = 0.038
 
     fig.add_artist(patches.FancyBboxPatch(
         (box_x, box_y), box_w, box_h,
-        boxstyle="round,pad=0.004,rounding_size=0.010",
+        boxstyle="round,pad=0.003,rounding_size=0.010",
         linewidth=0.9, edgecolor=LEGEND_BORDER, facecolor=LEGEND_BG,
         transform=fig.transFigure, clip_on=False, zorder=8
     ))
 
     text_y = box_y + box_h / 2
     x = box_x + 0.012
-
-    fig.text(x, text_y, clean_display_text("顏色說明"),
-             ha='left', va='center', fontsize=10.5,
-             fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
-    x += 0.060
-    fig.text(x, text_y, "｜",
-             ha='left', va='center', fontsize=10.5,
-             fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
-    x += 0.014
-    fig.text(x, text_y, clean_display_text("股號/股名:"),
-             ha='left', va='center', fontsize=10.2,
-             fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
-    x += 0.082
-
-    # 橘色圖例
+    main_fs = 11.8
+    item_fs = 11.3
+    sep_fs = 11.6
     swatch_w = 0.010
     swatch_h = 0.012
+
+    fig.text(x, text_y, clean_display_text("顏色說明"),
+             ha='left', va='center', fontsize=main_fs,
+             fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
+    x += 0.070
+    fig.text(x, text_y, "｜",
+             ha='left', va='center', fontsize=sep_fs,
+             fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
+    x += 0.013
+
     fig.add_artist(patches.Rectangle(
         (x, text_y - swatch_h / 2), swatch_w, swatch_h,
         linewidth=0, facecolor=LEGEND_BOX_ORANGE,
@@ -818,15 +816,14 @@ def draw_signal_legend(fig):
     ))
     x += 0.016
     fig.text(x, text_y, clean_display_text("接近20MA"),
-             ha='left', va='center', fontsize=10.0,
+             ha='left', va='center', fontsize=item_fs,
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
-    x += 0.072
+    x += 0.079
     fig.text(x, text_y, "｜",
-             ha='left', va='center', fontsize=10.5,
+             ha='left', va='center', fontsize=sep_fs,
              fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
-    x += 0.014
+    x += 0.013
 
-    # 藍色圖例
     fig.add_artist(patches.Rectangle(
         (x, text_y - swatch_h / 2), swatch_w, swatch_h,
         linewidth=0, facecolor=LEGEND_BOX_BLUE,
@@ -834,7 +831,7 @@ def draw_signal_legend(fig):
     ))
     x += 0.016
     fig.text(x, text_y, clean_display_text("回測20MA後再轉強"),
-             ha='left', va='center', fontsize=10.0,
+             ha='left', va='center', fontsize=item_fs,
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
 
 
