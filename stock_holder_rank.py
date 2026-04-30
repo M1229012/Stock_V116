@@ -26,6 +26,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 
 # ================= 圖片樣式設定 =================
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
+DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
 
 IMG_BG = "#F5F7FA"
@@ -463,9 +464,17 @@ def build_rank_image(listed_df, otc_df, display_date):
     draw_rank_table(ax, otc_df.reset_index(drop=True) if otc_df is not None else None,
                     "上櫃排行", ACCENT_OTC, y_top, otc_card_h / total_units)
 
-    fig.text(0.985, 0.018, clean_cell(WATERMARK_TEXT),
-             ha='right', va='bottom',
+    fig.text(0.985, 0.988, clean_cell(WATERMARK_TEXT),
+             ha='right', va='top',
              fontsize=10,
+             fontproperties=FONT_PROP,
+             color="#2C3440",
+             alpha=WATERMARK_ALPHA,
+             zorder=10)
+
+    fig.text(0.985, 0.968, clean_cell(DISCLAIMER_TEXT),
+             ha='right', va='top',
+             fontsize=9,
              fontproperties=FONT_PROP,
              color="#2C3440",
              alpha=WATERMARK_ALPHA,
