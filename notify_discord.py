@@ -41,6 +41,9 @@ else:
 JAIL_ENTER_THRESHOLD = 3   
 JAIL_EXIT_THRESHOLD = 5    
 
+# 處置股技術追蹤工作表名稱（用來查訊號狀態，幫股號股名變色）
+TECH_TRACK_SHEET_NAME = "處置股技術追蹤"
+
 # ============================
 # 🎨 圖片風格設定
 # ============================
@@ -373,6 +376,11 @@ DAYS_WARN_FG   = '#1A1A1A'
 DAYS_NORMAL_BG = '#E9EEF5'
 DAYS_NORMAL_FG = '#2C3440'
 
+# ---- 訊號狀態色（從處置股技術追蹤工作表的「訊號狀態」欄位讀取後套用） ----
+# 背景是白色 / 淺灰，所以兩個顏色都選偏深的版本，不會反白也不會刺眼。
+SIGNAL_COLOR_RETEST   = '#C2410C'  # 深橘：訊號狀態 = 目前回測月線
+SIGNAL_COLOR_BREAKOUT = '#1D4ED8'  # 深藍：訊號狀態 = 回測後轉強
+
 THEME_ENTERING  = {'accent': '#E85D6A', 'header': '#FCECEF', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 30}
 THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 34}
 THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 30}
@@ -470,6 +478,62 @@ def get_merged_jail_periods(sh):
                         jail_map[code]['end'] = max(jail_map[code]['end'], e_date)
     except: return {}
     return {c: f"{d['start'].strftime('%m/%d')}-{d['end'].strftime('%m/%d')}" for c, d in jail_map.items()}
+
+
+# ============================
+# 🎯 訊號狀態 → 顏色對照（讀取「處置股技術追蹤」工作表）
+# ============================
+def load_signal_status_map(sh):
+    """從「處置股技術追蹤」工作表讀取每檔股票的訊號狀態。
+
+    若同一檔股票有多筆紀錄（不同計算日期或不同狀態：正在處置 / 即將出關），
+    取「計算日期最新」的那筆作為當前訊號狀態。
+
+    回傳：{代號: 訊號狀態} 的 dict
+    例如：{'2330': '回測後轉強', '6196': '目前回測月線', '2317': '未符合'}
+    """
+    signal_map = {}
+    try:
+        ws = sh.worksheet(TECH_TRACK_SHEET_NAME)
+        records = ws.get_all_records()
+        latest_by_code = {}
+        for row in records:
+            code = str(row.get('代號', '')).replace("'", "").strip()
+            if not code:
+                continue
+            status = str(row.get('訊號狀態', '')).strip()
+            calc_date = str(row.get('計算日期', '')).strip()
+            # 同一檔有多筆 → 比較計算日期，保留最新那筆
+            if code not in latest_by_code or calc_date >= latest_by_code[code]['date']:
+                latest_by_code[code] = {'status': status, 'date': calc_date}
+        signal_map = {c: v['status'] for c, v in latest_by_code.items()}
+        # 統計各訊號狀態檔數
+        retest_n = sum(1 for s in signal_map.values() if s == "目前回測月線")
+        breakout_n = sum(1 for s in signal_map.values() if s == "回測後轉強")
+        print(f"✅ 已載入處置股技術追蹤訊號 {len(signal_map)} 檔 (目前回測月線:{retest_n} / 回測後轉強:{breakout_n})")
+    except Exception as e:
+        print(f"⚠️ 讀取「{TECH_TRACK_SHEET_NAME}」失敗（可能工作表不存在或欄位有變動）: {e}")
+    return signal_map
+
+
+def get_signal_color(code, signal_map, default_color=None):
+    """依訊號狀態決定股號股名顏色。
+
+    規則：
+        訊號狀態 = "回測後轉強"   → 深藍 (#1D4ED8)
+        訊號狀態 = "目前回測月線" → 深橘 (#C2410C)
+        其他狀態 / 沒有資料        → 預設色 (TEXT_MAIN)
+    """
+    if default_color is None:
+        default_color = TEXT_MAIN
+    if not signal_map:
+        return default_color
+    status = signal_map.get(code, '')
+    if status == "回測後轉強":
+        return SIGNAL_COLOR_BREAKOUT
+    if status == "目前回測月線":
+        return SIGNAL_COLOR_RETEST
+    return default_color
 
 
 # ============================
@@ -747,8 +811,12 @@ def save_figure_to_buffer(fig):
     return buf
 
 
-def draw_entering_image(data):
-    """瀕臨處置 - 單欄詳細圖"""
+def draw_entering_image(data, signal_map=None):
+    """瀕臨處置 - 單欄詳細圖
+
+    瀕臨處置股票尚未正式進入處置期間，因此不套用「處置股技術追蹤」訊號色。
+    股號與股名維持預設深灰色，避免因尚未進處置而誤判目前股價位置。
+    """
     theme = THEME_ENTERING
     n = len(data)
     fig_h = calc_dynamic_fig_h(n, base_h=5.9, per_row_h=0.36, min_h=7.0, max_h=15.6)
@@ -800,6 +868,9 @@ def draw_entering_image(data):
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
 
+        # 瀕臨處置尚未正式進入處置期間，不套用技術追蹤訊號色
+        name_color = TEXT_MAIN
+
         ax.add_patch(patches.Rectangle(
             (0.005, y_top - row_h), 0.99, row_h,
             linewidth=0, facecolor=bg_color,
@@ -826,11 +897,11 @@ def draw_entering_image(data):
         ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=20, fontweight='bold',
-                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
+                fontproperties=FONT_BOLD, color=name_color, zorder=3)
         ax.text(x_starts[2] + 0.015, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=19, fontproperties=FONT_PROP,
-                color=TEXT_MAIN, zorder=3)
+                color=name_color, zorder=3)
 
         bg_clr, fg_clr = get_days_style(days)
         capsule_w = col_widths[3] * 0.6
@@ -855,8 +926,11 @@ def draw_entering_image(data):
     return save_figure_to_buffer(fig)
 
 
-def draw_releasing_image(data):
-    """即將出關 - 單欄詳細含績效"""
+def draw_releasing_image(data, signal_map=None):
+    """即將出關 - 單欄詳細含績效
+
+    signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
+    """
     theme = THEME_RELEASING
     n = len(data)
     fig_w = 16.2
@@ -911,6 +985,9 @@ def draw_releasing_image(data):
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
 
+        # 依訊號狀態決定股號股名的顏色
+        name_color = get_signal_color(code, signal_map)
+
         ax.add_patch(patches.Rectangle(
             (0.005, y_top - row_h), 0.99, row_h,
             linewidth=0, facecolor=bg_color,
@@ -937,11 +1014,11 @@ def draw_releasing_image(data):
         ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=20, fontweight='bold',
-                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
+                fontproperties=FONT_BOLD, color=name_color, zorder=3)
         ax.text(x_starts[2] + 0.012, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=20, fontproperties=FONT_PROP,
-                color=TEXT_MAIN, zorder=3)
+                color=name_color, zorder=3)
 
         bg_clr, fg_clr = get_days_style(days)
         capsule_w = col_widths[3] * 0.80
@@ -1003,8 +1080,11 @@ def draw_releasing_image(data):
     return save_figure_to_buffer(fig)
 
 
-def draw_injail_image(data):
-    """處置中 - 動態欄數版"""
+def draw_injail_image(data, signal_map=None):
+    """處置中 - 動態欄數版
+
+    signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
+    """
     theme = THEME_INJAIL
     n = len(data)
     n_cols = get_injail_n_cols(n)
@@ -1072,6 +1152,9 @@ def draw_injail_image(data):
         if col_idx >= n_cols:
             break
 
+        # 依訊號狀態決定股號股名的顏色
+        name_color = get_signal_color(code, signal_map)
+
         col_x_start = col_xs[col_idx]
         sub_x_starts = []
         acc = 0
@@ -1109,11 +1192,11 @@ def draw_injail_image(data):
         ax.text(sub_x_starts[1] + sub_x_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=15, fontweight='bold',
-                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
+                fontproperties=FONT_BOLD, color=name_color, zorder=3)
         ax.text(sub_x_starts[2] + 0.008, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=15, fontproperties=FONT_PROP,
-                color=TEXT_MAIN, zorder=3)
+                color=name_color, zorder=3)
         ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, period,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=14, fontproperties=FONT_PROP,
@@ -1129,7 +1212,10 @@ def draw_injail_image(data):
 def main():
     sh = connect_google_sheets()
     if not sh: return
-    
+
+    # 預先載入「處置股技術追蹤」的訊號狀態，僅即將出關與處置中會用到
+    signal_map = load_signal_status_map(sh)
+
     rel = check_releasing_stocks(sh)
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes)
@@ -1148,7 +1234,7 @@ def main():
     if rel:
         print(f"📊 產生即將出關圖片 ({len(rel)} 檔)...")
         try:
-            buf = draw_releasing_image(rel)
+            buf = draw_releasing_image(rel, signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
         except Exception as e:
@@ -1158,7 +1244,7 @@ def main():
     if stats['in_jail']:
         print(f"📊 產生處置中圖片 ({len(stats['in_jail'])} 檔)...")
         try:
-            buf = draw_injail_image(stats['in_jail'])
+            buf = draw_injail_image(stats['in_jail'], signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
         except Exception as e:
