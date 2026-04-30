@@ -62,6 +62,17 @@ STATS_HEADERS = [
     '週轉率(%)', 'PE', 'PB', '當沖佔比(%)'
 ]
 
+# 定義處置股技術追蹤表頭
+TECH_TRACK_SHEET_NAME = "處置股技術追蹤"
+TECH_TRACK_HEADERS = [
+    '計算日期', '市場', '代號', '名稱', '狀態', '處置期間',
+    '處置開始日', '處置結束日',
+    '處置前10日開盤價', '處置前一日收盤價', '處置前10日漲跌幅(%)',
+    '目前價', 'MA20', '距離MA20(%)', '是否符合條件', '失敗原因', '更新時間'
+]
+TECH_PRE_10D_RISE_THRESHOLD = 20.0
+TECH_MA20_GAP_THRESHOLD = 5.0
+
 # ==========================================
 # 📆 設定區
 # ==========================================
@@ -777,6 +788,187 @@ def fetch_history_data(ticker_code):
         return df
     except: return pd.DataFrame()
 
+def _safe_round(v, ndigits=2):
+    try:
+        if v is None or pd.isna(v):
+            return ""
+        return round(float(v), ndigits)
+    except:
+        return ""
+
+
+def _fetch_technical_history(code, market, start_date, end_date):
+    """抓取技術追蹤用股價資料；若市場別判斷錯誤，會自動嘗試另一個後綴。"""
+    suffix = get_ticker_suffix(market)
+    ticker = f"{code}{suffix}"
+    try:
+        df = yf.Ticker(ticker).history(
+            start=start_date.strftime("%Y-%m-%d"),
+            end=end_date.strftime("%Y-%m-%d"),
+            auto_adjust=True
+        )
+        if not df.empty:
+            df.index = df.index.tz_localize(None)
+            return df, ticker
+    except Exception as e:
+        print(f"⚠️ 技術追蹤股價抓取失敗 ({ticker}): {e}")
+
+    alt_suffix = '.TWO' if suffix == '.TW' else '.TW'
+    alt_ticker = f"{code}{alt_suffix}"
+    try:
+        df = yf.Ticker(alt_ticker).history(
+            start=start_date.strftime("%Y-%m-%d"),
+            end=end_date.strftime("%Y-%m-%d"),
+            auto_adjust=True
+        )
+        if not df.empty:
+            df.index = df.index.tz_localize(None)
+            return df, alt_ticker
+    except Exception as e:
+        print(f"⚠️ 技術追蹤備援股價抓取失敗 ({alt_ticker}): {e}")
+
+    return pd.DataFrame(), ticker
+
+
+def calc_jail_technical_track_row(market, code, name, period, status_label):
+    """計算處置前10日漲跌幅、目前價、MA20 與是否符合凸顯條件。"""
+    now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
+    calc_date_str = TARGET_DATE.strftime("%Y-%m-%d")
+    code = str(code).replace("'", "").strip()
+    name = str(name).strip()
+    period = str(period).strip()
+
+    sd, ed = parse_jail_period(period)
+    start_str = sd.strftime("%Y-%m-%d") if sd else ""
+    end_str = ed.strftime("%Y-%m-%d") if ed else ""
+
+    base_row = [
+        calc_date_str, market, f"'{code}", name, status_label, period,
+        start_str, end_str,
+        "", "", "",
+        "", "", "", "FALSE", "", now_str
+    ]
+
+    if not sd or not ed:
+        base_row[15] = "處置期間解析失敗"
+        return base_row
+
+    fetch_start = sd - timedelta(days=90)
+    fetch_end = TARGET_DATE.date() + timedelta(days=2)
+    df, ticker_used = _fetch_technical_history(code, market, fetch_start, fetch_end)
+
+    if df.empty or 'Open' not in df.columns or 'Close' not in df.columns:
+        base_row[15] = f"無股價資料({ticker_used})"
+        return base_row
+
+    df = df.dropna(subset=['Open', 'Close']).copy()
+    if df.empty:
+        base_row[15] = f"股價資料為空({ticker_used})"
+        return base_row
+
+    pre_df = df[df.index.date < sd]
+    if len(pre_df) < 10:
+        base_row[15] = f"處置前交易日不足10日({len(pre_df)}日)"
+        return base_row
+
+    if len(df) < 20:
+        base_row[15] = f"MA20交易日不足20日({len(df)}日)"
+        return base_row
+
+    pre_10_open = float(pre_df.tail(10)['Open'].iloc[0])
+    pre_last_close = float(pre_df['Close'].iloc[-1])
+    pre_10d_pct = ((pre_last_close - pre_10_open) / pre_10_open) * 100 if pre_10_open > 0 else 0.0
+
+    current_price = float(df['Close'].iloc[-1])
+    ma20 = float(df['Close'].tail(20).mean())
+    ma20_gap_pct = ((current_price - ma20) / ma20) * 100 if ma20 > 0 else 0.0
+
+    is_match = (pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD) and (abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
+
+    base_row[8] = _safe_round(pre_10_open, 2)
+    base_row[9] = _safe_round(pre_last_close, 2)
+    base_row[10] = _safe_round(pre_10d_pct, 2)
+    base_row[11] = _safe_round(current_price, 2)
+    base_row[12] = _safe_round(ma20, 2)
+    base_row[13] = _safe_round(ma20_gap_pct, 2)
+    base_row[14] = "TRUE" if is_match else "FALSE"
+    base_row[15] = "" if is_match else f"未符合：處置前10日漲幅需>={TECH_PRE_10D_RISE_THRESHOLD:.0f}%且距離MA20需±{TECH_MA20_GAP_THRESHOLD:.0f}%內"
+    return base_row
+
+
+def build_jail_technical_tracking_rows(stock_latest_end, releasing_codes_map, today_date):
+    """建立正在處置與即將出關股票的技術追蹤資料列。"""
+    rows = []
+    sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: (x[1]['date'], x[0]))
+
+    for code, data in sorted_stocks:
+        row_list = data.get('row_list', [])
+        if len(row_list) < 4:
+            continue
+
+        market = str(row_list[0]).strip()
+        code = str(row_list[1]).replace("'", "").strip()
+        name = str(row_list[2]).strip()
+        period = str(row_list[3]).strip()
+        sd_date, ed_date = parse_jail_period(period)
+
+        if not sd_date or not ed_date:
+            continue
+
+        if code in releasing_codes_map:
+            status_label = "即將出關"
+        elif sd_date <= today_date <= ed_date:
+            status_label = "正在處置"
+        else:
+            continue
+
+        rows.append(calc_jail_technical_track_row(market, code, name, period, status_label))
+        if len(rows) % 10 == 0:
+            time.sleep(1)
+
+    return rows
+
+
+def upsert_jail_technical_tracking_sheet(sh, rows):
+    """寫入處置股技術追蹤工作表；同日同股同期間同狀態會更新，不重複新增。"""
+    ws = get_or_create_ws(sh, TECH_TRACK_SHEET_NAME, headers=TECH_TRACK_HEADERS, cols=len(TECH_TRACK_HEADERS))
+
+    if not rows:
+        print(f"⚠️ {TECH_TRACK_SHEET_NAME} 無符合正在處置或即將出關的資料需要寫入。")
+        return
+
+    all_values = ws.get_all_values()
+    if not all_values:
+        ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        all_values = [TECH_TRACK_HEADERS]
+    elif all_values[0] != TECH_TRACK_HEADERS:
+        ws.update(values=[TECH_TRACK_HEADERS], range_name="A1:Q1", value_input_option='USER_ENTERED')
+
+    existing_key_to_row = {}
+    for row_idx, row in enumerate(all_values[1:], start=2):
+        if len(row) >= 6:
+            key = f"{str(row[0]).strip()}_{str(row[2]).replace(chr(39), '').strip()}_{str(row[5]).strip()}_{str(row[4]).strip()}"
+            existing_key_to_row[key] = row_idx
+
+    rows_to_append = []
+    update_count = 0
+
+    for row in rows:
+        key = f"{str(row[0]).strip()}_{str(row[2]).replace(chr(39), '').strip()}_{str(row[5]).strip()}_{str(row[4]).strip()}"
+        if key in existing_key_to_row:
+            r = existing_key_to_row[key]
+            ws.update(values=[row], range_name=f"A{r}:Q{r}", value_input_option='USER_ENTERED')
+            update_count += 1
+        else:
+            rows_to_append.append(row)
+            existing_key_to_row[key] = -1
+
+    if rows_to_append:
+        ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+
+    true_count = sum(1 for r in rows if str(r[14]).upper() == "TRUE")
+    print(f"✅ {TECH_TRACK_SHEET_NAME} 更新完成：新增 {len(rows_to_append)} 筆、更新 {update_count} 筆、符合條件 TRUE {true_count} 筆。")
+
 def load_precise_db_from_sheet(sh):
     try:
         ws = sh.worksheet(PARAM_SHEET_NAME)
@@ -1337,6 +1529,14 @@ def main():
         else:
             ws_release.append_row(["目前無 5 日內即將出關股票"], value_input_option='USER_ENTERED')
             print("⚠️ 目前無符合條件的即將出關股。")
+
+        # 4. 新增處置股技術追蹤：記錄處置前10日漲跌幅、目前價、MA20、距離MA20與是否符合條件
+        try:
+            print("📈 更新「處置股技術追蹤」工作表...")
+            technical_rows = build_jail_technical_tracking_rows(stock_latest_end, releasing_codes_map, today_date)
+            upsert_jail_technical_tracking_sheet(sh, technical_rows)
+        except Exception as e:
+            print(f"❌ 處置股技術追蹤更新失敗: {e}")
             
     except Exception as e:
         print(f"❌ 處置股爬蟲或處理任務失敗: {e}")
