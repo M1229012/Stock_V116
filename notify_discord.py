@@ -760,6 +760,7 @@ def draw_table_frame(ax, theme, subtitle, top_y, total_h):
 
 COMMON_FIG_WIDTH = 15
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
+DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
 
 # 底部圖例（只顯示在「即將出關」與「處置中」兩張圖）
@@ -771,9 +772,14 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 
 def draw_watermark(fig):
-    fig.text(0.985, 0.016, clean_display_text(WATERMARK_TEXT),
+    fig.text(0.985, 0.032, clean_display_text(WATERMARK_TEXT),
              ha='right', va='bottom',
              fontsize=11,
+             fontproperties=FONT_PROP,
+             color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
+    fig.text(0.985, 0.014, clean_display_text(DISCLAIMER_TEXT),
+             ha='right', va='bottom',
+             fontsize=9.5,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
