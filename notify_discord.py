@@ -794,8 +794,8 @@ def draw_signal_legend(fig):
 
     text_y = box_y + box_h / 2
     x = box_x + 0.012
-    main_fs = 11.8
-    item_fs = 11.3
+    main_fs = 14
+    item_fs = 14
     sep_fs = 11.6
     swatch_w = 0.010
     swatch_h = 0.012
