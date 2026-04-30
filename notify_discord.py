@@ -779,7 +779,7 @@ def draw_watermark(fig):
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
     fig.text(0.985, 0.014, clean_display_text(DISCLAIMER_TEXT),
              ha='right', va='bottom',
-             fontsize=9.5,
+             fontsize=11,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
