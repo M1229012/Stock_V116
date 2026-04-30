@@ -762,6 +762,13 @@ COMMON_FIG_WIDTH = 15
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
 WATERMARK_ALPHA = 0.80
 
+# 底部圖例（只顯示在「即將出關」與「處置中」兩張圖）
+LEGEND_BG = '#F8FAFC'
+LEGEND_BORDER = '#D6DEE8'
+LEGEND_TEXT = '#5B6678'
+LEGEND_BOX_ORANGE = SIGNAL_COLOR_RETEST
+LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
+
 
 def draw_watermark(fig):
     fig.text(0.985, 0.016, clean_display_text(WATERMARK_TEXT),
@@ -769,6 +776,66 @@ def draw_watermark(fig):
              fontsize=11,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
+
+
+def draw_signal_legend(fig):
+    """在圖片底部加入訊號顏色圖例（即將出關 / 處置中使用）。"""
+    box_x = 0.028
+    box_y = 0.012
+    box_w = 0.62
+    box_h = 0.032
+
+    fig.add_artist(patches.FancyBboxPatch(
+        (box_x, box_y), box_w, box_h,
+        boxstyle="round,pad=0.004,rounding_size=0.010",
+        linewidth=0.9, edgecolor=LEGEND_BORDER, facecolor=LEGEND_BG,
+        transform=fig.transFigure, clip_on=False, zorder=8
+    ))
+
+    text_y = box_y + box_h / 2
+    x = box_x + 0.012
+
+    fig.text(x, text_y, clean_display_text("顏色說明"),
+             ha='left', va='center', fontsize=10.5,
+             fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
+    x += 0.060
+    fig.text(x, text_y, "｜",
+             ha='left', va='center', fontsize=10.5,
+             fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
+    x += 0.014
+    fig.text(x, text_y, clean_display_text("股號/股名:"),
+             ha='left', va='center', fontsize=10.2,
+             fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
+    x += 0.082
+
+    # 橘色圖例
+    swatch_w = 0.010
+    swatch_h = 0.012
+    fig.add_artist(patches.Rectangle(
+        (x, text_y - swatch_h / 2), swatch_w, swatch_h,
+        linewidth=0, facecolor=LEGEND_BOX_ORANGE,
+        transform=fig.transFigure, clip_on=False, zorder=9
+    ))
+    x += 0.016
+    fig.text(x, text_y, clean_display_text("接近20MA"),
+             ha='left', va='center', fontsize=10.0,
+             fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
+    x += 0.072
+    fig.text(x, text_y, "｜",
+             ha='left', va='center', fontsize=10.5,
+             fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
+    x += 0.014
+
+    # 藍色圖例
+    fig.add_artist(patches.Rectangle(
+        (x, text_y - swatch_h / 2), swatch_w, swatch_h,
+        linewidth=0, facecolor=LEGEND_BOX_BLUE,
+        transform=fig.transFigure, clip_on=False, zorder=9
+    ))
+    x += 0.016
+    fig.text(x, text_y, clean_display_text("回測20MA後再轉強"),
+             ha='left', va='center', fontsize=10.0,
+             fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
 
 
 UNIFIED_SUBPLOT_LEFT = 0.025
@@ -814,8 +881,11 @@ def save_figure_to_buffer(fig):
 def draw_entering_image(data, signal_map=None):
     """瀕臨處置 - 單欄詳細圖
 
-    瀕臨處置股票尚未正式進入處置期間，因此不套用「處置股技術追蹤」訊號色。
-    股號與股名維持預設深灰色，避免因尚未進處置而誤判目前股價位置。
+    signal_map: {代號: 訊號狀態} dict（從處置股技術追蹤讀取），
+                用來決定股號股名的顏色：
+                - 回測後轉強 → 深藍
+                - 目前回測月線 → 深橘
+                - 其他/沒資料 → 預設深灰
     """
     theme = THEME_ENTERING
     n = len(data)
@@ -868,8 +938,8 @@ def draw_entering_image(data, signal_map=None):
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
 
-        # 瀕臨處置尚未正式進入處置期間，不套用技術追蹤訊號色
-        name_color = TEXT_MAIN
+        # 依訊號狀態決定股號股名的顏色
+        name_color = get_signal_color(code, signal_map)
 
         ax.add_patch(patches.Rectangle(
             (0.005, y_top - row_h), 0.99, row_h,
@@ -1076,6 +1146,7 @@ def draw_releasing_image(data, signal_map=None):
                 fontsize=18, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
 
+    draw_signal_legend(fig)
     draw_watermark(fig)
     return save_figure_to_buffer(fig)
 
@@ -1202,6 +1273,7 @@ def draw_injail_image(data, signal_map=None):
                 fontsize=14, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
 
+    draw_signal_legend(fig)
     draw_watermark(fig)
     return save_figure_to_buffer(fig)
 
@@ -1213,7 +1285,7 @@ def main():
     sh = connect_google_sheets()
     if not sh: return
 
-    # 預先載入「處置股技術追蹤」的訊號狀態，僅即將出關與處置中會用到
+    # 預先載入「處置股技術追蹤」的訊號狀態，三張圖都會用到
     signal_map = load_signal_status_map(sh)
 
     rel = check_releasing_stocks(sh)
@@ -1224,7 +1296,7 @@ def main():
     if stats['entering']:
         print(f"📊 產生瀕臨處置圖片 ({len(stats['entering'])} 檔)...")
         try:
-            buf = draw_entering_image(stats['entering'])
+            buf = draw_entering_image(stats['entering'], signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
         except Exception as e:
