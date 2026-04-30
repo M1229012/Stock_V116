@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+import yfinance as yf
 from io import StringIO, BytesIO
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -11,7 +12,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 import re
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from wcwidth import wcwidth
 import unicodedata
 
@@ -25,9 +26,15 @@ from matplotlib import font_manager
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 
 # ================= 圖片樣式設定 =================
-WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
+WATERMARK_TEXT = "股市艾斯\n台股DC討論群"
+TOPRIGHT_WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
 DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
-WATERMARK_ALPHA = 0.80
+WATERMARK_ALPHA = 0.12
+WATERMARK_FONT_SIZE = 104
+WATERMARK_ROTATION = 18
+TOPRIGHT_WATERMARK_ALPHA = 0.80
+TOPRIGHT_WATERMARK_FONT_SIZE = 10
+TOPRIGHT_DISCLAIMER_FONT_SIZE = 9
 
 IMG_BG = "#F5F7FA"
 CARD_BG = "#FFFFFF"
@@ -39,6 +46,15 @@ TEXT_RED = "#E53E3E"
 TEXT_GREEN = "#16A34A"
 ACCENT_LISTED = "#3182CE"
 ACCENT_OTC = "#22A06B"
+TOP1_BG = "#FFF4D9"
+TOP2_BG = "#EEF4FF"
+TOP3_BG = "#FDF0E6"
+TOP1_BORDER = "#F2C56B"
+TOP2_BORDER = "#BFD0F3"
+TOP3_BORDER = "#E6B88A"
+TOP1_BADGE = "#F4C95D"
+TOP2_BADGE = "#C9D2E3"
+TOP3_BADGE = "#E6BA8A"
 
 CJK_FONT_PATH = None
 CJK_BOLD_FONT_PATH = None
@@ -101,6 +117,74 @@ try:
     plt.rcParams["axes.unicode_minus"] = False
 except Exception as e:
     print(f"⚠️ matplotlib 字型設定失敗: {e}")
+
+
+def parse_latest_trade_date(raw_date):
+    """將 Norway 表頭日期轉成 datetime，用於計算該週週一開盤到週五收盤。"""
+    s = "" if raw_date is None else str(raw_date).strip()
+    digits = re.sub(r"\D", "", s)
+    year_now = datetime.now().year
+
+    try:
+        if len(digits) == 4:
+            return datetime(year_now, int(digits[:2]), int(digits[2:]))
+        if len(digits) == 8:
+            return datetime(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
+    except:
+        pass
+
+    return datetime.now()
+
+
+def get_week_price_info(code, market_suffix, latest_date_str):
+    """
+    計算股價與週漲跌：
+    以 latest_date_str 所在週為基準，抓該週第一個有效交易日的 Open，
+    以及該週最後一個有效交易日的 Close。
+    若週一或週五休市，會自動改用週二開盤或週四收盤等可取得的交易日。
+    """
+    try:
+        ref_date = parse_latest_trade_date(latest_date_str)
+        week_start = ref_date - timedelta(days=ref_date.weekday())
+        week_end = week_start + timedelta(days=7)
+
+        ticker = f"{code}{market_suffix}"
+        df = yf.Ticker(ticker).history(
+            start=week_start.strftime("%Y-%m-%d"),
+            end=week_end.strftime("%Y-%m-%d"),
+            auto_adjust=True
+        )
+
+        # 若資料來源當週尚未更新，往前補抓一段時間，仍取最新可用週資料。
+        if df.empty:
+            fallback_start = ref_date - timedelta(days=14)
+            fallback_end = ref_date + timedelta(days=2)
+            df = yf.Ticker(ticker).history(
+                start=fallback_start.strftime("%Y-%m-%d"),
+                end=fallback_end.strftime("%Y-%m-%d"),
+                auto_adjust=True
+            )
+
+        if df.empty or "Open" not in df.columns or "Close" not in df.columns:
+            return "-", "-"
+
+        df = df.dropna(subset=["Open", "Close"])
+        if df.empty:
+            return "-", "-"
+
+        first_open = float(df["Open"].iloc[0])
+        last_close = float(df["Close"].iloc[-1])
+
+        if first_open <= 0:
+            return f"{last_close:.1f}", "-"
+
+        week_pct = ((last_close - first_open) / first_open) * 100
+        arrow = "▲" if week_pct > 0 else "▼" if week_pct < 0 else "—"
+        return f"{last_close:.1f}", f"{arrow}{abs(week_pct):.1f}%"
+    except Exception as e:
+        print(f"⚠️ 股價資料取得失敗 ({code}{market_suffix}): {e}")
+        return "-", "-"
+
 
 def get_norway_rank_logic(url):
     """
@@ -203,8 +287,26 @@ def get_norway_rank_logic(url):
         # 4.6 構建回傳 DataFrame
         result_df = pd.DataFrame()
         result_df['股票代號/名稱'] = top20_data.iloc[:, 3]
+
+        # 類別欄位參考網頁表格第 5 欄，也就是 XPath 的 td[5]/a
+        if target_df.shape[1] > 4:
+            result_df['類別'] = top20_data.iloc[:, 4]
+        else:
+            result_df['類別'] = "-"
+
+        market_suffix = ".TWO" if "CID=100" in url else ".TW"
+        price_list, week_chg_list = [], []
+        for raw_name in result_df['股票代號/名稱']:
+            match = re.match(r'(\d{4})', clean_cell(raw_name))
+            code = match.group(1) if match else ""
+            price, week_chg = get_week_price_info(code, market_suffix, latest_date_str)
+            price_list.append(price)
+            week_chg_list.append(week_chg)
+
+        result_df['現價'] = price_list
+        result_df['週漲跌'] = week_chg_list
         result_df['總增減'] = top20_data.iloc[:, latest_date_col_idx] 
-        
+
         return result_df, latest_date_str
 
     except Exception as e:
@@ -317,167 +419,267 @@ def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
     )
 
 
-def draw_rank_table(ax, df, title, accent, y_top, card_h):
-    left = 0.045
-    width = 0.91
-    row_n = 0 if df is None else len(df)
-    header_h = 0.048
-    title_h = 0.058
-    row_h = (card_h - title_h - header_h - 0.028) / max(row_n, 1)
+def _shorten_text(text, max_chars):
+    text = clean_cell(text)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 1] + "…"
 
+
+def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20):
+    """白色版並列表格：上市 / 上櫃各一張卡片，每張保留 7 欄資訊。"""
+    title_h = 0.062
+    header_h = 0.046
+    inner_pad_x = 0.014
+    inner_w = card_w - inner_pad_x * 2
+    row_h = (card_h - title_h - header_h - 0.024) / max(top_n, 1)
+
+    # 外框卡片
     ax.add_patch(patches.FancyBboxPatch(
-        (left, y_top - card_h), width, card_h,
-        boxstyle="round,pad=0.006,rounding_size=0.010",
-        linewidth=1.2, edgecolor=CARD_BORDER, facecolor=CARD_BG,
+        (x_left, y_top - card_h), card_w, card_h,
+        boxstyle="round,pad=0.006,rounding_size=0.012",
+        linewidth=1.1, edgecolor=CARD_BORDER, facecolor=CARD_BG,
         transform=ax.transAxes, zorder=1
     ))
+
+    # 標題條：保留原版左右分區感，但改為白底風格
     ax.add_patch(patches.Rectangle(
-        (left, y_top - title_h), width, title_h,
-        linewidth=0, facecolor=HEADER_BG,
+        (x_left, y_top - title_h), card_w, title_h,
+        linewidth=0, facecolor=accent,
         transform=ax.transAxes, zorder=2
     ))
-    ax.add_patch(patches.Rectangle(
-        (left, y_top - title_h), 0.010, title_h,
-        linewidth=0, facecolor=accent,
-        transform=ax.transAxes, zorder=3
-    ))
+    draw_text(ax, x_left + 0.018, y_top - title_h / 2, title,
+              size=16, color="#FFFFFF", weight='bold', bold=True)
+    draw_text(ax, x_left + card_w - 0.018, y_top - title_h / 2, f"TOP {top_n}",
+              size=12, color="#FFFFFF", weight='bold', bold=True, ha='right')
 
-    draw_text(ax, left + 0.025, y_top - title_h / 2, title, size=14,
-              color=accent, weight='bold', bold=True)
+    # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
+    # 重新分配右半部欄位寬度，讓「類別 / 現價 / 週漲跌 / 總增減%」之間的間距更平均。
+    col_rel = [0.060, 0.080, 0.180, 0.160, 0.135, 0.155, 0.230]
+    labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
+    aligns = ["center", "center", "left", "left", "right", "left", "right"]
 
-    col_rel = [0.10, 0.17, 0.47, 0.26]
-    labels = ["排名", "代號", "股名", "總增減%"]
-    aligns = ["center", "center", "left", "right"]
-    col_x = [left]
+    x0 = x_left + inner_pad_x
+    col_x = [x0]
     acc = 0
     for w in col_rel[:-1]:
         acc += w
-        col_x.append(left + width * acc)
+        col_x.append(x0 + inner_w * acc)
 
     header_top = y_top - title_h
     ax.add_patch(patches.Rectangle(
-        (left, header_top - header_h), width, header_h,
-        linewidth=0, facecolor="#F8FAFC",
+        (x_left, header_top - header_h), card_w, header_h,
+        linewidth=0, facecolor=HEADER_BG,
         transform=ax.transAxes, zorder=2
     ))
-    ax.plot([left, left + width], [header_top, header_top],
-            transform=ax.transAxes, color=accent, linewidth=1.8, zorder=3)
-    ax.plot([left, left + width], [header_top - header_h, header_top - header_h],
+    ax.plot([x_left, x_left + card_w], [header_top - header_h, header_top - header_h],
             transform=ax.transAxes, color=CARD_BORDER, linewidth=0.8, zorder=3)
 
     for i, label in enumerate(labels):
-        x0 = col_x[i]
-        cw = width * col_rel[i]
+        cell_x = col_x[i]
+        cell_w = inner_w * col_rel[i]
         if aligns[i] == "center":
-            tx = x0 + cw / 2
-            ha = "center"
+            tx, ha = cell_x + cell_w / 2, "center"
         elif aligns[i] == "right":
-            tx = x0 + cw - 0.018
-            ha = "right"
+            pad = 0.010 if i == 4 else 0.012 if i == 6 else 0.006
+            tx, ha = cell_x + cell_w - pad, "right"
         else:
-            tx = x0 + 0.018
-            ha = "left"
-        draw_text(ax, tx, header_top - header_h / 2, label, size=11,
+            if i == 3:      # 類別
+                tx, ha = cell_x + 0.014, "left"
+            elif i == 5:    # 週漲跌
+                tx, ha = cell_x + 0.022, "left"
+            else:
+                tx, ha = cell_x + 0.006, "left"
+        draw_text(ax, tx, header_top - header_h / 2, label, size=12,
                   color=TEXT_MUTED, weight='bold', ha=ha, bold=True)
 
     if df is None or df.empty:
-        draw_text(ax, left + width / 2, header_top - header_h - row_h / 2,
-                  "無資料", size=13, color=TEXT_MUTED, ha='center')
+        draw_text(ax, x_left + card_w / 2, header_top - header_h - row_h / 2,
+                  "無資料", size=11, color=TEXT_MUTED, ha='center')
         return
 
-    df = df.reset_index(drop=True)
-    for i, row in df.iterrows():
+    df = df.head(top_n).reset_index(drop=True)
+    for i in range(top_n):
         y = header_top - header_h - i * row_h
-        bg = "#FFFFFF" if i % 2 == 0 else "#F8FAFC"
+        if i < len(df):
+            row = df.iloc[i]
+            code, name = split_code_name(row['股票代號/名稱'])
+            category = clean_cell(row.get('類別', '-'))
+            price = clean_cell(row.get('現價', '-'))
+            week_chg = clean_cell(row.get('週漲跌', '-'))
+            change_str = fmt_change(row['總增減'])
+            try:
+                change_val = float(change_str)
+            except:
+                change_val = 0.0
+        else:
+            code, name, category, price, week_chg, change_val = "", "", "", "", "", 0.0
+
+        if i == 0:
+            bg, edge, lw = TOP1_BG, TOP1_BORDER, 1.1
+        elif i == 1:
+            bg, edge, lw = TOP2_BG, TOP2_BORDER, 1.0
+        elif i == 2:
+            bg, edge, lw = TOP3_BG, TOP3_BORDER, 1.0
+        else:
+            bg, edge, lw = ("#FFFFFF" if i % 2 == 0 else "#F6F8FB"), None, 0.0
+
         ax.add_patch(patches.Rectangle(
-            (left, y - row_h), width, row_h,
-            linewidth=0, facecolor=bg,
+            (x_left, y - row_h), card_w, row_h,
+            linewidth=lw, edgecolor=edge if edge else 'none', facecolor=bg,
             transform=ax.transAxes, zorder=2
         ))
-        ax.plot([left, left + width], [y - row_h, y - row_h],
-                transform=ax.transAxes, color="#EDF2F7", linewidth=0.6, zorder=3)
+        ax.plot([x_left + 0.010, x_left + card_w - 0.010], [y - row_h, y - row_h],
+                transform=ax.transAxes, color="#E8EDF3", linewidth=0.55, zorder=3)
 
-        code, name = split_code_name(row['股票代號/名稱'])
-        change_str = fmt_change(row['總增減'])
-        try:
-            change_val = float(change_str)
-        except:
-            change_val = 0.0
+        if "▲" in week_chg:
+            week_color = TEXT_RED
+        elif "▼" in week_chg:
+            week_color = TEXT_GREEN
+        else:
+            week_color = TEXT_MUTED
+
         chg_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
-        chg_display = "-" if change_str == "-" else f"{change_val:+.2f}"
+        chg_display = "-" if fmt_change(change_val) == "-" else f"{change_val:+.2f}%"
 
-        values = [f"{i+1:02d}", code, name, chg_display]
-        colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, chg_color]
-        weights = ['bold', 'bold', 'normal', 'bold']
+        # 資料太多時，控制文字長度，避免壓到隔壁欄位
+        values = [
+            f"{i+1:02d}",
+            code,
+            _shorten_text(name, 6),
+            _shorten_text(category, 7),
+            price,
+            week_chg,
+            chg_display,
+        ]
+        name_weight = 'bold' if i < 3 else 'normal'
+        colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
+        weights = ['bold', 'bold', name_weight, 'normal', 'bold', 'bold', 'bold']
+        sizes = [9.2, 12, 14 if i < 3 else 12, 10, 10, 12, 12]
 
-        for j, value in enumerate(values):
-            x0 = col_x[j]
-            cw = width * col_rel[j]
+        # 前三名排名徽章
+        rank_cell_x = col_x[0]
+        rank_cell_w = inner_w * col_rel[0]
+        rank_center_x = rank_cell_x + rank_cell_w / 2
+        rank_center_y = y - row_h / 2
+        if i < 3:
+            badge_color = [TOP1_BADGE, TOP2_BADGE, TOP3_BADGE][i]
+            ax.add_patch(patches.Circle(
+                (rank_center_x, rank_center_y), row_h * 0.24,
+                transform=ax.transAxes, facecolor=badge_color,
+                edgecolor='white', linewidth=1.0, zorder=4
+            ))
+            draw_text(ax, rank_center_x, rank_center_y, values[0], size=10.5,
+                      color="#6B4A12" if i == 0 else TEXT_MAIN, weight='bold', ha='center', bold=True)
+            start_j = 1
+        else:
+            start_j = 0
+
+        for j in range(start_j, len(values)):
+            value = values[j]
+            cell_x = col_x[j]
+            cell_w = inner_w * col_rel[j]
             if aligns[j] == "center":
-                tx = x0 + cw / 2
-                ha = "center"
+                tx, ha = cell_x + cell_w / 2, "center"
             elif aligns[j] == "right":
-                tx = x0 + cw - 0.018
-                ha = "right"
+                pad = 0.010 if j == 4 else 0.012 if j == 6 else 0.006
+                tx, ha = cell_x + cell_w - pad, "right"
             else:
-                tx = x0 + 0.018
-                ha = "left"
-            draw_text(ax, tx, y - row_h / 2, value, size=12,
+                if j == 3:      # 類別
+                    tx, ha = cell_x + 0.014, "left"
+                elif j == 5:    # 週漲跌
+                    tx, ha = cell_x + 0.022, "left"
+                else:
+                    tx, ha = cell_x + 0.006, "left"
+            draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                       color=colors[j], weight=weights[j], ha=ha,
                       bold=(weights[j] == 'bold'))
 
 
 def build_rank_image(listed_df, otc_df, display_date):
-    listed_n = 0 if listed_df is None else len(listed_df)
-    otc_n = 0 if otc_df is None else len(otc_df)
-
-    row_unit = 0.030
-    listed_card_h = 0.130 + max(listed_n, 1) * row_unit
-    otc_card_h = 0.130 + max(otc_n, 1) * row_unit
-    top_area_h = 0.145
-    gap_h = 0.030
-    bottom_h = 0.060
-    total_units = top_area_h + listed_card_h + gap_h + otc_card_h + bottom_h
-    fig_h = max(8.0, min(16.0, total_units * 12.0))
-    fig_w = 9.2
+    """白色風格 + 原版雙欄樣式：上市、上櫃並排，各 20 名。"""
+    top_n = 20
+    fig_w = 18.0
+    fig_h = 10.6
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=IMG_BG)
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    ax.set_position([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_axis_off()
 
-    fig.add_artist(patches.Rectangle(
-        (0, 0.94), 1, 0.06,
+    # 標題區
+    ax.add_patch(patches.Rectangle(
+        (0.015, 0.905), 0.970, 0.072,
         linewidth=0, facecolor="#FFFFFF",
-        transform=fig.transFigure, clip_on=False, zorder=0
+        transform=ax.transAxes, zorder=1
     ))
-
-    draw_text(ax, 0.5, 0.965, "每週大股東籌碼強勢榜 Top 20",
+    draw_text(ax, 0.5, 0.945, "每週大股東籌碼強勢榜  Top 20",
               size=22, color=TEXT_MAIN, weight='bold', ha='center', bold=True)
-    draw_text(ax, 0.5, 0.925, f"資料統計日期：{display_date}",
-              size=12, color=TEXT_MUTED, ha='center')
+    draw_text(ax, 0.5, 0.915, f"資料統計日期：{display_date}",
+              size=11, color=TEXT_MUTED, ha='center')
 
-    y_top = 0.875
-    draw_rank_table(ax, listed_df.reset_index(drop=True) if listed_df is not None else None,
-                    "上市排行", ACCENT_LISTED, y_top, listed_card_h / total_units)
-    y_top -= listed_card_h / total_units + gap_h / total_units
-    draw_rank_table(ax, otc_df.reset_index(drop=True) if otc_df is not None else None,
-                    "上櫃排行", ACCENT_OTC, y_top, otc_card_h / total_units)
+    # 雙欄卡片
+    card_y_top = 0.852
+    card_h = 0.825
+    gap = 0.020
+    card_w = (0.960 - gap) / 2
+    left_x = 0.020
+    right_x = left_x + card_w + gap
 
-    fig.text(0.985, 0.988, clean_cell(WATERMARK_TEXT),
+    draw_rank_table(
+        ax,
+        listed_df.reset_index(drop=True) if listed_df is not None else None,
+        "上市排行",
+        ACCENT_LISTED,
+        left_x,
+        card_y_top,
+        card_w,
+        card_h,
+        top_n=top_n,
+    )
+    draw_rank_table(
+        ax,
+        otc_df.reset_index(drop=True) if otc_df is not None else None,
+        "上櫃排行",
+        ACCENT_OTC,
+        right_x,
+        card_y_top,
+        card_w,
+        card_h,
+        top_n=top_n,
+    )
+
+    # 中央大文字浮水印：置中、超大、半透明，但仍不影響表格文字辨識
+    ax.text(
+        0.5, 0.50, WATERMARK_TEXT,
+        transform=ax.transAxes,
+        ha='center', va='center',
+        fontsize=WATERMARK_FONT_SIZE,
+        fontweight='bold',
+        fontproperties=FONT_BOLD,
+        color="#2C3440",
+        alpha=WATERMARK_ALPHA,
+        rotation=WATERMARK_ROTATION,
+        linespacing=1.18,
+        zorder=4
+    )
+
+    fig.text(0.985, 0.988, clean_cell(TOPRIGHT_WATERMARK_TEXT),
              ha='right', va='top',
-             fontsize=10,
+             fontsize=TOPRIGHT_WATERMARK_FONT_SIZE,
              fontproperties=FONT_PROP,
              color="#2C3440",
-             alpha=WATERMARK_ALPHA,
+             alpha=TOPRIGHT_WATERMARK_ALPHA,
              zorder=10)
 
     fig.text(0.985, 0.968, clean_cell(DISCLAIMER_TEXT),
              ha='right', va='top',
-             fontsize=9,
+             fontsize=TOPRIGHT_DISCLAIMER_FONT_SIZE,
              fontproperties=FONT_PROP,
              color="#2C3440",
-             alpha=WATERMARK_ALPHA,
+             alpha=TOPRIGHT_WATERMARK_ALPHA,
              zorder=10)
 
     buf = BytesIO()
@@ -524,26 +726,31 @@ def push_rank_to_dc():
         msg += "```text\n"
         
         # 定義視覺寬度
-        W_RANK   = 4 
-        W_CODE   = 6 
-        W_NAME   = 12 # 保持 12 以容納 "IET-KY" (全形後)
-        W_CHANGE = 10 
-        
+        W_RANK   = 4
+        W_CODE   = 6
+        W_NAME   = 12
+        W_CAT    = 10
+        W_PRICE  = 8
+        W_WEEK   = 9
+        W_CHANGE = 10
+
         # 定義 Gap (單一半形空白，拉近距離)
         GAP = " "
-        
+
         # 標題列
         h_rank = pad_visual("排名", W_RANK)
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
-        h_chg  = pad_visual("總增減%", W_CHANGE, align='left') 
-        
-        msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_chg}\n"
-        
-        # [修改] 分隔線長度 (再縮短 2 個單位，共減 4)
-        total_width = W_RANK + W_CODE + W_NAME + W_CHANGE + (len(GAP) * 3)
-        msg += "=" * (total_width - 4) + "\n"
-        
+        h_cat  = pad_visual("類別", W_CAT)
+        h_price = pad_visual("現價", W_PRICE, align='right')
+        h_week = pad_visual("週漲跌", W_WEEK, align='right')
+        h_chg  = pad_visual("總增減%", W_CHANGE, align='left')
+
+        msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_cat}{GAP}{h_price}{GAP}{h_week}{GAP}{h_chg}\n"
+
+        total_width = W_RANK + W_CODE + W_NAME + W_CAT + W_PRICE + W_WEEK + W_CHANGE + (len(GAP) * 6)
+        msg += "=" * total_width + "\n"
+
         for i, row in df.iterrows():
             # 清洗
             raw_str = clean_cell(row['股票代號/名稱'])
@@ -562,20 +769,31 @@ def push_rank_to_dc():
             # [新增] 修正亂碼：將 "卅卅" 替換為 "碁" (要在轉全形之前做)
             name = name.replace("卅卅", "碁")
             
+            category = clean_cell(row.get('類別', '-'))
+            price = clean_cell(row.get('現價', '-'))
+            week_chg = clean_cell(row.get('週漲跌', '-'))
             change_str = fmt_change(row['總增減'])
-            
+            if change_str != "-":
+                try:
+                    change_str = f"{float(change_str):+.2f}%"
+                except:
+                    pass
+
             # 轉為全形字元 (解決 KY 混排問題)
             full_name = to_fullwidth(name)
-            
+
             # 截斷與填充
             s_name = pad_visual(full_name, W_NAME, align='left')
-            
+
             # 其他欄位
             s_rank = pad_visual(f"{i+1:02d}", W_RANK) 
             s_code = pad_visual(code, W_CODE)
+            s_cat = pad_visual(category, W_CAT, align='left')
+            s_price = pad_visual(price, W_PRICE, align='right')
+            s_week = pad_visual(week_chg, W_WEEK, align='right')
             s_chg  = pad_visual(change_str, W_CHANGE, align='left')
-            
-            msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_chg}\n"
+
+            msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_cat}{GAP}{s_price}{GAP}{s_week}{GAP}{s_chg}\n"
             
         msg += "```\n"
         return msg
