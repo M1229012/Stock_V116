@@ -27,9 +27,14 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
 
 # ================= 圖片樣式設定 =================
 WATERMARK_TEXT = "股市艾斯\n台股DC討論群"
+TOPRIGHT_WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
+DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.12
 WATERMARK_FONT_SIZE = 104
 WATERMARK_ROTATION = 18
+TOPRIGHT_WATERMARK_ALPHA = 0.80
+TOPRIGHT_WATERMARK_FONT_SIZE = 10
+TOPRIGHT_DISCLAIMER_FONT_SIZE = 9
 
 IMG_BG = "#F5F7FA"
 CARD_BG = "#FFFFFF"
@@ -660,6 +665,22 @@ def build_rank_image(listed_df, otc_df, display_date):
         linespacing=1.18,
         zorder=4
     )
+
+    fig.text(0.985, 0.988, clean_cell(TOPRIGHT_WATERMARK_TEXT),
+             ha='right', va='top',
+             fontsize=TOPRIGHT_WATERMARK_FONT_SIZE,
+             fontproperties=FONT_PROP,
+             color="#2C3440",
+             alpha=TOPRIGHT_WATERMARK_ALPHA,
+             zorder=10)
+
+    fig.text(0.985, 0.968, clean_cell(DISCLAIMER_TEXT),
+             ha='right', va='top',
+             fontsize=TOPRIGHT_DISCLAIMER_FONT_SIZE,
+             fontproperties=FONT_PROP,
+             color="#2C3440",
+             alpha=TOPRIGHT_WATERMARK_ALPHA,
+             zorder=10)
 
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor())
