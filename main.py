@@ -65,19 +65,22 @@ STATS_HEADERS = [
 # 定義處置股技術追蹤表頭
 TECH_TRACK_SHEET_NAME = "處置股技術追蹤"
 TECH_TRACK_HEADERS = [
-    '計算日期', '市場', '代號', '名稱', '狀態', '處置期間',
-    '處置開始日', '處置結束日',
-    '處置前10日開盤價', '處置前一日收盤價', '處置前10日漲跌幅(%)',
-    '目前價', 'MA20', '距離MA20(%)', '是否符合條件',
-    '曾回測MA20±5%', '回測MA20日期', '回測MA20收盤價', '是否回測後轉強',
-    '失敗原因', '更新時間'
+    '計算日期', '代號', '名稱', '狀態', '訊號狀態',
+    '是否符合條件', '是否回測後轉強',
+    '處置前10日漲跌幅(%)', '距離MA20(%)', '目前價', 'MA20',
+    '曾回測MA20±5%', '回測MA20日期', '回測MA20收盤價',
+    '市場', '處置期間', '處置開始日', '處置結束日',
+    '處置前10日開盤價', '處置前一日收盤價',
+    '訊號說明/失敗原因', '更新時間'
 ]
 TECH_PRE_10D_RISE_THRESHOLD = 20.0
 TECH_MA20_GAP_THRESHOLD = 5.0
 TECH_BREAKOUT_MA20_GAP_THRESHOLD = 10.0
-TECH_TRACK_TRUE_BG = {"red": 1.0, "green": 0.93, "blue": 0.82}
-TECH_TRACK_BREAKOUT_BG = {"red": 0.86, "green": 0.93, "blue": 1.0}
-TECH_TRACK_FALSE_BG = {"red": 1.0, "green": 0.90, "blue": 0.90}
+TECH_TRACK_TRUE_BG = {"red": 1.0, "green": 0.93, "blue": 0.82}       # 淡橘：目前回測月線
+TECH_TRACK_BREAKOUT_BG = {"red": 0.86, "green": 0.93, "blue": 1.0}   # 淡藍：回測後轉強
+TECH_TRACK_FALSE_BG = {"red": 1.0, "green": 0.90, "blue": 0.90}      # 淡紅：未符合任一訊號
+TECH_TRACK_COL_COUNT = len(TECH_TRACK_HEADERS)
+TECH_TRACK_LAST_COL = "V"
 
 # ==========================================
 # 📆 設定區
@@ -837,7 +840,7 @@ def _fetch_technical_history(code, market, start_date, end_date):
 
 
 def calc_jail_technical_track_row(market, code, name, period, status_label):
-    """計算處置前10日漲跌幅、目前價、MA20、回測後轉強訊號與是否符合凸顯條件。"""
+    """計算處置前10日漲跌幅、目前價、MA20、回測月線與回測後轉強訊號。"""
     now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
     calc_date_str = TARGET_DATE.strftime("%Y-%m-%d")
     code = str(code).replace("'", "").strip()
@@ -848,17 +851,19 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     start_str = sd.strftime("%Y-%m-%d") if sd else ""
     end_str = ed.strftime("%Y-%m-%d") if ed else ""
 
+    # 重要欄位前移：計算日期、代號、名稱、狀態、訊號狀態、TRUE/FALSE、關鍵數值先顯示
     base_row = [
-        calc_date_str, market, f"'{code}", name, status_label, period,
-        start_str, end_str,
-        "", "", "",
-        "", "", "", "FALSE",
-        "FALSE", "", "", "FALSE",
+        calc_date_str, f"'{code}", name, status_label, "資料不足",
+        "FALSE", "FALSE",
+        "", "", "", "",
+        "FALSE", "", "",
+        market, period, start_str, end_str,
+        "", "",
         "", now_str
     ]
 
     if not sd or not ed:
-        base_row[19] = "處置期間解析失敗"
+        base_row[20] = "處置期間解析失敗：無法取得處置開始日或結束日"
         return base_row
 
     fetch_start = sd - timedelta(days=120)
@@ -866,21 +871,21 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     df, ticker_used = _fetch_technical_history(code, market, fetch_start, fetch_end)
 
     if df.empty or 'Open' not in df.columns or 'Close' not in df.columns:
-        base_row[19] = f"無股價資料({ticker_used})"
+        base_row[20] = f"無股價資料：{ticker_used} 無法取得 Open/Close 欄位"
         return base_row
 
     df = df.dropna(subset=['Open', 'Close']).copy()
     if df.empty:
-        base_row[19] = f"股價資料為空({ticker_used})"
+        base_row[20] = f"股價資料為空：{ticker_used} 清除空值後無可用資料"
         return base_row
 
     pre_df = df[df.index.date < sd]
     if len(pre_df) < 10:
-        base_row[19] = f"處置前交易日不足10日({len(pre_df)}日)"
+        base_row[20] = f"資料不足：處置前交易日只有 {len(pre_df)} 日，需至少 10 日才能計算處置前10日漲跌幅"
         return base_row
 
     if len(df) < 20:
-        base_row[19] = f"MA20交易日不足20日({len(df)}日)"
+        base_row[20] = f"資料不足：股價資料只有 {len(df)} 日，需至少 20 日才能計算 MA20"
         return base_row
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -894,7 +899,8 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     ma20 = float(df['MA20'].iloc[-1]) if not pd.isna(df['MA20'].iloc[-1]) else 0.0
     ma20_gap_pct = ((current_price - ma20) / ma20) * 100 if ma20 > 0 else 0.0
 
-    is_match = (pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD) and (abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
+    pre_rise_ok = pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
+    current_retest_ok = pre_rise_ok and (abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
 
     jail_df = df[df.index.date >= sd].copy()
     jail_df = jail_df.dropna(subset=['MA20', 'MA20_GAP_PCT'])
@@ -908,40 +914,64 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
         retest_date_str = retest_df.index[-1].strftime("%Y-%m-%d")
         retest_close = _safe_round(float(latest_retest['Close']), 2)
 
-    is_breakout_after_retest = (
-        pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
+    breakout_ok = (
+        pre_rise_ok
         and has_retested_ma20
         and ma20_gap_pct >= TECH_BREAKOUT_MA20_GAP_THRESHOLD
     )
 
-    base_row[8] = _safe_round(pre_10_open, 2)
-    base_row[9] = _safe_round(pre_last_close, 2)
-    base_row[10] = _safe_round(pre_10d_pct, 2)
-    base_row[11] = _safe_round(current_price, 2)
-    base_row[12] = _safe_round(ma20, 2)
-    base_row[13] = _safe_round(ma20_gap_pct, 2)
-    base_row[14] = "TRUE" if is_match else "FALSE"
-    base_row[15] = "TRUE" if has_retested_ma20 else "FALSE"
-    base_row[16] = retest_date_str
-    base_row[17] = retest_close
-    base_row[18] = "TRUE" if is_breakout_after_retest else "FALSE"
+    # 「有一個達成就好」：目前回測月線 或 回測後轉強 任一成立，即視為符合條件。
+    overall_match = current_retest_ok or breakout_ok
 
-    if is_breakout_after_retest:
-        base_row[19] = f"回測後轉強：曾回到MA20±{TECH_MA20_GAP_THRESHOLD:.0f}%內，目前距離MA20 +{ma20_gap_pct:.2f}%"
-    elif is_match:
-        base_row[19] = ""
+    if breakout_ok:
+        signal_status = "回測後轉強"
+        reason_text = (
+            f"符合回測後轉強：處置前10日漲幅 {pre_10d_pct:.2f}% ≥ {TECH_PRE_10D_RISE_THRESHOLD:.0f}%，"
+            f"曾於 {retest_date_str} 回到 MA20±{TECH_MA20_GAP_THRESHOLD:.0f}% 內，"
+            f"目前距離 MA20 {ma20_gap_pct:+.2f}% ≥ +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%"
+        )
+    elif current_retest_ok:
+        signal_status = "目前回測月線"
+        reason_text = (
+            f"符合目前回測月線：處置前10日漲幅 {pre_10d_pct:.2f}% ≥ {TECH_PRE_10D_RISE_THRESHOLD:.0f}%，"
+            f"目前距離 MA20 {ma20_gap_pct:+.2f}% 在 ±{TECH_MA20_GAP_THRESHOLD:.0f}% 內"
+        )
     else:
+        signal_status = "未符合"
         fail_reasons = []
-        if pre_10d_pct < TECH_PRE_10D_RISE_THRESHOLD:
-            fail_reasons.append(f"處置前10日漲幅未達{TECH_PRE_10D_RISE_THRESHOLD:.0f}%")
-        if abs(ma20_gap_pct) > TECH_MA20_GAP_THRESHOLD:
-            fail_reasons.append(f"目前距離MA20未在±{TECH_MA20_GAP_THRESHOLD:.0f}%內")
-        if not has_retested_ma20:
-            fail_reasons.append(f"處置期間尚未回到MA20±{TECH_MA20_GAP_THRESHOLD:.0f}%內")
-        if ma20_gap_pct < TECH_BREAKOUT_MA20_GAP_THRESHOLD:
-            fail_reasons.append(f"尚未上漲離MA20 +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%以上")
-        base_row[19] = "未符合：" + "、".join(fail_reasons)
+        if not pre_rise_ok:
+            fail_reasons.append(
+                f"處置前10日漲幅 {pre_10d_pct:.2f}% < {TECH_PRE_10D_RISE_THRESHOLD:.0f}%"
+            )
+        else:
+            # 處置前漲幅已達標後，再分別說明兩種訊號為何未成立。
+            if abs(ma20_gap_pct) > TECH_MA20_GAP_THRESHOLD:
+                fail_reasons.append(
+                    f"目前回測月線未成立：目前距離 MA20 {ma20_gap_pct:+.2f}%，不在 ±{TECH_MA20_GAP_THRESHOLD:.0f}% 內"
+                )
+            if not has_retested_ma20:
+                fail_reasons.append(
+                    f"回測後轉強未成立：處置期間尚未曾回到 MA20±{TECH_MA20_GAP_THRESHOLD:.0f}% 內"
+                )
+            elif ma20_gap_pct < TECH_BREAKOUT_MA20_GAP_THRESHOLD:
+                fail_reasons.append(
+                    f"回測後轉強未成立：已回測，但目前距離 MA20 {ma20_gap_pct:+.2f}% < +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%"
+                )
+        reason_text = "；".join(fail_reasons) if fail_reasons else "未符合任一技術訊號"
 
+    base_row[4] = signal_status
+    base_row[5] = "TRUE" if overall_match else "FALSE"
+    base_row[6] = "TRUE" if breakout_ok else "FALSE"
+    base_row[7] = _safe_round(pre_10d_pct, 2)
+    base_row[8] = _safe_round(ma20_gap_pct, 2)
+    base_row[9] = _safe_round(current_price, 2)
+    base_row[10] = _safe_round(ma20, 2)
+    base_row[11] = "TRUE" if has_retested_ma20 else "FALSE"
+    base_row[12] = retest_date_str
+    base_row[13] = retest_close
+    base_row[18] = _safe_round(pre_10_open, 2)
+    base_row[19] = _safe_round(pre_last_close, 2)
+    base_row[20] = reason_text
     return base_row
 
 def build_jail_technical_tracking_rows(stock_latest_end, releasing_codes_map, today_date):
@@ -977,48 +1007,114 @@ def build_jail_technical_tracking_rows(stock_latest_end, releasing_codes_map, to
     return rows
 
 
-def apply_technical_tracking_row_styles(ws, row_style_targets):
-    """依技術訊號套用列背景：回測後轉強淡藍、回測月線淡橘、其餘淡紅。"""
+def _sheet_col_name(col_num):
+    """1-based column number to Google Sheets column name."""
+    name = ""
+    while col_num:
+        col_num, rem = divmod(col_num - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def _tech_track_bg_color(is_match, is_breakout):
+    if is_breakout:
+        return TECH_TRACK_BREAKOUT_BG
+    if is_match:
+        return TECH_TRACK_TRUE_BG
+    return TECH_TRACK_FALSE_BG
+
+
+def apply_technical_tracking_sheet_formats(sh, ws, row_style_targets):
+    """套用技術追蹤工作表格式：列背景色、日期格式、數字格式。"""
     if not row_style_targets:
         return
 
-    for row_num, is_match, is_breakout in row_style_targets:
-        try:
-            if is_breakout:
-                bg_color = TECH_TRACK_BREAKOUT_BG
-            elif is_match:
-                bg_color = TECH_TRACK_TRUE_BG
-            else:
-                bg_color = TECH_TRACK_FALSE_BG
+    try:
+        sheet_id = ws._properties.get('sheetId')
+        requests_batch = []
 
-            ws.format(
-                f"A{row_num}:U{row_num}",
-                {
-                    "backgroundColor": bg_color
+        # 先固定重要欄位格式，避免 Google Sheet 把價格誤判成日期時間。
+        # B 欄代號以純文字保存；A/M/Q/R/V 為日期/時間；H/J/K/N/S/T 為數字；I 為百分比數值。
+        format_specs = [
+            (1, 2, {"type": "TEXT"}),                        # B 代號
+            (0, 1, {"type": "DATE", "pattern": "yyyy-mm-dd"}),
+            (12, 13, {"type": "DATE", "pattern": "yyyy-mm-dd"}),
+            (16, 18, {"type": "DATE", "pattern": "yyyy-mm-dd"}),
+            (21, 22, {"type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm:ss"}),
+            (7, 11, {"type": "NUMBER", "pattern": "0.00"}),
+            (13, 14, {"type": "NUMBER", "pattern": "0.00"}),
+            (18, 20, {"type": "NUMBER", "pattern": "0.00"}),
+        ]
+        for start_col, end_col, num_format in format_specs:
+            requests_batch.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,
+                        "startColumnIndex": start_col,
+                        "endColumnIndex": end_col,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "numberFormat": num_format
+                        }
+                    },
+                    "fields": "userEnteredFormat.numberFormat"
                 }
-            )
-        except Exception as e:
-            print(f"⚠️ 技術追蹤列背景色套用失敗 (第 {row_num} 列): {e}")
+            })
+
+        # 再依訊號套用整列底色。
+        for row_num, is_match, is_breakout in row_style_targets:
+            requests_batch.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": row_num - 1,
+                        "endRowIndex": row_num,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": TECH_TRACK_COL_COUNT,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": _tech_track_bg_color(is_match, is_breakout)
+                        }
+                    },
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            })
+
+        if requests_batch:
+            sh.batch_update({"requests": requests_batch})
+    except Exception as e:
+        print(f"⚠️ 技術追蹤工作表格式套用失敗：{type(e).__name__}: {e}")
 
 
 def upsert_jail_technical_tracking_sheet(sh, rows):
     """寫入處置股技術追蹤工作表；同日同股同期間同狀態會更新，不重複新增。"""
-    ws = get_or_create_ws(sh, TECH_TRACK_SHEET_NAME, headers=TECH_TRACK_HEADERS, cols=len(TECH_TRACK_HEADERS))
+    ws = get_or_create_ws(sh, TECH_TRACK_SHEET_NAME, headers=TECH_TRACK_HEADERS, cols=TECH_TRACK_COL_COUNT)
+    last_col = TECH_TRACK_LAST_COL
 
     if not rows:
         print(f"⚠️ {TECH_TRACK_SHEET_NAME} 無符合正在處置或即將出關的資料需要寫入。")
         return
 
     all_values = ws.get_all_values()
+    header_is_new_order = bool(all_values) and all_values[0] == TECH_TRACK_HEADERS
     if not all_values:
         ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
         all_values = [TECH_TRACK_HEADERS]
+        header_is_new_order = True
     elif all_values[0] != TECH_TRACK_HEADERS:
-        ws.update(values=[TECH_TRACK_HEADERS], range_name="A1:U1", value_input_option='USER_ENTERED')
+        ws.update(values=[TECH_TRACK_HEADERS], range_name=f"A1:{last_col}1", value_input_option='USER_ENTERED')
 
     existing_key_to_row = {}
     for row_idx, row in enumerate(all_values[1:], start=2):
-        if len(row) >= 6:
+        if header_is_new_order and len(row) >= 16:
+            # 新欄位順序：A計算日期、B代號、D狀態、P處置期間
+            key = f"{str(row[0]).strip()}_{str(row[1]).replace(chr(39), '').strip()}_{str(row[15]).strip()}_{str(row[3]).strip()}"
+            existing_key_to_row[key] = row_idx
+        elif len(row) >= 6:
+            # 相容舊欄位順序：A計算日期、C代號、E狀態、F處置期間
             key = f"{str(row[0]).strip()}_{str(row[2]).replace(chr(39), '').strip()}_{str(row[5]).strip()}_{str(row[4]).strip()}"
             existing_key_to_row[key] = row_idx
 
@@ -1027,12 +1123,12 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
     update_count = 0
 
     for row in rows:
-        key = f"{str(row[0]).strip()}_{str(row[2]).replace(chr(39), '').strip()}_{str(row[5]).strip()}_{str(row[4]).strip()}"
-        is_match = str(row[14]).upper() == "TRUE"
-        is_breakout = str(row[18]).upper() == "TRUE"
+        key = f"{str(row[0]).strip()}_{str(row[1]).replace(chr(39), '').strip()}_{str(row[15]).strip()}_{str(row[3]).strip()}"
+        is_match = str(row[5]).upper() == "TRUE"
+        is_breakout = str(row[6]).upper() == "TRUE"
         if key in existing_key_to_row:
             r = existing_key_to_row[key]
-            ws.update(values=[row], range_name=f"A{r}:U{r}", value_input_option='USER_ENTERED')
+            ws.update(values=[row], range_name=f"A{r}:{last_col}{r}", value_input_option='USER_ENTERED')
             row_style_targets.append((r, is_match, is_breakout))
             update_count += 1
         else:
@@ -1043,13 +1139,15 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
         append_start_row = len(all_values) + 1
         ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
         for offset, row in enumerate(rows_to_append):
-            row_style_targets.append((append_start_row + offset, str(row[14]).upper() == "TRUE", str(row[18]).upper() == "TRUE"))
+            row_style_targets.append((append_start_row + offset, str(row[5]).upper() == "TRUE", str(row[6]).upper() == "TRUE"))
 
-    apply_technical_tracking_row_styles(ws, row_style_targets)
+    apply_technical_tracking_sheet_formats(sh, ws, row_style_targets)
 
-    true_count = sum(1 for r in rows if str(r[14]).upper() == "TRUE")
-    breakout_count = sum(1 for r in rows if str(r[18]).upper() == "TRUE")
-    print(f"✅ {TECH_TRACK_SHEET_NAME} 更新完成：新增 {len(rows_to_append)} 筆、更新 {update_count} 筆、符合回測條件 TRUE {true_count} 筆、回測後轉強 TRUE {breakout_count} 筆。")
+    true_count = sum(1 for r in rows if str(r[5]).upper() == "TRUE")
+    breakout_count = sum(1 for r in rows if str(r[6]).upper() == "TRUE")
+    retest_count = sum(1 for r in rows if str(r[11]).upper() == "TRUE")
+    print(f"✅ {TECH_TRACK_SHEET_NAME} 更新完成：新增 {len(rows_to_append)} 筆、更新 {update_count} 筆、符合任一訊號 TRUE {true_count} 筆、曾回測MA20 {retest_count} 筆、回測後轉強 TRUE {breakout_count} 筆。")
+
 
 def load_precise_db_from_sheet(sh):
     try:
