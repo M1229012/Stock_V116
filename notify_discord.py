@@ -734,9 +734,21 @@ TOPBAR_TITLE_Y_RATIO = 0.62
 TOPBAR_SUBTITLE_Y_RATIO = 0.30
 TITLE_SUBTITLE_GAP = 0.010
 
+def get_topbar_layout(fig_h):
+    """依圖片高度動態換算 topbar 高度，避免長圖出現過大留白。"""
+    bg_height = max(0.048, min(0.085, 1.00 / max(fig_h, 1.0)))
+    bg_bottom = 1.0 - bg_height
+    title_y = bg_bottom + bg_height * TOPBAR_TITLE_Y_RATIO
+    subtitle_y = bg_bottom + bg_height * TOPBAR_SUBTITLE_Y_RATIO
+    return bg_bottom, bg_height, title_y, subtitle_y
+
+
 def draw_topbar(fig, theme, total, page_info=""):
+    fig_h = fig.get_size_inches()[1]
+    topbar_bottom, topbar_height, title_y, subtitle_y = get_topbar_layout(fig_h)
+
     fig.add_artist(patches.Rectangle(
-        (0, TOPBAR_BG_BOTTOM), 1, TOPBAR_BG_HEIGHT,
+        (0, topbar_bottom), 1, topbar_height,
         linewidth=0, facecolor=BG_MAIN,
         transform=fig.transFigure, clip_on=False, zorder=0
     ))
@@ -747,8 +759,6 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_y = TOPBAR_BG_BOTTOM + TOPBAR_BG_HEIGHT * TOPBAR_TITLE_Y_RATIO
-    subtitle_y = TOPBAR_BG_BOTTOM + TOPBAR_BG_HEIGHT * TOPBAR_SUBTITLE_Y_RATIO
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
     icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
@@ -816,7 +826,7 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 def draw_watermark(fig):
     watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
-    fig.text(0.985, 0.010, watermark_text,
+    fig.text(0.985, 0.007, watermark_text,
              ha='right', va='bottom',
              fontsize=10.5,
              linespacing=1.04,
@@ -831,7 +841,7 @@ def draw_signal_legend(fig):
            更乾淨、不會看起來像獨立區塊。
     """
     # 不再畫 FancyBboxPatch 方框 -- 文字裸貼底部
-    text_y = 0.022   # 稍微往上提，貼著表格底部
+    text_y = 0.017   # 更貼近底部，減少空白浪費
     x = 0.030        # 從左邊緣開始
     main_fs = 12.6
     item_fs = 12.4
@@ -905,17 +915,24 @@ def calc_header_h(fig_h, subplot_top=None, subplot_bottom=None):
     return max(TABLE_HEADER_H_MIN, min(TABLE_HEADER_H_MAX, TABLE_HEADER_H_INCH / axes_h_inch))
 
 
-def get_subplot_layout(has_legend=False):
-    """用比例決定 axes 區塊位置，避免因圖片高低不同導致表格區跑位。"""
-    top = TOPBAR_BG_BOTTOM - 0.010
-    bottom = 0.062 if has_legend else 0.042
+def get_subplot_layout(fig_h, has_legend=False):
+    """依圖片高度動態換算表格區上下邊界，讓長圖不會上下留白過大。"""
+    topbar_bottom, _, _, _ = get_topbar_layout(fig_h)
+    gap_below_topbar = max(0.004, min(0.010, 0.12 / max(fig_h, 1.0)))
+
+    if has_legend:
+        bottom = max(0.026, min(0.050, 0.55 / max(fig_h, 1.0)))
+    else:
+        bottom = max(0.018, min(0.035, 0.34 / max(fig_h, 1.0)))
+
+    top = topbar_bottom - gap_below_topbar
     return UNIFIED_SUBPLOT_LEFT, UNIFIED_SUBPLOT_RIGHT, top, bottom
 
 
 def get_table_axis_layout():
-    """在 axes 內用比例配置表格上下範圍。"""
-    top_y = 0.975
-    bottom_y = 0.020
+    """在 axes 內用比例配置表格上下範圍，盡量吃滿可用區域。"""
+    top_y = 0.990
+    bottom_y = 0.006
     total_h = top_y - bottom_y
     return top_y, total_h
 
@@ -951,7 +968,7 @@ def draw_entering_image(data, signal_map=None):
     fig_h = calc_dynamic_fig_h(n, base_h=5.9, per_row_h=0.36, min_h=7.0, max_h=15.6)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(has_legend=False)
+    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=False)
     fig.subplots_adjust(left=subplot_left, right=subplot_right,
                         top=subplot_top, bottom=subplot_bottom)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
@@ -1079,7 +1096,7 @@ def draw_releasing_image(data, signal_map=None):
     fig_h = calc_dynamic_fig_h(n, base_h=7.4, per_row_h=0.46, min_h=10.2, max_h=23.5)
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
-    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(has_legend=True)
+    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=True)
     fig.subplots_adjust(left=subplot_left, right=subplot_right,
                         top=subplot_top, bottom=subplot_bottom)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
@@ -1269,7 +1286,7 @@ def draw_injail_image(data, signal_map=None):
     fig_h = calc_dynamic_fig_h(rows_per_col, base_h=6.1, per_row_h=0.39, min_h=7.8, max_h=16.8)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(has_legend=True)
+    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=True)
     fig.subplots_adjust(left=subplot_left, right=subplot_right,
                         top=subplot_top, bottom=subplot_bottom)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
