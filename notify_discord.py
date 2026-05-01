@@ -772,14 +772,11 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 
 def draw_watermark(fig):
-    fig.text(0.985, 0.032, clean_display_text(WATERMARK_TEXT),
+    watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
+    fig.text(0.985, 0.014, watermark_text,
              ha='right', va='bottom',
              fontsize=11,
-             fontproperties=FONT_PROP,
-             color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
-    fig.text(0.985, 0.014, clean_display_text(DISCLAIMER_TEXT),
-             ha='right', va='bottom',
-             fontsize=11,
+             linespacing=1.08,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
