@@ -803,14 +803,11 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 
 def draw_watermark(fig):
-    fig.text(0.985, 0.032, clean_display_text(WATERMARK_TEXT),
+    watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
+    fig.text(0.985, 0.010, watermark_text,
              ha='right', va='bottom',
-             fontsize=11,
-             fontproperties=FONT_PROP,
-             color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
-    fig.text(0.985, 0.014, clean_display_text(DISCLAIMER_TEXT),
-             ha='right', va='bottom',
-             fontsize=9.5,
+             fontsize=10.5,
+             linespacing=1.04,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
@@ -818,55 +815,55 @@ def draw_watermark(fig):
 def draw_signal_legend(fig):
     """在圖片底部加入訊號顏色圖例（即將出關 / 處置中使用）。"""
     box_x = 0.028
-    box_y = 0.012
-    box_w = 0.47
-    box_h = 0.038
+    box_y = 0.010
+    box_w = 0.385
+    box_h = 0.028
 
     fig.add_artist(patches.FancyBboxPatch(
         (box_x, box_y), box_w, box_h,
-        boxstyle="round,pad=0.003,rounding_size=0.010",
-        linewidth=0.9, edgecolor=LEGEND_BORDER, facecolor=LEGEND_BG,
+        boxstyle="round,pad=0.0025,rounding_size=0.008",
+        linewidth=0.85, edgecolor=LEGEND_BORDER, facecolor=LEGEND_BG,
         transform=fig.transFigure, clip_on=False, zorder=8
     ))
 
     text_y = box_y + box_h / 2
-    x = box_x + 0.012
-    main_fs = 14
-    item_fs = 14
-    sep_fs = 11.6
-    swatch_w = 0.010
-    swatch_h = 0.012
+    x = box_x + 0.010
+    main_fs = 12.6
+    item_fs = 12.4
+    sep_fs = 10.8
+    swatch_w = 0.0085
+    swatch_h = 0.010
 
     fig.text(x, text_y, clean_display_text("顏色說明"),
              ha='left', va='center', fontsize=main_fs,
              fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
-    x += 0.070
+    x += 0.062
     fig.text(x, text_y, "｜",
              ha='left', va='center', fontsize=sep_fs,
              fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
-    x += 0.013
+    x += 0.010
 
     fig.add_artist(patches.Rectangle(
         (x, text_y - swatch_h / 2), swatch_w, swatch_h,
         linewidth=0, facecolor=LEGEND_BOX_ORANGE,
         transform=fig.transFigure, clip_on=False, zorder=9
     ))
-    x += 0.016
+    x += 0.013
     fig.text(x, text_y, clean_display_text("接近20MA"),
              ha='left', va='center', fontsize=item_fs,
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
-    x += 0.079
+    x += 0.068
     fig.text(x, text_y, "｜",
              ha='left', va='center', fontsize=sep_fs,
              fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
-    x += 0.013
+    x += 0.010
 
     fig.add_artist(patches.Rectangle(
         (x, text_y - swatch_h / 2), swatch_w, swatch_h,
         linewidth=0, facecolor=LEGEND_BOX_BLUE,
         transform=fig.transFigure, clip_on=False, zorder=9
     ))
-    x += 0.016
+    x += 0.013
     fig.text(x, text_y, clean_display_text("回測20MA後再轉強"),
              ha='left', va='center', fontsize=item_fs,
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
@@ -875,9 +872,9 @@ def draw_signal_legend(fig):
 UNIFIED_SUBPLOT_LEFT = 0.025
 UNIFIED_SUBPLOT_RIGHT = 0.975
 UNIFIED_SUBPLOT_TOP = 0.895
-UNIFIED_SUBPLOT_BOTTOM = 0.022
+UNIFIED_SUBPLOT_BOTTOM = 0.018
 TABLE_TOP_Y = 0.968
-TABLE_TOTAL_H = 0.905
+TABLE_TOTAL_H = 0.910
 TABLE_HEADER_H_INCH = 0.50
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
@@ -1054,7 +1051,7 @@ def draw_releasing_image(data, signal_map=None):
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
-    col_widths = [0.05, 0.09, 0.16, 0.08, 0.12, 0.18, 0.10, 0.10, 0.12]
+    col_widths = [0.045, 0.09, 0.165, 0.085, 0.12, 0.175, 0.10, 0.10, 0.12]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'center', 'center', 'center', 'center', 'center', 'center']
 
@@ -1125,7 +1122,7 @@ def draw_releasing_image(data, signal_map=None):
                 color=name_color, zorder=3)
         ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, price,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=17, fontweight='bold',
+                fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
 
         bg_clr, fg_clr = get_days_style(days)
@@ -1308,7 +1305,7 @@ def draw_injail_image(data, signal_map=None):
                 color=name_color, zorder=3)
         ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, price,
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=13, fontweight='bold',
+                fontsize=12.5, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
         ax.text(sub_x_starts[4] + sub_x_widths[4]/2, y_top - row_h/2, period,
                 transform=ax.transAxes, ha='center', va='center',
