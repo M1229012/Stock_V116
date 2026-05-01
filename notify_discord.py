@@ -605,7 +605,8 @@ def draw_releasing_image(data, signal_map=None):
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
     col_widths_ratio = [0.05, 0.08, 0.16, 0.09, 0.11, 0.21, 0.10, 0.10, 0.10]
-    col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
+    # 【更新表頭名稱】
+    col_labels = ["#", "代號", "股票名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'left', 'center', 'center', 'center', 'center', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
@@ -681,9 +682,15 @@ def draw_injail_image(data, signal_map=None):
 
     y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # 【微調】重新分配欄位比例，並確保現價靠左 (Left) 對齊
-    col_widths_ratio = [0.10, 0.18, 0.28, 0.16, 0.28]
-    col_labels = ["#", "代號", "名稱", "現價", "處置期間"]
+    # 【核心修正】大幅度縮減「股票名稱」佔比，把「現價」強力往左拉
+    # 原比例：[0.08, 0.15, 0.37, 0.15, 0.25]
+    # 新比例：[0.10, 0.18, 0.20, 0.20, 0.32]
+    col_widths_ratio = [0.10, 0.18, 0.20, 0.20, 0.32]
+    
+    # 【更新表頭名稱】
+    col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
+    
+    # 【確認對齊方式】現價強制靠左 (Left)
     col_aligns = ['center', 'center', 'left', 'left', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
