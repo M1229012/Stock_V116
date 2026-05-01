@@ -771,6 +771,68 @@ def get_official_trading_calendar(days=60):
 
     return dates[-days:]
 
+
+def get_trading_calendar_between(start_date, end_date):
+    """取得指定區間內的台股交易日，供即將出關判斷使用。"""
+    start_date = start_date if isinstance(start_date, date) else pd.to_datetime(start_date).date()
+    end_date = end_date if isinstance(end_date, date) else pd.to_datetime(end_date).date()
+    if end_date < start_date:
+        return []
+
+    dates = []
+    try:
+        df = finmind_get(
+            "TaiwanStockTradingDate",
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d")
+        )
+        if not df.empty and 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date']).dt.date
+            dates = sorted(set(df['date'].tolist()))
+    except Exception as e:
+        print(f"⚠️ FinMind 交易日曆區間下載失敗，改用 Taiwan 行事曆備援：{e}")
+
+    cal = Taiwan()
+    # 若 FinMind 沒有提供未來交易日，使用 workalendar 補足 FinMind 最後日期之後的未來區間。
+    if not dates:
+        curr = start_date
+    else:
+        curr = max(dates) + timedelta(days=1)
+
+    while curr <= end_date:
+        if cal.is_working_day(curr):
+            dates.append(curr)
+        curr += timedelta(days=1)
+
+    return sorted(set(dates))
+
+
+def next_or_same_trade_date(d, cal_dates):
+    """若 d 非交易日，順延至下一個交易日。"""
+    if not d or not cal_dates:
+        return None
+    for td in cal_dates:
+        if td >= d:
+            return td
+    return None
+
+
+def trading_days_left_for_release(today_date, release_date, cal_dates):
+    """計算距離出關日尚餘幾個交易日；若今日休市，先以下一個交易日作為基準。"""
+    if not release_date or not cal_dates:
+        return None
+
+    base_trade_date = next_or_same_trade_date(today_date, cal_dates)
+    release_trade_date = next_or_same_trade_date(release_date, cal_dates)
+
+    if not base_trade_date or not release_trade_date:
+        return None
+
+    if release_trade_date < base_trade_date:
+        return -1
+
+    return sum(1 for td in cal_dates if base_trade_date < td <= release_trade_date)
+
 def get_daytrade_stats_finmind(stock_id, target_date_str):
     end = target_date_str
     start = (datetime.strptime(target_date_str, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
@@ -1757,6 +1819,9 @@ def main():
         releasing_rows = []
         today_date = TARGET_DATE.date()
         stock_latest_end = {}
+        release_calendar_start = today_date - timedelta(days=10)
+        release_calendar_end = today_date + timedelta(days=90)
+        release_cal_dates = get_trading_calendar_between(release_calendar_start, release_calendar_end)
 
         if len(all_jail_data) > 1:
             for r in all_jail_data[1:]:
@@ -1769,17 +1834,22 @@ def main():
                 sd_date, ed_date = parse_jail_period(period)
 
                 if ed_date:
-                    if code not in stock_latest_end or ed_date > stock_latest_end[code]['date']:
+                    final_release_date = next_or_same_trade_date(ed_date, release_cal_dates) or ed_date
+                    if code not in stock_latest_end or final_release_date > stock_latest_end[code]['release_date']:
                         stock_latest_end[code] = {
                             'date': ed_date,
+                            'release_date': final_release_date,
                             'row_list': r[:4]
                         }
 
-        sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
+        sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['release_date'])
 
         for code, data in sorted_stocks:
-            final_end_date = data['date']
-            days_left = (final_end_date - today_date).days
+            raw_end_date = data['date']
+            final_end_date = data.get('release_date', raw_end_date)
+            days_left = trading_days_left_for_release(today_date, final_end_date, release_cal_dates)
+            if days_left is None:
+                days_left = (final_end_date - today_date).days
 
             if 0 <= days_left <= 4:
                 r_list = data['row_list'][:]
