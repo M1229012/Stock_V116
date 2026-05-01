@@ -22,7 +22,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install gspread google-auth requests yfinance matplotlib
+        pip install gspread google-auth requests yfinance matplotlib twstock
     # 產生金鑰
     - name: Create Service Key
       env:
