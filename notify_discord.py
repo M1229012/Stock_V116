@@ -421,7 +421,8 @@ def check_releasing_stocks(sh, price_map=None):
 FIG_WIDTH_WIDE = 17.8    
 FIG_WIDTH_NARROW = 11.0  
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明\n資訊分享非投資建議 投資請自行評估風險"
-MARGIN_X = 0.2  # 左右留白 0.2 英吋
+WATERMARK_ALPHA = 0.80   # << 補上這行
+MARGIN_X = 0.2  
 
 def parse_pct(s):
     try: return float(str(s).replace('%', '').replace('+', ''))
@@ -440,10 +441,10 @@ def get_days_style(days):
 
 def get_base_layout(n_rows, has_legend=False):
     """計算畫布的絕對高度 (英吋)，保證不管資料多寡，所有比例永遠一致"""
-    top_offset = 2.4     # 頂部裝飾 + 標題 + 副標題 + 表格上方留白
-    header_h = 0.6       # 表頭高度永遠固定 0.6 吋
-    row_h = 0.45         # 每列高度永遠固定 0.45 吋
-    bottom_offset = 1.2 if has_legend else 0.7  # 底部浮水印與圖例留白
+    top_offset = 2.4     
+    header_h = 0.6       
+    row_h = 0.45         
+    bottom_offset = 1.2 if has_legend else 0.7  
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
     return fig_h, row_h, header_h
 
@@ -458,16 +459,13 @@ def setup_canvas(fig_w, fig_h):
 
 def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, header_h):
     """繪製頂部共用區域與表格外框"""
-    # 頂部色條
     bar_h = 0.12
     ax.add_patch(patches.Rectangle((0.15, fig_h - 0.20 - bar_h), fig_w - 0.30, bar_h, facecolor=theme['accent'], linewidth=0))
     
-    # 標題 (固定 26pt)
     title_y = fig_h - 0.70
     title_text = clean_display_text(theme['title'])
     ax.text(fig_w/2, title_y, title_text, ha='center', va='center', fontsize=26, fontproperties=FONT_BOLD, color='#2C3440', zorder=3)
     
-    # 處理標題 Icon
     if theme.get('title_icon'):
         try:
             fig = ax.figure
@@ -479,26 +477,21 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
         except:
             draw_emoji_image(ax, theme['title_icon'], fig_w/2 - 2.5, title_y, fontsize=20, transform=ax.transData)
 
-    # 副標題 (固定 14pt)
     sub_y = fig_h - 1.15
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub_text = clean_display_text(f"資料日期: {today_str} | 共 {total_count} 檔")
     ax.text(fig_w/2, sub_y, sub_text, ha='center', va='center', fontsize=14, fontproperties=FONT_PROP, color='#8A97A8', zorder=3)
 
-    # 表格區域運算
     y_table_top = fig_h - 1.7
     table_total_h = header_h + max(1, n_rows) * row_h
     y_table_bottom = y_table_top - table_total_h
     y_header_bottom = y_table_top - header_h
 
-    # 小標題 "▌ 瀕臨處置..."
     ax.text(MARGIN_X + 0.05, y_table_top + 0.15, f"▌ {clean_display_text(theme['subtitle_text'])}",
             ha='left', va='bottom', fontsize=17, fontproperties=FONT_BOLD, color=theme['accent'])
 
-    # 表格白色外框卡片
     ax.add_patch(patches.Rectangle((MARGIN_X, y_table_bottom), fig_w - 2*MARGIN_X, table_total_h, 
                                    linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE, zorder=0))
-    # 表頭背景與頂部粗線
     ax.add_patch(patches.Rectangle((MARGIN_X, y_header_bottom), fig_w - 2*MARGIN_X, header_h, 
                                    linewidth=0, facecolor=theme['header'], zorder=1))
     ax.plot([MARGIN_X, fig_w - MARGIN_X], [y_table_top, y_table_top], color=theme['accent'], linewidth=2.5, zorder=2)
@@ -510,15 +503,12 @@ def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
     if align == 'center':
         ax.text(xst + w/2, y, text, ha='center', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'right':
-        # 距離右側留 0.2 吋空白
         ax.text(xst + w - 0.2, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'left':
-        # 距離左側留 0.2 吋空白
         ax.text(xst + 0.2, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
 def draw_bottom_info(ax, fig_w, has_legend=False):
     """繪製底部圖例與浮水印 (鎖死絕對英吋位置)"""
-    # 浮水印永遠在距離底部 0.25 吋的位置
     ax.text(fig_w - 0.2, 0.25, WATERMARK_TEXT, ha='right', va='bottom', 
             fontsize=12, linespacing=1.2, fontproperties=FONT_PROP, color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
     
@@ -563,7 +553,6 @@ def draw_entering_image(data, signal_map=None):
     
     y_header_bottom = draw_topbar_and_frame(ax, THEME_ENTERING, n, fig_w, fig_h, n, row_h, header_h)
 
-    # 欄位定義 (加總等於 1.0)
     col_widths_ratio = [0.10, 0.20, 0.40, 0.30]
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'right', 'left', 'center']
@@ -576,12 +565,10 @@ def draw_entering_image(data, signal_map=None):
         x_starts.append(acc)
         acc += w
 
-    # 繪製表頭
     y_header_center = y_header_bottom + header_h / 2
     for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 16, FONT_BOLD, TEXT_HEADER)
 
-    # 繪製資料列
     for i, row in enumerate(data):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
@@ -589,7 +576,6 @@ def draw_entering_image(data, signal_map=None):
         code, name, days = clean_display_text(row['code']), clean_display_text(row['name'], True), row['days']
         name_color = get_signal_color(code, signal_map)
         
-        # 列背景 & 底線
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
@@ -626,7 +612,6 @@ def draw_releasing_image(data, signal_map=None):
 
     col_widths_ratio = [0.040, 0.086, 0.160, 0.100, 0.110, 0.176, 0.108, 0.108, 0.112]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    # 確保資料與表頭使用一模一樣的對齊邏輯
     col_aligns = ['center', 'right', 'left', 'right', 'center', 'center', 'right', 'right', 'right']
 
     table_w = fig_w - 2 * MARGIN_X
@@ -677,7 +662,6 @@ def draw_releasing_image(data, signal_map=None):
         elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
 
-        # 狀態欄特製 (Emoji + Text 置中群組對齊)
         status_group_center = x_starts[5] + x_widths[5] / 2
         emoji_ok = draw_emoji_image(ax, icon, status_group_center - 0.45, y_center, fontsize=15, transform=ax.transData, zorder=4, fallback_color=st_color)
         if emoji_ok:
