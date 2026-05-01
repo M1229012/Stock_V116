@@ -418,7 +418,6 @@ def check_releasing_stocks(sh, price_map=None):
 # ============================
 # 🎨 【核心版面引擎】徹底解決字體與縮放不一的最終解
 # ============================
-# 強制固定全部畫布寬度與邊界，確保 Discord 縮放比例 100% 相同！
 COMMON_FIG_WIDTH = 13.0  
 MARGIN_X = 0.4  
 
@@ -441,37 +440,32 @@ def get_days_style(days):
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
 
 def get_base_layout(n_rows, has_legend=False):
-    """精準壓縮頂部和底部的絕對空白"""
-    top_offset = 1.35     # 頂部高度 (色條 + 標題區)
-    header_h = 0.60       # 表頭高度
-    row_h = 0.45          # 單列高度
-    # 修正：針對沒有圖例的圖表，加大底部空白避免撞到表格底線
-    bottom_offset = 0.70 if has_legend else 0.55  
+    """加大底部絕對空間，徹底解決浮水印重疊問題"""
+    top_offset = 1.35     
+    header_h = 0.60       
+    row_h = 0.45          
+    
+    # 底部空間加大：有圖例 0.90 吋，無圖例 0.75 吋
+    bottom_offset = 0.90 if has_legend else 0.75  
     
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
     return fig_h, row_h, header_h, top_offset
 
 def setup_canvas(fig_w, fig_h):
-    """建立完全貼齊邊緣的畫布，解決色條上方的醜白邊"""
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
     ax.set_xlim(0, fig_w)
     ax.set_ylim(0, fig_h)
     ax.set_axis_off()
-    # 關鍵：將 padding 設為 0，確保色條可以從絕對最頂端開始畫！
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0) 
     return fig, ax
 
 def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, header_h, top_offset):
-    """繪製最頂部滿版色條、標題與表格外框"""
-    # 頂部裝飾滿版色條，絕對貼死圖片最上緣 (y=fig_h)
     bar_h = 0.15
     ax.add_patch(patches.Rectangle((0, fig_h - bar_h), fig_w, bar_h, facecolor=theme['accent'], linewidth=0))
     
-    # 標題配置 (字體統一為26pt)
     title_y = fig_h - 0.55
     ax.text(fig_w/2, title_y, clean_display_text(theme['title']), ha='center', va='center', fontsize=26, fontproperties=FONT_BOLD, color='#2C3440')
     
-    # 處理 Emoji Icon
     if theme.get('title_icon'):
         try:
             fig = ax.figure
@@ -483,21 +477,17 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
         except:
             draw_emoji_image(ax, theme['title_icon'], fig_w/2 - 2.5, title_y, fontsize=22, transform=ax.transData)
 
-    # 副標題配置
     sub_y = fig_h - 0.95
     today_str = datetime.now().strftime("%Y-%m-%d")
     ax.text(fig_w/2, sub_y, clean_display_text(f"資料日期: {today_str} | 共 {total_count} 檔"), ha='center', va='center', fontsize=15, fontproperties=FONT_PROP, color='#8A97A8')
 
-    # 表格區域計算
     y_table_top = fig_h - top_offset
     table_total_h = header_h + max(1, n_rows) * row_h
     y_table_bottom = y_table_top - table_total_h
     y_header_bottom = y_table_top - header_h
 
-    # 小標題 (例如 "▌ 即將出關...")
     ax.text(MARGIN_X + 0.05, y_table_top + 0.15, f"▌ {clean_display_text(theme['subtitle_text'])}", ha='left', va='bottom', fontsize=17, fontproperties=FONT_BOLD, color=theme['accent'])
 
-    # 表格外框
     table_w = fig_w - 2 * MARGIN_X
     ax.add_patch(patches.Rectangle((MARGIN_X, y_table_bottom), table_w, table_total_h, linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE))
     ax.add_patch(patches.Rectangle((MARGIN_X, y_header_bottom), table_w, header_h, linewidth=0, facecolor=theme['header']))
@@ -506,7 +496,6 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
     return y_header_bottom
 
 def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
-    """共用渲染器：強制表頭與資料列使用相同規則，絕對對齊！"""
     if align == 'center':
         ax.text(xst + w/2, y, text, ha='center', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'right':
@@ -515,13 +504,13 @@ def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
         ax.text(xst + 0.15, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
 def draw_bottom_info(ax, fig_w, has_legend=False):
-    """統一繪製底部，不再留多餘空間"""
-    y_pos_wm = 0.12 # 浮水印距離底部高度
+    """完美置中底部資訊，避免撞線與貼底"""
+    y_pos_wm = 0.20 # 將浮水印基準線上抬，避開貼邊
     ax.text(fig_w - MARGIN_X - 0.05, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom', 
             fontsize=13, linespacing=1.3, fontproperties=FONT_PROP, color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
     
     if has_legend:
-        y_pos_leg = 0.40 # 圖例距離底部高度
+        y_pos_leg = 0.45 # 將圖例微調置中於留白處
         x_inch = MARGIN_X + 0.05
         def add_text(inch_x, text, fs, fp, color):
             ax.text(inch_x, y_pos_leg, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=9)
@@ -542,7 +531,6 @@ def draw_bottom_info(ax, fig_w, has_legend=False):
 
 def save_figure_to_buffer(fig):
     buf = BytesIO()
-    # 關鍵修正！移除 bbox_inches='tight' 以防 Matplotlib 亂切畫布導致寬度不一
     plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor(), pad_inches=0)
     plt.close(fig)
     buf.seek(0)
