@@ -813,6 +813,8 @@ def draw_table_frame(ax, theme, subtitle, top_y, total_h):
 
 
 COMMON_FIG_WIDTH = 17.8
+FIXED_FIG_H_SMALL = 10.2      # 瀕臨處置 / 處置中 固定比例
+FIXED_FIG_H_RELEASING = 16.6  # 即將出關 固定比例
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
 DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
@@ -957,7 +959,7 @@ def save_figure_to_buffer(fig):
 
 
 def draw_entering_image(data, signal_map=None):
-    """瀕臨處置 - 單欄詳細圖
+    """瀕臨處置 - 單欄詳細圖（固定比例版）
 
     signal_map: {代號: 訊號狀態} dict（從處置股技術追蹤讀取），
                 用來決定股號股名的顏色：
@@ -967,7 +969,8 @@ def draw_entering_image(data, signal_map=None):
     """
     theme = THEME_ENTERING
     n = len(data)
-    fig_h = calc_dynamic_fig_h(n, base_h=5.9, per_row_h=0.36, min_h=7.0, max_h=15.6)
+    # 改為固定比例：瀕臨處置不再依股票數動態拉長/縮短
+    fig_h = FIXED_FIG_H_SMALL
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=False)
@@ -1088,14 +1091,15 @@ def draw_entering_image(data, signal_map=None):
 
 
 def draw_releasing_image(data, signal_map=None):
-    """即將出關 - 單欄詳細含績效
+    """即將出關 - 單欄詳細含績效（固定比例版）
 
     signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
     """
     theme = THEME_RELEASING
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
-    fig_h = calc_dynamic_fig_h(n, base_h=7.4, per_row_h=0.46, min_h=10.2, max_h=23.5)
+    # 改為固定比例：即將出關固定使用長版圖片
+    fig_h = FIXED_FIG_H_RELEASING
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
     subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=True)
@@ -1277,7 +1281,7 @@ def draw_releasing_image(data, signal_map=None):
 
 
 def draw_injail_image(data, signal_map=None):
-    """處置中 - 動態欄數版
+    """處置中 - 固定比例版
 
     signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
     """
@@ -1285,7 +1289,8 @@ def draw_injail_image(data, signal_map=None):
     n = len(data)
     n_cols = get_injail_n_cols(n)
     rows_per_col = max(1, (n + n_cols - 1) // n_cols)
-    fig_h = calc_dynamic_fig_h(rows_per_col, base_h=6.1, per_row_h=0.39, min_h=7.8, max_h=16.8)
+    # 改為固定比例：處置中不再依股票數動態拉長/縮短
+    fig_h = FIXED_FIG_H_SMALL
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=True)
