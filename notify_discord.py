@@ -1064,10 +1064,18 @@ def draw_releasing_image(data, signal_map=None):
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'center', 'center', 'center']
 
+    table_left = 0.005
+    table_right = 0.995
+    table_w = table_right - table_left
+
     x_starts = []
-    acc = 0
+    x_widths = []
+    acc = table_left
     for w in col_widths:
-        x_starts.append(acc); acc += w
+        scaled_w = w * table_w
+        x_starts.append(acc)
+        x_widths.append(scaled_w)
+        acc += scaled_w
 
     header_top = top_y
 
@@ -1080,7 +1088,7 @@ def draw_releasing_image(data, signal_map=None):
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
 
-    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
+    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, x_widths, col_labels, col_aligns)):
         if align == 'center':
             text_x = xst + w/2
         elif align == 'right':
@@ -1112,7 +1120,7 @@ def draw_releasing_image(data, signal_map=None):
                 color=BORDER_DARK, linewidth=0.6,
                 transform=ax.transAxes, clip_on=False, zorder=2)
         ax.add_patch(patches.Rectangle(
-            (x_starts[0], y_top - row_h), col_widths[0], row_h,
+            (x_starts[0], y_top - row_h), x_widths[0], row_h,
             linewidth=0, facecolor=BG_RANK,
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
@@ -1122,11 +1130,11 @@ def draw_releasing_image(data, signal_map=None):
         elif rank_num == 3: rank_color, rank_fw = BRONZE, 'bold'
         else:               rank_color, rank_fw = TEXT_MUTED, 'normal'
 
-        ax.text(x_starts[0] + col_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
+        ax.text(x_starts[0] + x_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=16, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
-        ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
+        ax.text(x_starts[1] + x_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=20, fontweight='bold',
                 fontproperties=FONT_BOLD, color=name_color, zorder=3)
