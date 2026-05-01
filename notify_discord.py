@@ -443,6 +443,7 @@ def get_base_layout(n_rows, has_legend=False):
     top_offset = 1.35     
     header_h = 0.60       
     row_h = 0.45          
+    
     bottom_offset = 0.90 if has_legend else 0.75  
     
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
@@ -546,7 +547,6 @@ def draw_entering_image(data, signal_map=None):
     
     y_header_bottom = draw_topbar_and_frame(ax, THEME_ENTERING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # 【微調】重新分配欄位比例，讓整體看起來更緊湊、視覺更均衡
     col_widths_ratio = [0.10, 0.22, 0.36, 0.32]
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'center', 'left', 'center']
@@ -681,10 +681,10 @@ def draw_injail_image(data, signal_map=None):
 
     y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # 【微調】重新分配欄位比例，並改用置中對齊來完美消除空曠感！
-    col_widths_ratio = [0.10, 0.18, 0.26, 0.20, 0.26]
+    # 【微調】重新分配欄位比例，並確保現價靠左 (Left) 對齊
+    col_widths_ratio = [0.10, 0.18, 0.28, 0.16, 0.28]
     col_labels = ["#", "代號", "名稱", "現價", "處置期間"]
-    col_aligns = ['center', 'center', 'left', 'center', 'center']
+    col_aligns = ['center', 'center', 'left', 'left', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
