@@ -722,11 +722,6 @@ TOPBAR_ICON_WIDTH_INCH = 0.28
 TOPBAR_TITLE_X = 0.5
 TOPBAR_SUBTITLE_X = 0.5
 
-# [調整重點 1] topbar 區尺寸（修正版）：
-#   問題：上一版把 TOPBAR_BG_HEIGHT 從 0.085 改成 0.055 想瘦身，
-#         結果主標題、副標題、表格頂線全擠在一起，標題還跟綠色橫條重疊。
-#   修正：恢復成 0.090（比原始 0.085 更寬鬆），標題 y=0.955、副標題 y=0.920，
-#         三層之間留有正常呼吸空間。
 TOPBAR_BG_TOP = 1.0
 TOPBAR_BG_HEIGHT = 0.090
 TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.910
@@ -735,22 +730,23 @@ TOPBAR_SUBTITLE_Y_RATIO = 0.20
 TITLE_SUBTITLE_GAP = 0.010
 
 def get_topbar_layout(fig_h):
-    """主標題 / 副標題區改為較緊湊的比例式配置，減少上下浪費空白。"""
+    """主標題 / 副標題區配置（改用絕對英吋反推，確保不會重疊）"""
     fig_h = max(fig_h, 1.0)
-    bg_height = max(0.040, min(0.060, 0.20 / fig_h + 0.038))
-    bg_bottom = 1.0 - bg_height
-    title_y = bg_bottom + bg_height * 0.62
-    subtitle_y = bg_bottom + bg_height * 0.23
-    return bg_bottom, bg_height, title_y, subtitle_y
-
+    # 標題固定在距離頂部 0.55 英吋，副標題距離頂部 1.05 英吋
+    title_y = 1.0 - (0.55 / fig_h)
+    subtitle_y = 1.0 - (1.05 / fig_h)
+    # Topbar 區域總高度固定佔用 1.4 英吋
+    bg_bottom = 1.0 - (1.4 / fig_h)
+    return bg_bottom, 0, title_y, subtitle_y
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig_h = fig.get_size_inches()[1]
-    topbar_bottom, topbar_height, title_y, subtitle_y = get_topbar_layout(fig_h)
+    topbar_bottom, _, title_y, subtitle_y = get_topbar_layout(fig_h)
 
-    # 背景維持乾淨，只畫頂部主色細條，風格靠近範例。
+    # 頂部裝飾主色條 (固定 0.12 英吋高，不再忽粗忽細)
+    bar_h = 0.12 / fig_h
     fig.add_artist(patches.FancyBboxPatch(
-        (0.02, 0.985), 0.96, 0.010,
+        (0.015, 1.0 - bar_h - (0.05 / fig_h)), 0.97, bar_h,
         boxstyle="round,pad=0.001,rounding_size=0.006",
         linewidth=0, facecolor=theme['accent'],
         transform=fig.transFigure, clip_on=False, zorder=1
@@ -769,8 +765,6 @@ def draw_topbar(fig, theme, total, page_info=""):
 
     if theme.get('title_icon'):
         try:
-            fig.canvas.draw()
-            title_obj.set_position((TOPBAR_TITLE_X + (icon_width + icon_gap) / 2, title_y))
             fig.canvas.draw()
             renderer = fig.canvas.get_renderer()
             bbox = title_obj.get_window_extent(renderer=renderer)
@@ -793,23 +787,24 @@ def draw_topbar(fig, theme, total, page_info=""):
 
 
 def draw_table_frame(ax, theme, subtitle, top_y, total_h):
-    """表格外框改成較乾淨的卡片式設計，接近範例風格但減少四周空白。"""
-    card_x = 0.008
-    card_w = 0.984
-    card_y = top_y - total_h - 0.004
-    card_h = total_h + 0.006
-
+    """表格外框與小標題配置"""
     ax.add_patch(patches.FancyBboxPatch(
-        (card_x, card_y), card_w, card_h,
-        boxstyle="round,pad=0.002,rounding_size=0.010",
+        (0.002, 0.0), 0.996, 1.0,
+        boxstyle="round,pad=0.002,rounding_size=0.008",
         linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE,
         transform=ax.transAxes, clip_on=False, zorder=0
     ))
 
-    ax.text(0.014, top_y + 0.010, f"▌ {clean_display_text(subtitle)}",
-            transform=ax.transAxes, ha='left', va='bottom',
-            fontsize=17, fontweight='bold',
-            fontproperties=FONT_BOLD, color=theme['accent'])
+    # 使用 Figure 座標定位小標題，避免被動態拉長的 Axes 影響位置
+    fig = ax.figure
+    fig_h = fig.get_size_inches()[1]
+    ax_box = ax.get_position()
+    # 固定在表格頂部外側 0.15 英吋處
+    subtitle_y_fig = ax_box.y1 + (0.15 / fig_h) 
+
+    fig.text(ax_box.x0 + 0.005, subtitle_y_fig, f"▌ {clean_display_text(subtitle)}",
+             ha='left', va='bottom', fontsize=17, fontweight='bold',
+             fontproperties=FONT_BOLD, color=theme['accent'])
 
 
 COMMON_FIG_WIDTH = 17.8
@@ -887,10 +882,6 @@ def draw_signal_legend(fig):
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
 
 
-# [調整重點 2] 表格 axes 區（修正版）：
-#   - UNIFIED_SUBPLOT_TOP 0.918 → 0.890：表格上緣下移，跟 topbar(到0.910) 留 2% 距離，避免重疊
-#   - UNIFIED_SUBPLOT_BOTTOM 0.009 → 0.055：底部留白加大，讓顏色說明跟浮水印有空間放大字體
-#   - TABLE_TOP_Y 跟 TABLE_TOTAL_H 在 axes 內幾乎佔滿（0.975 / 0.940）
 UNIFIED_SUBPLOT_LEFT = 0.020
 UNIFIED_SUBPLOT_RIGHT = 0.980
 UNIFIED_SUBPLOT_TOP = 0.93
@@ -906,39 +897,30 @@ def calc_dynamic_fig_h(n, *, base_h, per_row_h, min_h, max_h):
     return max(min_h, min(max_h, base_h + n * per_row_h))
 
 
-def calc_header_h(fig_h, subplot_top=None, subplot_bottom=None):
-    """依圖片實際高度反推表頭比例，讓三張圖的表頭視覺高度一致。"""
-    if subplot_top is None:
-        subplot_top = UNIFIED_SUBPLOT_TOP
-    if subplot_bottom is None:
-        subplot_bottom = UNIFIED_SUBPLOT_BOTTOM
+def calc_header_h(fig_h, subplot_top, subplot_bottom):
+    """表頭高度永遠固定為 0.6 英吋，不會因為列數多寡變形"""
     axes_h_inch = fig_h * (subplot_top - subplot_bottom)
-    if axes_h_inch <= 0:
-        return 0.05
-    return max(TABLE_HEADER_H_MIN, min(TABLE_HEADER_H_MAX, TABLE_HEADER_H_INCH / axes_h_inch))
+    if axes_h_inch <= 0: return 0.05
+    return 0.6 / axes_h_inch
 
 
 def get_subplot_layout(fig_h, has_legend=False):
-    """讓表格區更貼近主標題與底部，但仍保留閱讀舒適度。"""
+    """設定表格的繪圖區，確保與頂部標題和底部浮水印有固定距離"""
     fig_h = max(fig_h, 1.0)
     topbar_bottom, _, _, _ = get_topbar_layout(fig_h)
-    gap_below_topbar = max(0.004, min(0.010, 0.10 / fig_h + 0.004))
 
-    if has_legend:
-        bottom = max(0.040, min(0.050, 0.22 / fig_h + 0.020))
-    else:
-        bottom = max(0.020, min(0.030, 0.10 / fig_h + 0.010))
+    # 表格頂部距離 Topbar 底部留 0.35 英吋空隙 (給 "▌ 小標題" 留空間)
+    top = topbar_bottom - (0.35 / fig_h)
+    # 底部留白（有顏色說明留 1.2 英吋，沒有則留 0.7 英吋）
+    bottom_margin = 1.2 if has_legend else 0.7
+    bottom = bottom_margin / fig_h
 
-    top = topbar_bottom - gap_below_topbar
-    return UNIFIED_SUBPLOT_LEFT, UNIFIED_SUBPLOT_RIGHT, top, bottom
+    return 0.015, 0.985, top, bottom
 
 
 def get_table_axis_layout():
-    """在 axes 內用比例配置表格上下範圍，盡量吃滿可用區域。"""
-    top_y = 0.994
-    bottom_y = 0.003
-    total_h = top_y - bottom_y
-    return top_y, total_h
+    """Axes 內部高度比例，直接吃滿配置好的繪圖區"""
+    return 1.0, 1.0
 
 
 def get_injail_n_cols(n):
@@ -969,8 +951,8 @@ def draw_entering_image(data, signal_map=None):
     """
     theme = THEME_ENTERING
     n = len(data)
-    # 改為固定比例：瀕臨處置不再依股票數動態拉長/縮短
-    fig_h = FIXED_FIG_H_SMALL
+    # 基礎高度 3.0 英吋 + 每多一檔股票增加 0.45 英吋的高度
+    fig_h = max(6.0, 3.0 + n * 0.45) 
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=False)
@@ -1098,8 +1080,8 @@ def draw_releasing_image(data, signal_map=None):
     theme = THEME_RELEASING
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
-    # 改為固定比例：即將出關固定使用長版圖片
-    fig_h = FIXED_FIG_H_RELEASING
+    # 徹底解決 51 檔擠在一起的問題，50幾檔時圖片會自動變長，留足排版空間
+    fig_h = max(8.0, 3.5 + n * 0.45) 
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
     subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=True)
@@ -1289,8 +1271,8 @@ def draw_injail_image(data, signal_map=None):
     n = len(data)
     n_cols = get_injail_n_cols(n)
     rows_per_col = max(1, (n + n_cols - 1) // n_cols)
-    # 改為固定比例：處置中不再依股票數動態拉長/縮短
-    fig_h = FIXED_FIG_H_SMALL
+    # 根據欄位切割後的實際列數，動態長高
+    fig_h = max(6.0, 3.5 + rows_per_col * 0.45) 
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
     subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(fig_h, has_legend=True)
