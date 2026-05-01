@@ -722,10 +722,21 @@ TOPBAR_ICON_WIDTH_INCH = 0.28
 TOPBAR_TITLE_X = 0.5
 TOPBAR_SUBTITLE_X = 0.5
 
+# [調整重點 1] topbar 區域往上收緊：
+#   - 上方背景區塊高度從 0.085 縮成 0.055（縮 35%）
+#   - 標題 y 位置從 0.958 上移到 0.972（更靠近頂端）
+#   - 副標題 y 位置從 0.927 上移到 0.948（與標題距離拉近）
+#   - 整個 topbar 從佔 8.5% 縮成 4.5%，騰出 4% 空間給表格
+TOPBAR_BG_TOP = 1.0
+TOPBAR_BG_HEIGHT = 0.055
+TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.945
+TOPBAR_TITLE_Y = 0.978
+TOPBAR_SUBTITLE_Y = 0.954
+
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
-        (0, 0.915), 1, 0.085,
+        (0, TOPBAR_BG_BOTTOM), 1, TOPBAR_BG_HEIGHT,
         linewidth=0, facecolor=BG_MAIN,
         transform=fig.transFigure, clip_on=False, zorder=0
     ))
@@ -736,7 +747,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_y = 0.958
+    title_y = TOPBAR_TITLE_Y
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
     icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
@@ -766,7 +777,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(TOPBAR_SUBTITLE_X, 0.927, clean_display_text(sub),
+    fig.text(TOPBAR_SUBTITLE_X, TOPBAR_SUBTITLE_Y, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -870,12 +881,16 @@ def draw_signal_legend(fig):
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
 
 
+# [調整重點 2] 表格區整體往上拉：
+#   - UNIFIED_SUBPLOT_TOP 從 0.908 拉到 0.940（+3.2%）
+#   - TABLE_TOP_Y 從 0.988 拉到 0.998（盡量貼近 axes 頂端）
+#   - TABLE_TOTAL_H 從 0.936 加大到 0.965（多吃 2.9%）
 UNIFIED_SUBPLOT_LEFT = 0.025
 UNIFIED_SUBPLOT_RIGHT = 0.975
-UNIFIED_SUBPLOT_TOP = 0.908
+UNIFIED_SUBPLOT_TOP = 0.940
 UNIFIED_SUBPLOT_BOTTOM = 0.009
-TABLE_TOP_Y = 0.988
-TABLE_TOTAL_H = 0.936
+TABLE_TOP_Y = 0.998
+TABLE_TOTAL_H = 0.965
 TABLE_HEADER_H_INCH = 0.50
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
@@ -1060,9 +1075,28 @@ def draw_releasing_image(data, signal_map=None):
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
-    col_widths = [0.045, 0.09, 0.165, 0.085, 0.12, 0.175, 0.10, 0.10, 0.12]
+    # [調整重點 3] 後 5 欄（倒數天數/狀態/處置前/處置中/出關日）整體往右移 +5%：
+    #   做法：擴大前面 3 欄（代號/名稱/現價）寬度，把後面所有欄位推到右邊。
+    #   後 5 欄『欄寬本身保持不變』，內容大小（剩X天膠囊、狀態、%、日期）不會被擠壓。
+    #
+    #   舊欄寬: [0.045, 0.090, 0.165, 0.085, 0.120, 0.175, 0.100, 0.100, 0.120]
+    #   新欄寬: [0.045, 0.105, 0.180, 0.100, 0.120, 0.175, 0.100, 0.100, 0.075]
+    #
+    #   變化說明：
+    #     代號:   0.090 → 0.105 (+0.015)  ← 加寬
+    #     名稱:   0.165 → 0.180 (+0.015)  ← 加寬
+    #     現價:   0.085 → 0.100 (+0.015)  ← 加寬
+    #     倒數天數: 0.120 → 0.120 (不變)   起始 +4.5%
+    #     狀態:   0.175 → 0.175 (不變)   起始 +4.5%
+    #     處置前: 0.100 → 0.100 (不變)   起始 +4.5%
+    #     處置中: 0.100 → 0.100 (不變)   起始 +4.5%
+    #     出關日: 0.120 → 0.075 (-0.045) ← 縮窄補回總寬
+    #             (理由：標題改成右對齊後，'出關日' 3字 + 'mm/dd' 5字符
+    #              在 fontsize 16~18 下約需 0.65 inch，0.075×16.2=1.215 inch 綽綽有餘)
+    col_widths = [0.045, 0.105, 0.180, 0.100, 0.120, 0.175, 0.100, 0.100, 0.075]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'center', 'center', 'center']
+    # [調整重點 4] 出關日 header 從 'center' 改成 'right'，跟資料的右對齊一致
+    col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'center', 'center', 'right']
 
     table_left = 0.005
     table_right = 0.995
@@ -1198,7 +1232,7 @@ def draw_releasing_image(data, signal_map=None):
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
-        ax.text(x_starts[8] + x_widths[8] - 0.008, y_top - row_h/2, date,
+        ax.text(x_starts[8] + x_widths[8] - 0.010, y_top - row_h/2, date,
                 transform=ax.transAxes, ha='right', va='center',
                 fontsize=18, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
