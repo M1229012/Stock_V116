@@ -715,7 +715,7 @@ def get_days_style(days):
 
 
 TOPBAR_TITLE_FONT_SIZE = 28
-TOPBAR_SUBTITLE_FONT_SIZE = 13.5
+TOPBAR_SUBTITLE_FONT_SIZE = 14
 TOPBAR_ICON_FONT_SIZE = 17
 TOPBAR_ICON_GAP = 0.022
 TOPBAR_ICON_WIDTH_INCH = 0.28
@@ -735,12 +735,12 @@ TOPBAR_SUBTITLE_Y_RATIO = 0.20
 TITLE_SUBTITLE_GAP = 0.010
 
 def get_topbar_layout(fig_h):
-    """依圖片高度動態換算 topbar 高度，避免長圖過於擁擠或留白過大。"""
+    """主標題 / 副標題區改為較緊湊的比例式配置，減少上下浪費空白。"""
     fig_h = max(fig_h, 1.0)
-    bg_height = max(0.050, min(0.078, 0.45 / fig_h + 0.025))
+    bg_height = max(0.040, min(0.060, 0.20 / fig_h + 0.038))
     bg_bottom = 1.0 - bg_height
-    title_y = bg_bottom + bg_height * TOPBAR_TITLE_Y_RATIO
-    subtitle_y = bg_bottom + bg_height * TOPBAR_SUBTITLE_Y_RATIO
+    title_y = bg_bottom + bg_height * 0.62
+    subtitle_y = bg_bottom + bg_height * 0.23
     return bg_bottom, bg_height, title_y, subtitle_y
 
 
@@ -748,13 +748,10 @@ def draw_topbar(fig, theme, total, page_info=""):
     fig_h = fig.get_size_inches()[1]
     topbar_bottom, topbar_height, title_y, subtitle_y = get_topbar_layout(fig_h)
 
-    fig.add_artist(patches.Rectangle(
-        (0, topbar_bottom), 1, topbar_height,
-        linewidth=0, facecolor=BG_MAIN,
-        transform=fig.transFigure, clip_on=False, zorder=0
-    ))
-    fig.add_artist(patches.Rectangle(
-        (0, 0.99), 1, 0.01,
+    # 背景維持乾淨，只畫頂部主色細條，風格靠近範例。
+    fig.add_artist(patches.FancyBboxPatch(
+        (0.02, 0.985), 0.96, 0.010,
+        boxstyle="round,pad=0.001,rounding_size=0.006",
         linewidth=0, facecolor=theme['accent'],
         transform=fig.transFigure, clip_on=False, zorder=1
     ))
@@ -768,7 +765,7 @@ def draw_topbar(fig, theme, total, page_info=""):
                          ha='center', va='center',
                          fontsize=title_fontsize, fontweight='bold',
                          fontproperties=FONT_BOLD,
-                         color='#2C3440', zorder=2)
+                         color='#2C3440', zorder=3)
 
     if theme.get('title_icon'):
         try:
@@ -784,29 +781,32 @@ def draw_topbar(fig, theme, total, page_info=""):
             draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
-    sub = f"資料日期: {today_str}  |  共 {total} 檔"
+    sub = f"資料日期: {today_str} | 共 {total} 檔"
     if page_info:
-        sub += f"  |  {clean_display_text(page_info)}"
+        sub += f" | {clean_display_text(page_info)}"
 
     fig.text(TOPBAR_SUBTITLE_X, subtitle_y, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
-             color='#7F8C9B', zorder=2)
+             color='#8A97A8', zorder=3)
 
 
 def draw_table_frame(ax, theme, subtitle, top_y, total_h):
-    ax.add_patch(patches.Rectangle(
-        (0.005, top_y - total_h - 0.01), 0.99, total_h + 0.015,
+    """表格外框改成較乾淨的卡片式設計，接近範例風格但減少四周空白。"""
+    card_x = 0.008
+    card_w = 0.984
+    card_y = top_y - total_h - 0.004
+    card_h = total_h + 0.006
+
+    ax.add_patch(patches.FancyBboxPatch(
+        (card_x, card_y), card_w, card_h,
+        boxstyle="round,pad=0.002,rounding_size=0.010",
         linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE,
         transform=ax.transAxes, clip_on=False, zorder=0
     ))
-    ax.add_patch(patches.Rectangle(
-        (0.005, top_y - total_h - 0.01), 0.009, total_h + 0.015,
-        linewidth=0, facecolor=theme['accent'],
-        transform=ax.transAxes, clip_on=False, zorder=1
-    ))
-    ax.text(0.018, top_y + 0.015, f"▌ {clean_display_text(subtitle)}",
+
+    ax.text(0.014, top_y + 0.010, f"▌ {clean_display_text(subtitle)}",
             transform=ax.transAxes, ha='left', va='bottom',
             fontsize=17, fontweight='bold',
             fontproperties=FONT_BOLD, color=theme['accent'])
@@ -827,7 +827,7 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 def draw_watermark(fig):
     watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
-    fig.text(0.988, 0.0048, watermark_text,
+    fig.text(0.988, 0.0058, watermark_text,
              ha='right', va='bottom',
              fontsize=10.8,
              linespacing=1.02,
@@ -842,7 +842,7 @@ def draw_signal_legend(fig):
            更乾淨、不會看起來像獨立區塊。
     """
     # 不再畫 FancyBboxPatch 方框 -- 文字裸貼底部
-    text_y = 0.013   # 更貼近底部，減少空白浪費
+    text_y = 0.017   # 更貼近底部，減少空白浪費
     x = 0.030        # 從左邊緣開始
     main_fs = 12.6
     item_fs = 12.4
@@ -889,12 +889,12 @@ def draw_signal_legend(fig):
 #   - UNIFIED_SUBPLOT_TOP 0.918 → 0.890：表格上緣下移，跟 topbar(到0.910) 留 2% 距離，避免重疊
 #   - UNIFIED_SUBPLOT_BOTTOM 0.009 → 0.055：底部留白加大，讓顏色說明跟浮水印有空間放大字體
 #   - TABLE_TOP_Y 跟 TABLE_TOTAL_H 在 axes 內幾乎佔滿（0.975 / 0.940）
-UNIFIED_SUBPLOT_LEFT = 0.015
-UNIFIED_SUBPLOT_RIGHT = 0.985
+UNIFIED_SUBPLOT_LEFT = 0.020
+UNIFIED_SUBPLOT_RIGHT = 0.980
 UNIFIED_SUBPLOT_TOP = 0.93
 UNIFIED_SUBPLOT_BOTTOM = 0.035
-TABLE_TOP_Y = 0.992
-TABLE_TOTAL_H = 0.984
+TABLE_TOP_Y = 0.988
+TABLE_TOTAL_H = 0.970
 TABLE_HEADER_H_INCH = 0.46
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
@@ -917,15 +917,15 @@ def calc_header_h(fig_h, subplot_top=None, subplot_bottom=None):
 
 
 def get_subplot_layout(fig_h, has_legend=False):
-    """依圖片高度動態換算表格區上下邊界，讓長圖表格更吃滿版面。"""
+    """讓表格區更貼近主標題與底部，但仍保留閱讀舒適度。"""
     fig_h = max(fig_h, 1.0)
     topbar_bottom, _, _, _ = get_topbar_layout(fig_h)
-    gap_below_topbar = max(0.003, min(0.008, 0.08 / fig_h))
+    gap_below_topbar = max(0.004, min(0.010, 0.10 / fig_h + 0.004))
 
     if has_legend:
-        bottom = max(0.018, min(0.032, 0.18 / fig_h + 0.010))
+        bottom = max(0.040, min(0.050, 0.22 / fig_h + 0.020))
     else:
-        bottom = max(0.012, min(0.022, 0.12 / fig_h + 0.006))
+        bottom = max(0.020, min(0.030, 0.10 / fig_h + 0.010))
 
     top = topbar_bottom - gap_below_topbar
     return UNIFIED_SUBPLOT_LEFT, UNIFIED_SUBPLOT_RIGHT, top, bottom
@@ -1123,7 +1123,7 @@ def draw_releasing_image(data, signal_map=None):
     #     - 內容置中後，欄與欄之間的「視覺空白」自然會一致
     #     - 現價也是置中，跟出關日同樣處理，不再「現價靠右、出關日靠右」造成不對稱
     #     - 把多出來的寬度從『代號』『名稱』省下來補給後 6 欄
-    col_widths = [0.042, 0.088, 0.148, 0.112, 0.112, 0.176, 0.107, 0.107, 0.108]
+    col_widths = [0.040, 0.086, 0.160, 0.100, 0.110, 0.176, 0.108, 0.108, 0.112]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
     # 後 6 欄全部置中對齊，視覺節奏一致
     col_aligns = ['center', 'right', 'left', 'left', 'center', 'left', 'right', 'right', 'right']
@@ -1161,7 +1161,7 @@ def draw_releasing_image(data, signal_map=None):
             text_x = xst + 0.012
         ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
-                fontsize=16, fontweight='bold',
+                fontsize=15.5, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
 
     for row_i, row in enumerate(data):
