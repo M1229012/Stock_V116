@@ -399,9 +399,9 @@ DAYS_NORMAL_FG = '#2C3440'
 SIGNAL_COLOR_RETEST   = '#C2410C'  # 深橘：訊號狀態 = 目前回測月線
 SIGNAL_COLOR_BREAKOUT = '#1D4ED8'  # 深藍：訊號狀態 = 回測後轉強
 
-THEME_ENTERING  = {'accent': '#E85D6A', 'header': '#FCECEF', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 30}
-THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 30}
-THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 30}
+THEME_ENTERING  = {'accent': '#E85D6A', 'header': '#FCECEF', 'title': '處置倒數  瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)', 'title_fontsize': 28}
+THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾  即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)', 'title_fontsize': 28}
+THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴嗎  正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單', 'title_fontsize': 28}
 
 
 # ============================
@@ -714,9 +714,9 @@ def get_days_style(days):
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
 
 
-TOPBAR_TITLE_FONT_SIZE = 30
-TOPBAR_SUBTITLE_FONT_SIZE = 15
-TOPBAR_ICON_FONT_SIZE = 18
+TOPBAR_TITLE_FONT_SIZE = 28
+TOPBAR_SUBTITLE_FONT_SIZE = 13.5
+TOPBAR_ICON_FONT_SIZE = 17
 TOPBAR_ICON_GAP = 0.022
 TOPBAR_ICON_WIDTH_INCH = 0.28
 TOPBAR_TITLE_X = 0.5
@@ -730,13 +730,14 @@ TOPBAR_SUBTITLE_X = 0.5
 TOPBAR_BG_TOP = 1.0
 TOPBAR_BG_HEIGHT = 0.090
 TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.910
-TOPBAR_TITLE_Y_RATIO = 0.62
-TOPBAR_SUBTITLE_Y_RATIO = 0.30
+TOPBAR_TITLE_Y_RATIO = 0.52
+TOPBAR_SUBTITLE_Y_RATIO = 0.20
 TITLE_SUBTITLE_GAP = 0.010
 
 def get_topbar_layout(fig_h):
-    """依圖片高度動態換算 topbar 高度，避免長圖出現過大留白。"""
-    bg_height = max(0.048, min(0.085, 1.00 / max(fig_h, 1.0)))
+    """依圖片高度動態換算 topbar 高度，避免長圖過於擁擠或留白過大。"""
+    fig_h = max(fig_h, 1.0)
+    bg_height = max(0.050, min(0.078, 0.45 / fig_h + 0.025))
     bg_bottom = 1.0 - bg_height
     title_y = bg_bottom + bg_height * TOPBAR_TITLE_Y_RATIO
     subtitle_y = bg_bottom + bg_height * TOPBAR_SUBTITLE_Y_RATIO
@@ -811,7 +812,7 @@ def draw_table_frame(ax, theme, subtitle, top_y, total_h):
             fontproperties=FONT_BOLD, color=theme['accent'])
 
 
-COMMON_FIG_WIDTH = 16.2
+COMMON_FIG_WIDTH = 17.8
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
 DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
@@ -826,10 +827,10 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 def draw_watermark(fig):
     watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
-    fig.text(0.985, 0.007, watermark_text,
+    fig.text(0.988, 0.0048, watermark_text,
              ha='right', va='bottom',
-             fontsize=10.5,
-             linespacing=1.04,
+             fontsize=10.8,
+             linespacing=1.02,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
@@ -841,7 +842,7 @@ def draw_signal_legend(fig):
            更乾淨、不會看起來像獨立區塊。
     """
     # 不再畫 FancyBboxPatch 方框 -- 文字裸貼底部
-    text_y = 0.017   # 更貼近底部，減少空白浪費
+    text_y = 0.013   # 更貼近底部，減少空白浪費
     x = 0.030        # 從左邊緣開始
     main_fs = 12.6
     item_fs = 12.4
@@ -888,13 +889,13 @@ def draw_signal_legend(fig):
 #   - UNIFIED_SUBPLOT_TOP 0.918 → 0.890：表格上緣下移，跟 topbar(到0.910) 留 2% 距離，避免重疊
 #   - UNIFIED_SUBPLOT_BOTTOM 0.009 → 0.055：底部留白加大，讓顏色說明跟浮水印有空間放大字體
 #   - TABLE_TOP_Y 跟 TABLE_TOTAL_H 在 axes 內幾乎佔滿（0.975 / 0.940）
-UNIFIED_SUBPLOT_LEFT = 0.025
-UNIFIED_SUBPLOT_RIGHT = 0.975
+UNIFIED_SUBPLOT_LEFT = 0.015
+UNIFIED_SUBPLOT_RIGHT = 0.985
 UNIFIED_SUBPLOT_TOP = 0.93
 UNIFIED_SUBPLOT_BOTTOM = 0.035
-TABLE_TOP_Y = 0.986
-TABLE_TOTAL_H = 0.960
-TABLE_HEADER_H_INCH = 0.50
+TABLE_TOP_Y = 0.992
+TABLE_TOTAL_H = 0.984
+TABLE_HEADER_H_INCH = 0.46
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
 
@@ -916,14 +917,15 @@ def calc_header_h(fig_h, subplot_top=None, subplot_bottom=None):
 
 
 def get_subplot_layout(fig_h, has_legend=False):
-    """依圖片高度動態換算表格區上下邊界，讓長圖不會上下留白過大。"""
+    """依圖片高度動態換算表格區上下邊界，讓長圖表格更吃滿版面。"""
+    fig_h = max(fig_h, 1.0)
     topbar_bottom, _, _, _ = get_topbar_layout(fig_h)
-    gap_below_topbar = max(0.004, min(0.010, 0.12 / max(fig_h, 1.0)))
+    gap_below_topbar = max(0.003, min(0.008, 0.08 / fig_h))
 
     if has_legend:
-        bottom = max(0.026, min(0.050, 0.55 / max(fig_h, 1.0)))
+        bottom = max(0.018, min(0.032, 0.18 / fig_h + 0.010))
     else:
-        bottom = max(0.018, min(0.035, 0.34 / max(fig_h, 1.0)))
+        bottom = max(0.012, min(0.022, 0.12 / fig_h + 0.006))
 
     top = topbar_bottom - gap_below_topbar
     return UNIFIED_SUBPLOT_LEFT, UNIFIED_SUBPLOT_RIGHT, top, bottom
@@ -931,8 +933,8 @@ def get_subplot_layout(fig_h, has_legend=False):
 
 def get_table_axis_layout():
     """在 axes 內用比例配置表格上下範圍，盡量吃滿可用區域。"""
-    top_y = 0.990
-    bottom_y = 0.006
+    top_y = 0.994
+    bottom_y = 0.003
     total_h = top_y - bottom_y
     return top_y, total_h
 
@@ -948,7 +950,7 @@ def get_injail_n_cols(n):
 
 def save_figure_to_buffer(fig):
     buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor())
+    plt.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor(), bbox_inches='tight', pad_inches=0.02)
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -1121,10 +1123,10 @@ def draw_releasing_image(data, signal_map=None):
     #     - 內容置中後，欄與欄之間的「視覺空白」自然會一致
     #     - 現價也是置中，跟出關日同樣處理，不再「現價靠右、出關日靠右」造成不對稱
     #     - 把多出來的寬度從『代號』『名稱』省下來補給後 6 欄
-    col_widths = [0.045, 0.090, 0.150, 0.110, 0.110, 0.180, 0.105, 0.105, 0.105]
+    col_widths = [0.042, 0.088, 0.148, 0.112, 0.112, 0.176, 0.107, 0.107, 0.108]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
     # 後 6 欄全部置中對齊，視覺節奏一致
-    col_aligns = ['center', 'right', 'left', 'right', 'center', 'left', 'right', 'right', 'right']
+    col_aligns = ['center', 'right', 'left', 'left', 'center', 'left', 'right', 'right', 'right']
 
     table_left = 0.005
     table_right = 0.995
@@ -1208,8 +1210,8 @@ def draw_releasing_image(data, signal_map=None):
         #   讓現價整體往左移、跟「倒數天數」膠囊之間留出明顯空隙。
         #   舊：right + margin 0.008  → 緊貼欄位右緣，跟下一欄擠在一起
         #   新：right + margin 0.022  → 現價整欄視覺向左移約 1.4%，留出舒適間距
-        ax.text(x_starts[3] + x_widths[3] - 0.012, y_top - row_h/2, price,
-                transform=ax.transAxes, ha='right', va='center',
+        ax.text(x_starts[3] + 0.012, y_top - row_h/2, price,
+                transform=ax.transAxes, ha='left', va='center',
                 fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
 
@@ -1313,9 +1315,9 @@ def draw_injail_image(data, signal_map=None):
     col_total_w = 0.99
     col_unit_w = col_total_w / n_cols
     col_xs = [0.005 + i * col_unit_w for i in range(n_cols)]
-    sub_col_widths_ratio = [0.08, 0.16, 0.24, 0.14, 0.38]
+    sub_col_widths_ratio = [0.08, 0.15, 0.25, 0.13, 0.39]
     sub_labels = ["#", "代號", "名稱", "現價", "處置期間"]
-    sub_aligns = ['center', 'right', 'left', 'right', 'right']
+    sub_aligns = ['center', 'right', 'left', 'left', 'right']
 
     # 現價字體固定，避免不同張圖或不同日期因欄數改變而忽大忽小。
     price_fontsize = 14
@@ -1399,8 +1401,8 @@ def draw_injail_image(data, signal_map=None):
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=14, fontproperties=FONT_PROP,
                 color=name_color, zorder=3)
-        ax.text(sub_x_starts[3] + sub_x_widths[3] - 0.008, y_top - row_h/2, price,
-                transform=ax.transAxes, ha='right', va='center',
+        ax.text(sub_x_starts[3] + 0.008, y_top - row_h/2, price,
+                transform=ax.transAxes, ha='left', va='center',
                 fontsize=price_fontsize, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
         ax.text(sub_x_starts[4] + sub_x_widths[4] - 0.008, y_top - row_h/2, period,
