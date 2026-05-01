@@ -44,6 +44,23 @@ JAIL_EXIT_THRESHOLD = 5
 # 處置股技術追蹤工作表名稱（用來查訊號狀態，幫股號股名變色）
 TECH_TRACK_SHEET_NAME = "處置股技術追蹤"
 
+
+def format_display_price(value):
+    """將目前價整理成適合圖片顯示的字串。"""
+    try:
+        if value is None:
+            return "--"
+        s = str(value).replace(",", "").strip()
+        if s == "" or s.lower() in {"nan", "none"}:
+            return "--"
+        num = float(s)
+        if abs(num - round(num)) < 1e-9:
+            return str(int(round(num)))
+        return f"{num:.1f}"
+    except Exception:
+        s = str(value).strip()
+        return s if s else "--"
+
 # ============================
 # 🎨 圖片風格設定
 # ============================
@@ -483,16 +500,12 @@ def get_merged_jail_periods(sh):
 # ============================
 # 🎯 訊號狀態 → 顏色對照（讀取「處置股技術追蹤」工作表）
 # ============================
-def load_signal_status_map(sh):
-    """從「處置股技術追蹤」工作表讀取每檔股票的訊號狀態。
+def load_tech_tracking_latest_map(sh):
+    """從「處置股技術追蹤」讀取每檔最新一筆資料。
 
-    若同一檔股票有多筆紀錄（不同計算日期或不同狀態：正在處置 / 即將出關），
-    取「計算日期最新」的那筆作為當前訊號狀態。
-
-    回傳：{代號: 訊號狀態} 的 dict
-    例如：{'2330': '回測後轉強', '6196': '目前回測月線', '2317': '未符合'}
+    回傳：{代號: {'status': 訊號狀態, 'price': 目前價, 'date': 計算日期}}
     """
-    signal_map = {}
+    tech_map = {}
     try:
         ws = sh.worksheet(TECH_TRACK_SHEET_NAME)
         records = ws.get_all_records()
@@ -503,17 +516,34 @@ def load_signal_status_map(sh):
                 continue
             status = str(row.get('訊號狀態', '')).strip()
             calc_date = str(row.get('計算日期', '')).strip()
-            # 同一檔有多筆 → 比較計算日期，保留最新那筆
+            price = format_display_price(row.get('目前價', ''))
             if code not in latest_by_code or calc_date >= latest_by_code[code]['date']:
-                latest_by_code[code] = {'status': status, 'date': calc_date}
-        signal_map = {c: v['status'] for c, v in latest_by_code.items()}
-        # 統計各訊號狀態檔數
+                latest_by_code[code] = {'status': status, 'price': price, 'date': calc_date}
+        tech_map = latest_by_code
+    except Exception as e:
+        print(f"⚠️ 讀取「{TECH_TRACK_SHEET_NAME}」失敗（可能工作表不存在或欄位有變動）: {e}")
+    return tech_map
+
+
+def load_signal_status_map(sh):
+    """從「處置股技術追蹤」工作表讀取每檔最新訊號狀態。"""
+    signal_map = {}
+    tech_map = load_tech_tracking_latest_map(sh)
+    if tech_map:
+        signal_map = {c: v.get('status', '') for c, v in tech_map.items()}
         retest_n = sum(1 for s in signal_map.values() if s == "目前回測月線")
         breakout_n = sum(1 for s in signal_map.values() if s == "回測後轉強")
         print(f"✅ 已載入處置股技術追蹤訊號 {len(signal_map)} 檔 (目前回測月線:{retest_n} / 回測後轉強:{breakout_n})")
-    except Exception as e:
-        print(f"⚠️ 讀取「{TECH_TRACK_SHEET_NAME}」失敗（可能工作表不存在或欄位有變動）: {e}")
     return signal_map
+
+
+def load_current_price_map(sh):
+    """從「處置股技術追蹤」工作表讀取每檔最新目前價。"""
+    tech_map = load_tech_tracking_latest_map(sh)
+    price_map = {c: v.get('price', '--') for c, v in tech_map.items()}
+    valid_n = sum(1 for p in price_map.values() if p != '--')
+    print(f"✅ 已載入處置股技術追蹤目前價 {len(price_map)} 檔 (有效價格:{valid_n})")
+    return price_map
 
 
 def get_signal_color(code, signal_map, default_color=None):
@@ -597,7 +627,7 @@ def get_price_rank_info(code, period_str, market):
 # ============================
 # 🔍 監控邏輯 (原本邏輯)
 # ============================
-def check_status_split(sh, releasing_codes):
+def check_status_split(sh, releasing_codes, price_map=None):
     try:
         ws = sh.worksheet("近30日熱門統計")
         records = ws.get_all_records()
@@ -611,7 +641,7 @@ def check_status_split(sh, releasing_codes):
         if not days_str.isdigit(): continue
         d = int(days_str) + 1  
         if "處置中" in reason:
-            inj.append({"code": code, "name": name, "period": jail_map.get(code, "日期未知")})
+            inj.append({"code": code, "name": name, "price": format_display_price((price_map or {}).get(code, "--")), "period": jail_map.get(code, "日期未知")})
             seen.add(code)
         elif d <= JAIL_ENTER_THRESHOLD:
             ent.append({"code": code, "name": name, "days": d})
@@ -629,7 +659,7 @@ def check_status_split(sh, releasing_codes):
     return {'entering': ent, 'in_jail': inj}
 
 
-def check_releasing_stocks(sh):
+def check_releasing_stocks(sh, price_map=None):
     try:
         ws = sh.worksheet("即將出關監控")
         records = ws.get_all_records()
@@ -648,6 +678,7 @@ def check_releasing_stocks(sh):
                 "code": code,
                 "name": clean_display_text(row.get('名稱', '')),
                 "days": d,
+                "price": format_display_price((price_map or {}).get(code, "--")),
                 "date": dt.strftime("%m/%d") if dt else "??/??",
                 "icon": icon,
                 "status_text": status_text,
@@ -772,11 +803,14 @@ LEGEND_BOX_BLUE = SIGNAL_COLOR_BREAKOUT
 
 
 def draw_watermark(fig):
-    watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
-    fig.text(0.985, 0.014, watermark_text,
+    fig.text(0.985, 0.032, clean_display_text(WATERMARK_TEXT),
              ha='right', va='bottom',
              fontsize=11,
-             linespacing=1.08,
+             fontproperties=FONT_PROP,
+             color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
+    fig.text(0.985, 0.014, clean_display_text(DISCLAIMER_TEXT),
+             ha='right', va='bottom',
+             fontsize=9.5,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
@@ -1020,9 +1054,9 @@ def draw_releasing_image(data, signal_map=None):
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
-    col_widths = [0.05, 0.09, 0.18, 0.12, 0.20, 0.11, 0.11, 0.14]
-    col_labels = ["#", "代號", "名稱", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    col_aligns = ['center', 'center', 'left', 'center', 'center', 'center', 'center', 'center']
+    col_widths = [0.05, 0.09, 0.16, 0.08, 0.12, 0.18, 0.10, 0.10, 0.12]
+    col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
+    col_aligns = ['center', 'center', 'left', 'center', 'center', 'center', 'center', 'center', 'center']
 
     x_starts = []
     acc = 0
@@ -1048,7 +1082,7 @@ def draw_releasing_image(data, signal_map=None):
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
 
     for row_i, row in enumerate(data):
-        code, name, days, date = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), row['days'], clean_display_text(row['date'])
+        code, name, price, days, date = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), clean_display_text(str(row.get('price', '--'))), row['days'], clean_display_text(row['date'])
         icon, status_text = row['icon'], clean_display_text(row['status_text'])
         pre_pct, in_pct = row['pre_pct'], row['in_pct']
         rank_num = row_i + 1
@@ -1087,13 +1121,17 @@ def draw_releasing_image(data, signal_map=None):
                 fontproperties=FONT_BOLD, color=name_color, zorder=3)
         ax.text(x_starts[2] + 0.012, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
-                fontsize=20, fontproperties=FONT_PROP,
+                fontsize=19, fontproperties=FONT_PROP,
                 color=name_color, zorder=3)
+        ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, price,
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=17, fontweight='bold',
+                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
 
         bg_clr, fg_clr = get_days_style(days)
-        capsule_w = col_widths[3] * 0.80
+        capsule_w = col_widths[4] * 0.80
         capsule_h = row_h * 0.62
-        capsule_x = x_starts[3] + (col_widths[3] - capsule_w) / 2
+        capsule_x = x_starts[4] + (col_widths[4] - capsule_w) / 2
         capsule_y = y_top - row_h/2 - capsule_h/2
 
         ax.add_patch(patches.FancyBboxPatch(
@@ -1102,7 +1140,7 @@ def draw_releasing_image(data, signal_map=None):
             linewidth=0, facecolor=bg_clr,
             transform=ax.transAxes, clip_on=False, zorder=2
         ))
-        ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
+        ax.text(x_starts[4] + col_widths[4]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
@@ -1113,10 +1151,10 @@ def draw_releasing_image(data, signal_map=None):
         elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
 
-        status_center_x = x_starts[4] + col_widths[4]/2
+        status_center_x = x_starts[5] + col_widths[5]/2
         status_y = y_top - row_h/2
-        status_icon_x = x_starts[4] + col_widths[4] * 0.30
-        status_text_x = x_starts[4] + col_widths[4] * 0.55
+        status_icon_x = x_starts[5] + col_widths[5] * 0.30
+        status_text_x = x_starts[5] + col_widths[5] * 0.55
         emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
                                     fontsize=15, transform=ax.transAxes,
                                     zorder=4, fallback_color=st_color)
@@ -1133,15 +1171,15 @@ def draw_releasing_image(data, signal_map=None):
                     fontsize=18, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
-        ax.text(x_starts[5] + col_widths[5]/2, y_top - row_h/2, f"{pre_pct}%",
+        ax.text(x_starts[6] + col_widths[6]/2, y_top - row_h/2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(pre_pct), zorder=3)
-        ax.text(x_starts[6] + col_widths[6]/2, y_top - row_h/2, f"{in_pct}%",
+        ax.text(x_starts[7] + col_widths[7]/2, y_top - row_h/2, f"{in_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
-        ax.text(x_starts[7] + col_widths[7]/2, y_top - row_h/2, date,
+        ax.text(x_starts[8] + col_widths[8]/2, y_top - row_h/2, date,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
@@ -1190,9 +1228,9 @@ def draw_injail_image(data, signal_map=None):
     col_total_w = 0.99
     col_unit_w = col_total_w / n_cols
     col_xs = [0.005 + i * col_unit_w for i in range(n_cols)]
-    sub_col_widths_ratio = [0.10, 0.18, 0.30, 0.42]
-    sub_labels = ["#", "代號", "名稱", "處置期間"]
-    sub_aligns = ['center', 'center', 'left', 'center']
+    sub_col_widths_ratio = [0.08, 0.16, 0.24, 0.14, 0.38]
+    sub_labels = ["#", "代號", "名稱", "現價", "處置期間"]
+    sub_aligns = ['center', 'center', 'left', 'center', 'center']
 
     for col_idx in range(n_cols):
         col_x_start = col_xs[col_idx]
@@ -1217,7 +1255,7 @@ def draw_injail_image(data, signal_map=None):
                     transform=ax.transAxes, clip_on=False, zorder=2)
 
     for idx, row in enumerate(data):
-        code, name, period = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), clean_display_text(row['period'])
+        code, name, price, period = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), clean_display_text(str(row.get('price', '--'))), clean_display_text(row['period'])
         col_idx = idx // rows_per_col
         row_idx = idx % rows_per_col
         if col_idx >= n_cols:
@@ -1266,11 +1304,15 @@ def draw_injail_image(data, signal_map=None):
                 fontproperties=FONT_BOLD, color=name_color, zorder=3)
         ax.text(sub_x_starts[2] + 0.008, y_top - row_h/2, name,
                 transform=ax.transAxes, ha='left', va='center',
-                fontsize=15, fontproperties=FONT_PROP,
-                color=name_color, zorder=3)
-        ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, period,
-                transform=ax.transAxes, ha='center', va='center',
                 fontsize=14, fontproperties=FONT_PROP,
+                color=name_color, zorder=3)
+        ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, price,
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=13, fontweight='bold',
+                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
+        ax.text(sub_x_starts[4] + sub_x_widths[4]/2, y_top - row_h/2, period,
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=13, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
 
     draw_signal_legend(fig)
@@ -1285,12 +1327,13 @@ def main():
     sh = connect_google_sheets()
     if not sh: return
 
-    # 預先載入「處置股技術追蹤」的訊號狀態，三張圖都會用到
+    # 預先載入「處置股技術追蹤」的訊號狀態與目前價，三張圖都會用到
     signal_map = load_signal_status_map(sh)
+    price_map = load_current_price_map(sh)
 
-    rel = check_releasing_stocks(sh)
+    rel = check_releasing_stocks(sh, price_map=price_map)
     rel_codes = {x['code'] for x in rel}
-    stats = check_status_split(sh, rel_codes)
+    stats = check_status_split(sh, rel_codes, price_map=price_map)
 
     # 1. 瀕臨處置
     if stats['entering']:
