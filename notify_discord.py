@@ -445,7 +445,8 @@ def get_base_layout(n_rows, has_legend=False):
     top_offset = 1.35     # 頂部高度 (色條 + 標題區)
     header_h = 0.60       # 表頭高度
     row_h = 0.45          # 單列高度
-    bottom_offset = 0.65 if has_legend else 0.35  # 大幅縮小底部預留空間
+    # 修正：針對沒有圖例的圖表，加大底部空白避免撞到表格底線
+    bottom_offset = 0.70 if has_legend else 0.55  
     
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
     return fig_h, row_h, header_h, top_offset
