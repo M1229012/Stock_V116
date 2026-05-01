@@ -440,12 +440,9 @@ def get_days_style(days):
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
 
 def get_base_layout(n_rows, has_legend=False):
-    """加大底部絕對空間，徹底解決浮水印重疊問題"""
     top_offset = 1.35     
     header_h = 0.60       
     row_h = 0.45          
-    
-    # 底部空間加大：有圖例 0.90 吋，無圖例 0.75 吋
     bottom_offset = 0.90 if has_legend else 0.75  
     
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
@@ -504,13 +501,12 @@ def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
         ax.text(xst + 0.15, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
 def draw_bottom_info(ax, fig_w, has_legend=False):
-    """完美置中底部資訊，避免撞線與貼底"""
-    y_pos_wm = 0.20 # 將浮水印基準線上抬，避開貼邊
+    y_pos_wm = 0.20 
     ax.text(fig_w - MARGIN_X - 0.05, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom', 
             fontsize=13, linespacing=1.3, fontproperties=FONT_PROP, color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
     
     if has_legend:
-        y_pos_leg = 0.45 # 將圖例微調置中於留白處
+        y_pos_leg = 0.45 
         x_inch = MARGIN_X + 0.05
         def add_text(inch_x, text, fs, fp, color):
             ax.text(inch_x, y_pos_leg, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=9)
@@ -550,7 +546,8 @@ def draw_entering_image(data, signal_map=None):
     
     y_header_bottom = draw_topbar_and_frame(ax, THEME_ENTERING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    col_widths_ratio = [0.10, 0.25, 0.40, 0.25]
+    # 【微調】重新分配欄位比例，讓整體看起來更緊湊、視覺更均衡
+    col_widths_ratio = [0.10, 0.22, 0.36, 0.32]
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'center', 'left', 'center']
 
@@ -609,7 +606,6 @@ def draw_releasing_image(data, signal_map=None):
 
     col_widths_ratio = [0.05, 0.08, 0.16, 0.09, 0.11, 0.21, 0.10, 0.10, 0.10]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    # 確保現價為靠左(left)
     col_aligns = ['center', 'center', 'left', 'left', 'center', 'center', 'center', 'center', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
@@ -685,10 +681,10 @@ def draw_injail_image(data, signal_map=None):
 
     y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    col_widths_ratio = [0.08, 0.15, 0.37, 0.15, 0.25]
+    # 【微調】重新分配欄位比例，並改用置中對齊來完美消除空曠感！
+    col_widths_ratio = [0.10, 0.18, 0.26, 0.20, 0.26]
     col_labels = ["#", "代號", "名稱", "現價", "處置期間"]
-    # 確保現價為靠左(left)
-    col_aligns = ['center', 'center', 'left', 'left', 'center']
+    col_aligns = ['center', 'center', 'left', 'center', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
