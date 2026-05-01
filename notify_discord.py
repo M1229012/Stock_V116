@@ -722,21 +722,10 @@ TOPBAR_ICON_WIDTH_INCH = 0.28
 TOPBAR_TITLE_X = 0.5
 TOPBAR_SUBTITLE_X = 0.5
 
-# [調整重點 1] topbar 區域往上收緊：
-#   - 上方背景區塊高度從 0.085 縮成 0.055（縮 35%）
-#   - 標題 y 位置從 0.958 上移到 0.972（更靠近頂端）
-#   - 副標題 y 位置從 0.927 上移到 0.948（與標題距離拉近）
-#   - 整個 topbar 從佔 8.5% 縮成 4.5%，騰出 4% 空間給表格
-TOPBAR_BG_TOP = 1.0
-TOPBAR_BG_HEIGHT = 0.055
-TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.945
-TOPBAR_TITLE_Y = 0.978
-TOPBAR_SUBTITLE_Y = 0.954
-
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
-        (0, TOPBAR_BG_BOTTOM), 1, TOPBAR_BG_HEIGHT,
+        (0, 0.912), 1, 0.088,
         linewidth=0, facecolor=BG_MAIN,
         transform=fig.transFigure, clip_on=False, zorder=0
     ))
@@ -747,7 +736,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_y = TOPBAR_TITLE_Y
+    title_y = 0.948
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
     icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
@@ -777,7 +766,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(TOPBAR_SUBTITLE_X, TOPBAR_SUBTITLE_Y, clean_display_text(sub),
+    fig.text(TOPBAR_SUBTITLE_X, 0.918, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -818,31 +807,38 @@ def draw_watermark(fig):
     watermark_text = clean_display_text(WATERMARK_TEXT) + "\n" + clean_display_text(DISCLAIMER_TEXT)
     fig.text(0.985, 0.010, watermark_text,
              ha='right', va='bottom',
-             fontsize=10.5,
-             linespacing=1.04,
+             fontsize=11.3,
+             linespacing=1.02,
              fontproperties=FONT_PROP,
              color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
 
 
 def draw_signal_legend(fig):
-    """在圖片底部加入訊號顏色圖例（即將出關 / 處置中使用）。
+    """在圖片底部加入訊號顏色圖例（即將出關 / 處置中使用）。"""
+    box_x = 0.028
+    box_y = 0.009
+    box_w = 0.412
+    box_h = 0.031
 
-    [修改] 移除外框方塊，讓圖例文字直接「貼著表格底部」顯示，
-           更乾淨、不會看起來像獨立區塊。
-    """
-    # 不再畫 FancyBboxPatch 方框 -- 文字裸貼底部
-    text_y = 0.022   # 稍微往上提，貼著表格底部
-    x = 0.030        # 從左邊緣開始
-    main_fs = 12.6
-    item_fs = 12.4
-    sep_fs = 10.8
-    swatch_w = 0.0085
-    swatch_h = 0.010
+    fig.add_artist(patches.FancyBboxPatch(
+        (box_x, box_y), box_w, box_h,
+        boxstyle="round,pad=0.0025,rounding_size=0.008",
+        linewidth=0.85, edgecolor=LEGEND_BORDER, facecolor=LEGEND_BG,
+        transform=fig.transFigure, clip_on=False, zorder=8
+    ))
+
+    text_y = box_y + box_h / 2
+    x = box_x + 0.010
+    main_fs = 13.8
+    item_fs = 13.4
+    sep_fs = 11.4
+    swatch_w = 0.0090
+    swatch_h = 0.0108
 
     fig.text(x, text_y, clean_display_text("顏色說明"),
              ha='left', va='center', fontsize=main_fs,
              fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
-    x += 0.062
+    x += 0.074
     fig.text(x, text_y, "｜",
              ha='left', va='center', fontsize=sep_fs,
              fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
@@ -874,19 +870,12 @@ def draw_signal_legend(fig):
              fontproperties=FONT_PROP, color=LEGEND_TEXT, zorder=9)
 
 
-# [調整重點 2] 表格區往上拉（修正版：避免撞到標題列）：
-#   - 上一版把 UNIFIED_SUBPLOT_TOP 拉到 0.940 太貪心，導致表格的綠色頂線
-#     撞到「即將出關(5日內)」標題列，視覺上很擠。
-#   - 本版回退到 0.918：比原本的 0.908 高一點點（+1%），但留足夠空間
-#     讓 topbar 的標題與副標題能完整呼吸。
-#   - TABLE_TOP_Y 也從 0.998 退回 0.988，跟 SUBPLOT_TOP 保持原本的相對位置。
-#   - TABLE_TOTAL_H 維持原本 0.936，不再強行擴大。
 UNIFIED_SUBPLOT_LEFT = 0.025
 UNIFIED_SUBPLOT_RIGHT = 0.975
-UNIFIED_SUBPLOT_TOP = 0.918
-UNIFIED_SUBPLOT_BOTTOM = 0.009
-TABLE_TOP_Y = 0.988
-TABLE_TOTAL_H = 0.936
+UNIFIED_SUBPLOT_TOP = 0.907
+UNIFIED_SUBPLOT_BOTTOM = 0.010
+TABLE_TOP_Y = 0.972
+TABLE_TOTAL_H = 0.942
 TABLE_HEADER_H_INCH = 0.50
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
@@ -952,18 +941,10 @@ def draw_entering_image(data, signal_map=None):
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'center', 'left', 'center']
 
-    table_left = 0.005
-    table_right = 0.995
-    table_w = table_right - table_left
-
     x_starts = []
-    x_widths = []
-    acc = table_left
+    acc = 0
     for w in col_widths:
-        scaled_w = w * table_w
-        x_starts.append(acc)
-        x_widths.append(scaled_w)
-        acc += scaled_w
+        x_starts.append(acc); acc += w
 
     header_top = top_y
 
@@ -976,7 +957,7 @@ def draw_entering_image(data, signal_map=None):
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
 
-    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, x_widths, col_labels, col_aligns)):
+    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
         text_x = xst + w/2 if align == 'center' else xst + 0.015
         ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
@@ -1011,11 +992,11 @@ def draw_entering_image(data, signal_map=None):
         elif rank_num == 3: rank_color, rank_fw = BRONZE, 'bold'
         else:               rank_color, rank_fw = TEXT_MUTED, 'normal'
 
-        ax.text(x_starts[0] + x_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
+        ax.text(x_starts[0] + col_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
-        ax.text(x_starts[1] + x_widths[1]/2, y_top - row_h/2, code,
+        ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=20, fontweight='bold',
                 fontproperties=FONT_BOLD, color=name_color, zorder=3)
@@ -1048,14 +1029,11 @@ def draw_entering_image(data, signal_map=None):
 
 
 def draw_releasing_image(data, signal_map=None):
-    """即將出關 - 單欄詳細含績效
-
-    signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
-    """
+    """即將出關（5日內）"""
     theme = THEME_RELEASING
     n = len(data)
-    fig_w = 16.2
-    fig_h = calc_dynamic_fig_h(n, base_h=7.4, per_row_h=0.46, min_h=10.2, max_h=23.5)
+    fig_h = calc_dynamic_fig_h(n, base_h=6.4, per_row_h=0.24, min_h=7.7, max_h=18.2)
+    fig_w = COMMON_FIG_WIDTH
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
     fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
@@ -1071,86 +1049,68 @@ def draw_releasing_image(data, signal_map=None):
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
-    # [調整重點 3] 後 5 欄（倒數天數/狀態/處置前/處置中/出關日）整體往右移 +5%：
-    #   做法：擴大前面 3 欄（代號/名稱/現價）寬度，把後面所有欄位推到右邊。
-    #   後 5 欄『欄寬本身保持不變』，內容大小（剩X天膠囊、狀態、%、日期）不會被擠壓。
-    #
-    #   舊欄寬: [0.045, 0.090, 0.165, 0.085, 0.120, 0.175, 0.100, 0.100, 0.120]
-    #   新欄寬: [0.045, 0.105, 0.180, 0.100, 0.120, 0.175, 0.100, 0.100, 0.075]
-    #
-    #   變化說明：
-    #     代號:   0.090 → 0.105 (+0.015)  ← 加寬
-    #     名稱:   0.165 → 0.180 (+0.015)  ← 加寬
-    #     現價:   0.085 → 0.100 (+0.015)  ← 加寬
-    #     倒數天數: 0.120 → 0.120 (不變)   起始 +4.5%
-    #     狀態:   0.175 → 0.175 (不變)   起始 +4.5%
-    #     處置前: 0.100 → 0.100 (不變)   起始 +4.5%
-    #     處置中: 0.100 → 0.100 (不變)   起始 +4.5%
-    #     出關日: 0.120 → 0.075 (-0.045) ← 縮窄補回總寬
-    #             (理由：標題改成右對齊後，'出關日' 3字 + 'mm/dd' 5字符
-    #              在 fontsize 16~18 下約需 0.65 inch，0.075×16.2=1.215 inch 綽綽有餘)
-    col_widths = [0.045, 0.105, 0.180, 0.100, 0.120, 0.175, 0.100, 0.100, 0.075]
+    # 讓「現價、倒數天數、狀態、處置前、處置中、出關日」視覺間距更平均，並把出關日貼齊右側
+    col_widths = [0.045, 0.090, 0.170, 0.085, 0.120, 0.180, 0.105, 0.105, 0.100]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    # [調整重點 4] 出關日 header 從 'center' 改成 'right'，跟資料的右對齊一致
-    # [本次修正] 現價 header 維持 'right'，跟資料一致；資料端會加大右邊距讓整體向左挪
     col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'center', 'center', 'right']
 
     table_left = 0.005
     table_right = 0.995
     table_w = table_right - table_left
-
     x_starts = []
     x_widths = []
     acc = table_left
     for w in col_widths:
-        scaled_w = w * table_w
+        scaled = w * table_w
         x_starts.append(acc)
-        x_widths.append(scaled_w)
-        acc += scaled_w
+        x_widths.append(scaled)
+        acc += scaled
 
     header_top = top_y
 
     ax.add_patch(patches.Rectangle(
-        (0.005, header_top - header_h), 0.99, header_h,
+        (table_left, header_top - header_h), table_w, header_h,
         linewidth=0, facecolor=theme['header'],
         transform=ax.transAxes, clip_on=False, zorder=1
     ))
-    ax.plot([0.005, 0.995], [header_top, header_top],
+    ax.plot([table_left, table_right], [header_top, header_top],
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
 
-    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, x_widths, col_labels, col_aligns)):
+    for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
         if align == 'center':
-            text_x = xst + w/2
+            text_x = xst + w / 2
         elif align == 'right':
-            # [修正] 現價欄用較大的右邊距 0.022，跟資料端一致，讓「現價」標題跟「倒數天數」欄之間留空隙
-            #   col_i == 3 是現價欄；其他 right 對齊（例如出關日）維持 0.010
-            right_margin = 0.022 if col_i == 3 else 0.010
-            text_x = xst + w - right_margin
+            pad = 0.014 if label == "現價" else 0.008
+            text_x = xst + w - pad
         else:
             text_x = xst + 0.012
-        ax.text(text_x, header_top - header_h/2, clean_display_text(label),
+        ax.text(text_x, header_top - header_h / 2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
                 fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
 
     for row_i, row in enumerate(data):
-        code, name, price, days, date = clean_display_text(row['code']), clean_display_text(row['name'], fullwidth_ascii=True), clean_display_text(str(row.get('price', '--'))), row['days'], clean_display_text(row['date'])
-        icon, status_text = row['icon'], clean_display_text(row['status_text'])
+        code = clean_display_text(row['code'])
+        name = clean_display_text(row['name'], fullwidth_ascii=True)
+        price = clean_display_text(str(row.get('price', '--')))
+        days = row['days']
+        date = clean_display_text(row['date'])
+        icon = row['icon']
+        status_text = clean_display_text(row['status_text'])
         pre_pct, in_pct = row['pre_pct'], row['in_pct']
         rank_num = row_i + 1
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
 
-        # 依訊號狀態決定股號股名的顏色
         name_color = get_signal_color(code, signal_map)
 
         ax.add_patch(patches.Rectangle(
-            (0.005, y_top - row_h), 0.99, row_h,
+            (table_left, y_top - row_h), table_w, row_h,
             linewidth=0, facecolor=bg_color,
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
-        ax.plot([0.014, 0.995], [y_top - row_h, y_top - row_h],
+        ax.plot([table_left + 0.009, table_right], [y_top - row_h, y_top - row_h],
                 color=BORDER_DARK, linewidth=0.6,
                 transform=ax.transAxes, clip_on=False, zorder=2)
         ax.add_patch(patches.Rectangle(
@@ -1159,28 +1119,28 @@ def draw_releasing_image(data, signal_map=None):
             transform=ax.transAxes, clip_on=False, zorder=1
         ))
 
-        if rank_num == 1:   rank_color, rank_fw = GOLD, 'bold'
-        elif rank_num == 2: rank_color, rank_fw = SILVER, 'bold'
-        elif rank_num == 3: rank_color, rank_fw = BRONZE, 'bold'
-        else:               rank_color, rank_fw = TEXT_MUTED, 'normal'
+        if rank_num == 1:
+            rank_color, rank_fw = GOLD, 'bold'
+        elif rank_num == 2:
+            rank_color, rank_fw = SILVER, 'bold'
+        elif rank_num == 3:
+            rank_color, rank_fw = BRONZE, 'bold'
+        else:
+            rank_color, rank_fw = TEXT_MUTED, 'normal'
 
-        ax.text(x_starts[0] + x_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
+        ax.text(x_starts[0] + x_widths[0] / 2, y_top - row_h / 2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=16, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
-        ax.text(x_starts[1] + x_widths[1]/2, y_top - row_h/2, code,
+        ax.text(x_starts[1] + x_widths[1] / 2, y_top - row_h / 2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=20, fontweight='bold',
                 fontproperties=FONT_BOLD, color=name_color, zorder=3)
-        ax.text(x_starts[2] + 0.012, y_top - row_h/2, name,
+        ax.text(x_starts[2] + 0.012, y_top - row_h / 2, name,
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=19, fontproperties=FONT_PROP,
                 color=name_color, zorder=3)
-        # [修正] 現價改回「靠右」對齊（比 center 更整齊好看），但加大右邊距，
-        #   讓現價整體往左移、跟「倒數天數」膠囊之間留出明顯空隙。
-        #   舊：right + margin 0.008  → 緊貼欄位右緣，跟下一欄擠在一起
-        #   新：right + margin 0.022  → 現價整欄視覺向左移約 1.4%，留出舒適間距
-        ax.text(x_starts[3] + x_widths[3] - 0.022, y_top - row_h/2, price,
+        ax.text(x_starts[3] + x_widths[3] - 0.014, y_top - row_h / 2, price,
                 transform=ax.transAxes, ha='right', va='center',
                 fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
@@ -1189,7 +1149,7 @@ def draw_releasing_image(data, signal_map=None):
         capsule_w = x_widths[4] * 0.80
         capsule_h = row_h * 0.62
         capsule_x = x_starts[4] + (x_widths[4] - capsule_w) / 2
-        capsule_y = y_top - row_h/2 - capsule_h/2
+        capsule_y = y_top - row_h / 2 - capsule_h / 2
 
         ax.add_patch(patches.FancyBboxPatch(
             (capsule_x, capsule_y), capsule_w, capsule_h,
@@ -1197,21 +1157,26 @@ def draw_releasing_image(data, signal_map=None):
             linewidth=0, facecolor=bg_clr,
             transform=ax.transAxes, clip_on=False, zorder=2
         ))
-        ax.text(x_starts[4] + x_widths[4]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
+        ax.text(x_starts[4] + x_widths[4] / 2, y_top - row_h / 2, clean_display_text(f"剩 {days} 天"),
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
-        if "妖股" in status_text:    st_color = '#D69E2E'
-        elif "強勢" in status_text:  st_color = '#E35D6A'
-        elif "人去樓空" in status_text: st_color = '#9B59B6'
-        elif "走勢疲軟" in status_text: st_color = '#2F9E72'
-        else:                         st_color = TEXT_MUTED
+        if "妖股" in status_text:
+            st_color = '#D69E2E'
+        elif "強勢" in status_text:
+            st_color = '#E35D6A'
+        elif "人去樓空" in status_text:
+            st_color = '#9B59B6'
+        elif "走勢疲軟" in status_text:
+            st_color = '#2F9E72'
+        else:
+            st_color = TEXT_MUTED
 
-        status_center_x = x_starts[5] + x_widths[5]/2
-        status_y = y_top - row_h/2
-        status_icon_x = x_starts[5] + x_widths[5] * 0.30
-        status_text_x = x_starts[5] + x_widths[5] * 0.55
+        status_center_x = x_starts[5] + x_widths[5] / 2
+        status_y = y_top - row_h / 2
+        status_icon_x = x_starts[5] + x_widths[5] * 0.31
+        status_text_x = x_starts[5] + x_widths[5] * 0.56
         emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
                                     fontsize=15, transform=ax.transAxes,
                                     zorder=4, fallback_color=st_color)
@@ -1228,15 +1193,15 @@ def draw_releasing_image(data, signal_map=None):
                     fontsize=18, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
-        ax.text(x_starts[6] + x_widths[6]/2, y_top - row_h/2, f"{pre_pct}%",
+        ax.text(x_starts[6] + x_widths[6] / 2, y_top - row_h / 2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(pre_pct), zorder=3)
-        ax.text(x_starts[7] + x_widths[7]/2, y_top - row_h/2, f"{in_pct}%",
+        ax.text(x_starts[7] + x_widths[7] / 2, y_top - row_h / 2, f"{in_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
-        ax.text(x_starts[8] + x_widths[8] - 0.010, y_top - row_h/2, date,
+        ax.text(x_starts[8] + x_widths[8] - 0.008, y_top - row_h / 2, date,
                 transform=ax.transAxes, ha='right', va='center',
                 fontsize=18, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
@@ -1288,17 +1253,6 @@ def draw_injail_image(data, signal_map=None):
     sub_col_widths_ratio = [0.08, 0.16, 0.24, 0.14, 0.38]
     sub_labels = ["#", "代號", "名稱", "現價", "處置期間"]
     sub_aligns = ['center', 'center', 'left', 'right', 'center']
-
-    # [修正] 處置中現價字體：依「欄數」動態調整，未來股票變多自動變小
-    #   - 1 欄（n <= 12）  → 16   表格寬，可以放大字
-    #   - 2 欄（13 ~ 40）  → 14   中等
-    #   - 3 欄（n > 40）   → 12   表格擠，字必須縮才不會跟旁邊撞
-    if n_cols == 1:
-        price_fontsize = 16
-    elif n_cols == 2:
-        price_fontsize = 14
-    else:
-        price_fontsize = 12
 
     for col_idx in range(n_cols):
         col_x_start = col_xs[col_idx]
@@ -1381,7 +1335,7 @@ def draw_injail_image(data, signal_map=None):
                 color=name_color, zorder=3)
         ax.text(sub_x_starts[3] + sub_x_widths[3] - 0.008, y_top - row_h/2, price,
                 transform=ax.transAxes, ha='right', va='center',
-                fontsize=price_fontsize, fontweight='bold',
+                fontsize=12.5, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
         ax.text(sub_x_starts[4] + sub_x_widths[4]/2, y_top - row_h/2, period,
                 transform=ax.transAxes, ha='center', va='center',
