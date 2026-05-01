@@ -731,8 +731,7 @@ TOPBAR_BG_TOP = 1.0
 TOPBAR_BG_HEIGHT = 0.090
 TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.910
 TOPBAR_TITLE_Y = 0.955
-TOPBAR_SUBTITLE_Y = 0.920
-
+TOPBAR_SUBTITLE_Y = 0.930
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
