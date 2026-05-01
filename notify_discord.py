@@ -725,8 +725,8 @@ TOPBAR_SUBTITLE_X = 0.5
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
-        (0, 0.91), 1, 0.09,
-        linewidth=0, facecolor=BG_TOPBAR,
+        (0, 0.915), 1, 0.085,
+        linewidth=0, facecolor=BG_MAIN,
         transform=fig.transFigure, clip_on=False, zorder=0
     ))
     fig.add_artist(patches.Rectangle(
@@ -736,7 +736,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_y = 0.955
+    title_y = 0.958
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
     icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
@@ -766,7 +766,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(TOPBAR_SUBTITLE_X, 0.92, clean_display_text(sub),
+    fig.text(TOPBAR_SUBTITLE_X, 0.927, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -872,10 +872,10 @@ def draw_signal_legend(fig):
 
 UNIFIED_SUBPLOT_LEFT = 0.025
 UNIFIED_SUBPLOT_RIGHT = 0.975
-UNIFIED_SUBPLOT_TOP = 0.905
-UNIFIED_SUBPLOT_BOTTOM = 0.012
-TABLE_TOP_Y = 0.982
-TABLE_TOTAL_H = 0.925
+UNIFIED_SUBPLOT_TOP = 0.908
+UNIFIED_SUBPLOT_BOTTOM = 0.009
+TABLE_TOP_Y = 0.988
+TABLE_TOTAL_H = 0.936
 TABLE_HEADER_H_INCH = 0.50
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
@@ -941,10 +941,18 @@ def draw_entering_image(data, signal_map=None):
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'center', 'left', 'center']
 
+    table_left = 0.005
+    table_right = 0.995
+    table_w = table_right - table_left
+
     x_starts = []
-    acc = 0
+    x_widths = []
+    acc = table_left
     for w in col_widths:
-        x_starts.append(acc); acc += w
+        scaled_w = w * table_w
+        x_starts.append(acc)
+        x_widths.append(scaled_w)
+        acc += scaled_w
 
     header_top = top_y
 
@@ -957,7 +965,7 @@ def draw_entering_image(data, signal_map=None):
             color=theme['accent'], linewidth=2.5,
             transform=ax.transAxes, clip_on=False, zorder=2)
 
-    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
+    for col_i, (xst, w, label, align) in enumerate(zip(x_starts, x_widths, col_labels, col_aligns)):
         text_x = xst + w/2 if align == 'center' else xst + 0.015
         ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
@@ -992,11 +1000,11 @@ def draw_entering_image(data, signal_map=None):
         elif rank_num == 3: rank_color, rank_fw = BRONZE, 'bold'
         else:               rank_color, rank_fw = TEXT_MUTED, 'normal'
 
-        ax.text(x_starts[0] + col_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
+        ax.text(x_starts[0] + x_widths[0]/2, y_top - row_h/2, f"{rank_num:02d}",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight=rank_fw,
                 fontproperties=FONT_BOLD, color=rank_color, zorder=3)
-        ax.text(x_starts[1] + col_widths[1]/2, y_top - row_h/2, code,
+        ax.text(x_starts[1] + x_widths[1]/2, y_top - row_h/2, code,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=20, fontweight='bold',
                 fontproperties=FONT_BOLD, color=name_color, zorder=3)
@@ -1126,15 +1134,15 @@ def draw_releasing_image(data, signal_map=None):
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=19, fontproperties=FONT_PROP,
                 color=name_color, zorder=3)
-        ax.text(x_starts[3] + col_widths[3] - 0.010, y_top - row_h/2, price,
+        ax.text(x_starts[3] + x_widths[3] - 0.008, y_top - row_h/2, price,
                 transform=ax.transAxes, ha='right', va='center',
                 fontsize=16, fontweight='bold',
                 fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
 
         bg_clr, fg_clr = get_days_style(days)
-        capsule_w = col_widths[4] * 0.80
+        capsule_w = x_widths[4] * 0.80
         capsule_h = row_h * 0.62
-        capsule_x = x_starts[4] + (col_widths[4] - capsule_w) / 2
+        capsule_x = x_starts[4] + (x_widths[4] - capsule_w) / 2
         capsule_y = y_top - row_h/2 - capsule_h/2
 
         ax.add_patch(patches.FancyBboxPatch(
@@ -1143,7 +1151,7 @@ def draw_releasing_image(data, signal_map=None):
             linewidth=0, facecolor=bg_clr,
             transform=ax.transAxes, clip_on=False, zorder=2
         ))
-        ax.text(x_starts[4] + col_widths[4]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
+        ax.text(x_starts[4] + x_widths[4]/2, y_top - row_h/2, clean_display_text(f"剩 {days} 天"),
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
@@ -1154,10 +1162,10 @@ def draw_releasing_image(data, signal_map=None):
         elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
 
-        status_center_x = x_starts[5] + col_widths[5]/2
+        status_center_x = x_starts[5] + x_widths[5]/2
         status_y = y_top - row_h/2
-        status_icon_x = x_starts[5] + col_widths[5] * 0.30
-        status_text_x = x_starts[5] + col_widths[5] * 0.55
+        status_icon_x = x_starts[5] + x_widths[5] * 0.30
+        status_text_x = x_starts[5] + x_widths[5] * 0.55
         emoji_ok = draw_emoji_image(ax, icon, status_icon_x, status_y,
                                     fontsize=15, transform=ax.transAxes,
                                     zorder=4, fallback_color=st_color)
@@ -1174,16 +1182,16 @@ def draw_releasing_image(data, signal_map=None):
                     fontsize=18, fontweight='bold',
                     fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
-        ax.text(x_starts[6] + col_widths[6]/2, y_top - row_h/2, f"{pre_pct}%",
+        ax.text(x_starts[6] + x_widths[6]/2, y_top - row_h/2, f"{pre_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(pre_pct), zorder=3)
-        ax.text(x_starts[7] + col_widths[7]/2, y_top - row_h/2, f"{in_pct}%",
+        ax.text(x_starts[7] + x_widths[7]/2, y_top - row_h/2, f"{in_pct}%",
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=18, fontweight='bold',
                 fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
-        ax.text(x_starts[8] + col_widths[8]/2, y_top - row_h/2, date,
-                transform=ax.transAxes, ha='center', va='center',
+        ax.text(x_starts[8] + x_widths[8] - 0.008, y_top - row_h/2, date,
+                transform=ax.transAxes, ha='right', va='center',
                 fontsize=18, fontproperties=FONT_PROP,
                 color=TEXT_MAIN, zorder=3)
 
