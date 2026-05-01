@@ -379,6 +379,7 @@ TEXT_MUTED  = '#8A94A6'
 TEXT_POS    = '#FF6B6B'
 TEXT_NEG    = '#15803D'
 TEXT_FLAT   = '#8A94A6'
+TEXT_PRICE  = '#1E3A8A'
 
 GOLD        = '#FFD060'
 SILVER      = '#C0C8D4'
@@ -871,10 +872,10 @@ def draw_signal_legend(fig):
 
 UNIFIED_SUBPLOT_LEFT = 0.025
 UNIFIED_SUBPLOT_RIGHT = 0.975
-UNIFIED_SUBPLOT_TOP = 0.895
-UNIFIED_SUBPLOT_BOTTOM = 0.018
-TABLE_TOP_Y = 0.968
-TABLE_TOTAL_H = 0.910
+UNIFIED_SUBPLOT_TOP = 0.905
+UNIFIED_SUBPLOT_BOTTOM = 0.012
+TABLE_TOP_Y = 0.982
+TABLE_TOTAL_H = 0.925
 TABLE_HEADER_H_INCH = 0.50
 TABLE_HEADER_H_MIN = 0.020
 TABLE_HEADER_H_MAX = 0.070
@@ -1053,7 +1054,7 @@ def draw_releasing_image(data, signal_map=None):
 
     col_widths = [0.045, 0.09, 0.165, 0.085, 0.12, 0.175, 0.10, 0.10, 0.12]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    col_aligns = ['center', 'center', 'left', 'center', 'center', 'center', 'center', 'center', 'center']
+    col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'center', 'center', 'center']
 
     x_starts = []
     acc = 0
@@ -1072,7 +1073,12 @@ def draw_releasing_image(data, signal_map=None):
             transform=ax.transAxes, clip_on=False, zorder=2)
 
     for col_i, (xst, w, label, align) in enumerate(zip(x_starts, col_widths, col_labels, col_aligns)):
-        text_x = xst + w/2 if align == 'center' else xst + 0.012
+        if align == 'center':
+            text_x = xst + w/2
+        elif align == 'right':
+            text_x = xst + w - 0.010
+        else:
+            text_x = xst + 0.012
         ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                 transform=ax.transAxes, ha=align, va='center',
                 fontsize=16, fontweight='bold',
@@ -1120,10 +1126,10 @@ def draw_releasing_image(data, signal_map=None):
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=19, fontproperties=FONT_PROP,
                 color=name_color, zorder=3)
-        ax.text(x_starts[3] + col_widths[3]/2, y_top - row_h/2, price,
-                transform=ax.transAxes, ha='center', va='center',
+        ax.text(x_starts[3] + col_widths[3] - 0.010, y_top - row_h/2, price,
+                transform=ax.transAxes, ha='right', va='center',
                 fontsize=16, fontweight='bold',
-                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
+                fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
 
         bg_clr, fg_clr = get_days_style(days)
         capsule_w = col_widths[4] * 0.80
@@ -1227,7 +1233,7 @@ def draw_injail_image(data, signal_map=None):
     col_xs = [0.005 + i * col_unit_w for i in range(n_cols)]
     sub_col_widths_ratio = [0.08, 0.16, 0.24, 0.14, 0.38]
     sub_labels = ["#", "代號", "名稱", "現價", "處置期間"]
-    sub_aligns = ['center', 'center', 'left', 'center', 'center']
+    sub_aligns = ['center', 'center', 'left', 'right', 'center']
 
     for col_idx in range(n_cols):
         col_x_start = col_xs[col_idx]
@@ -1238,7 +1244,12 @@ def draw_injail_image(data, signal_map=None):
         sub_x_widths = [r * col_unit_w for r in sub_col_widths_ratio]
 
         for sub_i, (xst, w, label, align) in enumerate(zip(sub_x_starts, sub_x_widths, sub_labels, sub_aligns)):
-            text_x = xst + w/2 if align == 'center' else xst + 0.008
+            if align == 'center':
+                text_x = xst + w/2
+            elif align == 'right':
+                text_x = xst + w - 0.008
+            else:
+                text_x = xst + 0.008
             ax.text(text_x, header_top - header_h/2, clean_display_text(label),
                     transform=ax.transAxes, ha=align, va='center',
                     fontsize=15, fontweight='bold',
@@ -1303,10 +1314,10 @@ def draw_injail_image(data, signal_map=None):
                 transform=ax.transAxes, ha='left', va='center',
                 fontsize=14, fontproperties=FONT_PROP,
                 color=name_color, zorder=3)
-        ax.text(sub_x_starts[3] + sub_x_widths[3]/2, y_top - row_h/2, price,
-                transform=ax.transAxes, ha='center', va='center',
+        ax.text(sub_x_starts[3] + sub_x_widths[3] - 0.008, y_top - row_h/2, price,
+                transform=ax.transAxes, ha='right', va='center',
                 fontsize=12.5, fontweight='bold',
-                fontproperties=FONT_BOLD, color=TEXT_MAIN, zorder=3)
+                fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
         ax.text(sub_x_starts[4] + sub_x_widths[4]/2, y_top - row_h/2, period,
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=13, fontproperties=FONT_PROP,
