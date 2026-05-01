@@ -855,7 +855,7 @@ def draw_signal_legend(fig):
 [修改] 移除外框方塊，讓圖例文字直接「貼著表格底部」顯示，
        更乾淨、不會看起來像獨立區塊。
 """
-# 不再畫 FancyBboxPatch 方框 — 文字裸貼底部
+# 不再畫 FancyBboxPatch 方框 -- 文字裸貼底部
 text_y = 0.022   # 稍微往上提，貼著表格底部
 x = 0.030        # 從左邊緣開始
 main_fs = 12.6
