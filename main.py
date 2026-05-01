@@ -771,6 +771,68 @@ def get_official_trading_calendar(days=60):
 
     return dates[-days:]
 
+
+def get_trading_calendar_between(start_date, end_date):
+    """取得指定區間內的台股交易日，供即將出關判斷使用。"""
+    start_date = start_date if isinstance(start_date, date) else pd.to_datetime(start_date).date()
+    end_date = end_date if isinstance(end_date, date) else pd.to_datetime(end_date).date()
+    if end_date < start_date:
+        return []
+
+    dates = []
+    try:
+        df = finmind_get(
+            "TaiwanStockTradingDate",
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d")
+        )
+        if not df.empty and 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date']).dt.date
+            dates = sorted(set(df['date'].tolist()))
+    except Exception as e:
+        print(f"⚠️ FinMind 交易日曆區間下載失敗，改用 Taiwan 行事曆備援：{e}")
+
+    cal = Taiwan()
+    # 若 FinMind 沒有提供未來交易日，使用 workalendar 補足 FinMind 最後日期之後的未來區間。
+    if not dates:
+        curr = start_date
+    else:
+        curr = max(dates) + timedelta(days=1)
+
+    while curr <= end_date:
+        if cal.is_working_day(curr):
+            dates.append(curr)
+        curr += timedelta(days=1)
+
+    return sorted(set(dates))
+
+
+def next_or_same_trade_date(d, cal_dates):
+    """若 d 非交易日，順延至下一個交易日。"""
+    if not d or not cal_dates:
+        return None
+    for td in cal_dates:
+        if td >= d:
+            return td
+    return None
+
+
+def trading_days_left_for_release(today_date, release_date, cal_dates):
+    """計算距離出關日尚餘幾個交易日；若今日休市，先以下一個交易日作為基準。"""
+    if not release_date or not cal_dates:
+        return None
+
+    base_trade_date = next_or_same_trade_date(today_date, cal_dates)
+    release_trade_date = next_or_same_trade_date(release_date, cal_dates)
+
+    if not base_trade_date or not release_trade_date:
+        return None
+
+    if release_trade_date < base_trade_date:
+        return -1
+
+    return sum(1 for td in cal_dates if base_trade_date < td <= release_trade_date)
+
 def get_daytrade_stats_finmind(stock_id, target_date_str):
     end = target_date_str
     start = (datetime.strptime(target_date_str, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
@@ -898,11 +960,11 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     fetch_end = TARGET_DATE.date() + timedelta(days=2)
     df, ticker_used = _fetch_technical_history(code, market, fetch_start, fetch_end)
 
-    if df.empty or 'Open' not in df.columns or 'Close' not in df.columns:
-        base_row[6] = f"❌ 無股價資料：{ticker_used} 無法取得 Open/Close 欄位"
+    if df.empty or 'Open' not in df.columns or 'Close' not in df.columns or 'Low' not in df.columns:
+        base_row[6] = f"❌ 無股價資料：{ticker_used} 無法取得 Open/Close/Low 欄位"
         return base_row
 
-    df = df.dropna(subset=['Open', 'Close']).copy()
+    df = df.dropna(subset=['Open', 'Close', 'Low']).copy()
     if df.empty:
         base_row[6] = f"❌ 股價資料為空：{ticker_used} 清除空值後無可用資料"
         return base_row
@@ -918,21 +980,25 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
 
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA20_GAP_PCT'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
+    # 回測 MA20 判斷改用「盤中最低價 Low」，避免收盤已拉開時漏判
+    df['LOW_MA20_GAP_PCT'] = ((df['Low'] - df['MA20']) / df['MA20']) * 100
 
     pre_10_open = float(pre_df.tail(10)['Open'].iloc[0])
     pre_last_close = float(pre_df['Close'].iloc[-1])
     pre_10d_pct = ((pre_last_close - pre_10_open) / pre_10_open) * 100 if pre_10_open > 0 else 0.0
 
     current_price = float(df['Close'].iloc[-1])
+    current_low = float(df['Low'].iloc[-1])
     ma20 = float(df['MA20'].iloc[-1]) if not pd.isna(df['MA20'].iloc[-1]) else 0.0
     ma20_gap_pct = ((current_price - ma20) / ma20) * 100 if ma20 > 0 else 0.0
+    current_low_ma20_gap_pct = ((current_low - ma20) / ma20) * 100 if ma20 > 0 else 0.0
 
     pre_rise_ok = pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
-    current_retest_ok = pre_rise_ok and (abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
+    current_retest_ok = pre_rise_ok and (abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
 
     jail_df = df[df.index.date >= sd].copy()
-    jail_df = jail_df.dropna(subset=['MA20', 'MA20_GAP_PCT'])
-    retest_df = jail_df[jail_df['MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD]
+    jail_df = jail_df.dropna(subset=['MA20', 'MA20_GAP_PCT', 'LOW_MA20_GAP_PCT'])
+    retest_df = jail_df[jail_df['LOW_MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD]
     has_retested_ma20 = not retest_df.empty
 
     retest_date_str = ""
@@ -959,15 +1025,15 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
         reason_text = (
             f"✅ 已達成「回測後轉強」｜"
             f"處置前10日漲幅 {pre_10d_pct:+.2f}% (≥{TECH_PRE_10D_RISE_THRESHOLD:.0f}%)；"
-            f"於 {retest_date_str} 回測 MA20；"
-            f"目前距離 MA20 {ma20_gap_pct:+.2f}% (≥+{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
+            f"於 {retest_date_str} 盤中低點回測 MA20；"
+            f"目前收盤距離 MA20 {ma20_gap_pct:+.2f}% (≥+{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
         )
     elif current_retest_ok:
         signal_status = "目前回測月線"
         reason_text = (
             f"✅ 已達成「目前回測月線」｜"
             f"處置前10日漲幅 {pre_10d_pct:+.2f}% (≥{TECH_PRE_10D_RISE_THRESHOLD:.0f}%)；"
-            f"目前距離 MA20 {ma20_gap_pct:+.2f}% (在 ±{TECH_MA20_GAP_THRESHOLD:.0f}% 內)"
+            f"今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}% (在 ±{TECH_MA20_GAP_THRESHOLD:.0f}% 內)"
         )
     else:
         signal_status = "未符合"
@@ -982,23 +1048,23 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
                 f"⚠️ 處置前10日漲幅 {pre_10d_pct:+.2f}% 已達標（≥{TECH_PRE_10D_RISE_THRESHOLD:.0f}%），但兩訊號皆未成立："
             ]
             # ---- 訊號 A：目前回測月線 ----
-            if abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD:
-                parts.append(f"✓「目前回測月線」成立 (距離 MA20 {ma20_gap_pct:+.2f}%)")
+            if abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD:
+                parts.append(f"✓「目前回測月線」成立 (今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}%)")
             else:
                 parts.append(
-                    f"✗「目前回測月線」不成立 (距離 MA20 {ma20_gap_pct:+.2f}%，"
+                    f"✗「目前回測月線」不成立 (今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}%，"
                     f"超出 ±{TECH_MA20_GAP_THRESHOLD:.0f}% 範圍)"
                 )
             # ---- 訊號 B：回測後轉強 ----
             if not has_retested_ma20:
                 parts.append(
-                    f"✗「回測後轉強」不成立 (處置期間尚未回測 MA20，"
-                    f"目前距離 {ma20_gap_pct:+.2f}%)"
+                    f"✗「回測後轉強」不成立 (處置期間尚未出現盤中低點回測 MA20，"
+                    f"今日低點距離 {current_low_ma20_gap_pct:+.2f}%)"
                 )
             elif ma20_gap_pct < TECH_BREAKOUT_MA20_GAP_THRESHOLD:
                 parts.append(
-                    f"✗「回測後轉強」不成立 ({retest_date_str} 已回測 MA20，"
-                    f"但目前距離 MA20 僅 {ma20_gap_pct:+.2f}%，未達 +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
+                    f"✗「回測後轉強」不成立 ({retest_date_str} 已由盤中低點回測 MA20，"
+                    f"但目前收盤距離 MA20 僅 {ma20_gap_pct:+.2f}%，未達 +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
                 )
             else:
                 parts.append(f"✓「回測後轉強」成立")
@@ -1753,6 +1819,9 @@ def main():
         releasing_rows = []
         today_date = TARGET_DATE.date()
         stock_latest_end = {}
+        release_calendar_start = today_date - timedelta(days=10)
+        release_calendar_end = today_date + timedelta(days=90)
+        release_cal_dates = get_trading_calendar_between(release_calendar_start, release_calendar_end)
 
         if len(all_jail_data) > 1:
             for r in all_jail_data[1:]:
@@ -1765,17 +1834,22 @@ def main():
                 sd_date, ed_date = parse_jail_period(period)
 
                 if ed_date:
-                    if code not in stock_latest_end or ed_date > stock_latest_end[code]['date']:
+                    final_release_date = next_or_same_trade_date(ed_date, release_cal_dates) or ed_date
+                    if code not in stock_latest_end or final_release_date > stock_latest_end[code]['release_date']:
                         stock_latest_end[code] = {
                             'date': ed_date,
+                            'release_date': final_release_date,
                             'row_list': r[:4]
                         }
 
-        sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['date'])
+        sorted_stocks = sorted(stock_latest_end.items(), key=lambda x: x[1]['release_date'])
 
         for code, data in sorted_stocks:
-            final_end_date = data['date']
-            days_left = (final_end_date - today_date).days
+            raw_end_date = data['date']
+            final_end_date = data.get('release_date', raw_end_date)
+            days_left = trading_days_left_for_release(today_date, final_end_date, release_cal_dates)
+            if days_left is None:
+                days_left = (final_end_date - today_date).days
 
             if 0 <= days_left <= 4:
                 r_list = data['row_list'][:]
