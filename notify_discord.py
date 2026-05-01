@@ -731,7 +731,8 @@ TOPBAR_BG_TOP = 1.0
 TOPBAR_BG_HEIGHT = 0.090
 TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.910
 TOPBAR_TITLE_Y = 0.955
-TOPBAR_SUBTITLE_Y = 0.930
+TOPBAR_SUBTITLE_Y = 0.930  # bbox 計算失敗時的備援位置
+TITLE_SUBTITLE_GAP = 0.010  # 主標題與資料日期之間的固定距離
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
@@ -773,10 +774,21 @@ def draw_topbar(fig, theme, total, page_info=""):
             # 若 bbox 計算失敗，退回較保守的位置
             draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
+    # 將資料日期綁在主標題下方：依主標題實際 bbox 自動計算副標位置，
+    # 避免三張圖片因標題字體大小不同，造成主標題與資料日期距離不一致。
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        bbox = title_obj.get_window_extent(renderer=renderer)
+        bbox_fig = bbox.transformed(fig.transFigure.inverted())
+        subtitle_y = max(TOPBAR_BG_BOTTOM + 0.010, bbox_fig.y0 - TITLE_SUBTITLE_GAP)
+    except Exception:
+        subtitle_y = TOPBAR_SUBTITLE_Y
+
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(TOPBAR_SUBTITLE_X, TOPBAR_SUBTITLE_Y, clean_display_text(sub),
+    fig.text(TOPBAR_SUBTITLE_X, subtitle_y, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
