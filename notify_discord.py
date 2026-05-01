@@ -731,8 +731,7 @@ TOPBAR_BG_TOP = 1.0
 TOPBAR_BG_HEIGHT = 0.090
 TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.910
 TOPBAR_TITLE_Y = 0.955
-TOPBAR_SUBTITLE_Y = 0.930  # bbox 計算失敗時的備援位置
-TITLE_SUBTITLE_GAP = 0.010  # 主標題與資料日期之間的固定距離
+TOPBAR_SUBTITLE_Y = 0.930
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
@@ -774,21 +773,10 @@ def draw_topbar(fig, theme, total, page_info=""):
             # 若 bbox 計算失敗，退回較保守的位置
             draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
-    # 將資料日期綁在主標題下方：依主標題實際 bbox 自動計算副標位置，
-    # 避免三張圖片因標題字體大小不同，造成主標題與資料日期距離不一致。
-    try:
-        fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
-        bbox = title_obj.get_window_extent(renderer=renderer)
-        bbox_fig = bbox.transformed(fig.transFigure.inverted())
-        subtitle_y = max(TOPBAR_BG_BOTTOM + 0.010, bbox_fig.y0 - TITLE_SUBTITLE_GAP)
-    except Exception:
-        subtitle_y = TOPBAR_SUBTITLE_Y
-
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
     if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(TOPBAR_SUBTITLE_X, subtitle_y, clean_display_text(sub),
+    fig.text(TOPBAR_SUBTITLE_X, TOPBAR_SUBTITLE_Y, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -912,6 +900,31 @@ def calc_header_h(fig_h):
     return max(TABLE_HEADER_H_MIN, min(TABLE_HEADER_H_MAX, TABLE_HEADER_H_INCH / axes_h_inch))
 
 
+def get_dynamic_table_layout(*, has_legend=False):
+    """依圖片整體比例動態換算表格上下範圍。
+
+    設計原則：
+    1. 表格上緣以 topbar 底部為基準往下留固定比例空隙。
+    2. 表格下緣依底部元素需求（僅浮水印 / 圖例+浮水印）預留不同空間。
+    3. 最後再轉成 axes 座標，避免不同圖片高寬比例時互相影響。
+    """
+    fig_table_top = TOPBAR_BG_BOTTOM - 0.014
+    fig_table_bottom = 0.058 if has_legend else 0.040
+
+    axes_span = UNIFIED_SUBPLOT_TOP - UNIFIED_SUBPLOT_BOTTOM
+    if axes_span <= 0:
+        return TABLE_TOP_Y, TABLE_TOTAL_H
+
+    top_y = (fig_table_top - UNIFIED_SUBPLOT_BOTTOM) / axes_span
+    bottom_y = (fig_table_bottom - UNIFIED_SUBPLOT_BOTTOM) / axes_span
+
+    # 安全夾限，避免極端情況超出 axes 範圍
+    top_y = max(0.78, min(0.995, top_y))
+    bottom_y = max(0.0, min(0.30, bottom_y))
+    total_h = max(0.60, min(0.975, top_y - bottom_y))
+    return top_y, total_h
+
+
 def get_injail_n_cols(n):
     if n <= 12:
         return 1
@@ -950,9 +963,8 @@ def draw_entering_image(data, signal_map=None):
     draw_topbar(fig, theme, n)
 
     header_h = calc_header_h(fig_h)
-    total_h = TABLE_TOTAL_H
+    top_y, total_h = get_dynamic_table_layout(has_legend=False)
     row_h = (total_h - header_h) / max(n, 1)
-    top_y = TABLE_TOP_Y
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
@@ -1073,9 +1085,8 @@ def draw_releasing_image(data, signal_map=None):
     draw_topbar(fig, theme, n)
 
     header_h = calc_header_h(fig_h)
-    total_h = TABLE_TOTAL_H
+    top_y, total_h = get_dynamic_table_layout(has_legend=True)
     row_h = (total_h - header_h) / max(n, 1)
-    top_y = TABLE_TOP_Y
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
