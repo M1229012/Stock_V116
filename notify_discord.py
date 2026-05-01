@@ -730,8 +730,8 @@ TOPBAR_SUBTITLE_X = 0.5
 TOPBAR_BG_TOP = 1.0
 TOPBAR_BG_HEIGHT = 0.090
 TOPBAR_BG_BOTTOM = TOPBAR_BG_TOP - TOPBAR_BG_HEIGHT  # = 0.910
-TOPBAR_TITLE_Y = 0.955
-TOPBAR_SUBTITLE_Y = 0.930
+TOPBAR_TITLE_Y_RATIO = 0.50
+TITLE_SUBTITLE_GAP = 0.010
 
 def draw_topbar(fig, theme, total, page_info=""):
     fig.add_artist(patches.Rectangle(
@@ -746,7 +746,7 @@ def draw_topbar(fig, theme, total, page_info=""):
     ))
 
     title_fontsize = theme.get('title_fontsize', TOPBAR_TITLE_FONT_SIZE)
-    title_y = TOPBAR_TITLE_Y
+    title_y = TOPBAR_BG_BOTTOM + TOPBAR_BG_HEIGHT * TOPBAR_TITLE_Y_RATIO
     icon_gap = theme.get('title_icon_gap', TOPBAR_ICON_GAP)
     icon_fontsize = theme.get('title_icon_fontsize', TOPBAR_ICON_FONT_SIZE)
     icon_width = TOPBAR_ICON_WIDTH_INCH / max(fig.get_size_inches()[0], 1)
@@ -758,8 +758,6 @@ def draw_topbar(fig, theme, total, page_info=""):
                          color='#2C3440', zorder=2)
 
     if theme.get('title_icon'):
-        # 以「emoji + 標題文字」整組置中，而不是只讓文字置中。
-        # 這樣不同圖片寬度下，標題區視覺中心會一致，不會因 emoji 在左側而看起來偏掉。
         try:
             fig.canvas.draw()
             title_obj.set_position((TOPBAR_TITLE_X + (icon_width + icon_gap) / 2, title_y))
@@ -770,13 +768,22 @@ def draw_topbar(fig, theme, total, page_info=""):
             icon_x = max(0.05, bbox_fig.x0 - icon_gap - icon_width / 2)
             draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y, fontsize=icon_fontsize, zorder=4)
         except Exception:
-            # 若 bbox 計算失敗，退回較保守的位置
             draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     sub = f"資料日期: {today_str}  |  共 {total} 檔"
-    if page_info: sub += f"  |  {clean_display_text(page_info)}"
-    fig.text(TOPBAR_SUBTITLE_X, TOPBAR_SUBTITLE_Y, clean_display_text(sub),
+    if page_info:
+        sub += f"  |  {clean_display_text(page_info)}"
+
+    # 讓資料日期跟主標題綁在一起：先取得主標題 bbox，再固定往下留一個比例間距。
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    title_bbox = title_obj.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
+    subtitle_y = title_bbox.y0 - TITLE_SUBTITLE_GAP
+    min_subtitle_y = TOPBAR_BG_BOTTOM + TOPBAR_BG_HEIGHT * 0.18
+    subtitle_y = max(min_subtitle_y, subtitle_y)
+
+    fig.text(TOPBAR_SUBTITLE_X, subtitle_y, clean_display_text(sub),
              ha='center', va='center',
              fontsize=TOPBAR_SUBTITLE_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -892,36 +899,30 @@ def calc_dynamic_fig_h(n, *, base_h, per_row_h, min_h, max_h):
     return max(min_h, min(max_h, base_h + n * per_row_h))
 
 
-def calc_header_h(fig_h):
+def calc_header_h(fig_h, subplot_top=None, subplot_bottom=None):
     """依圖片實際高度反推表頭比例，讓三張圖的表頭視覺高度一致。"""
-    axes_h_inch = fig_h * (UNIFIED_SUBPLOT_TOP - UNIFIED_SUBPLOT_BOTTOM)
+    if subplot_top is None:
+        subplot_top = UNIFIED_SUBPLOT_TOP
+    if subplot_bottom is None:
+        subplot_bottom = UNIFIED_SUBPLOT_BOTTOM
+    axes_h_inch = fig_h * (subplot_top - subplot_bottom)
     if axes_h_inch <= 0:
         return 0.05
     return max(TABLE_HEADER_H_MIN, min(TABLE_HEADER_H_MAX, TABLE_HEADER_H_INCH / axes_h_inch))
 
 
-def get_dynamic_table_layout(*, has_legend=False):
-    """依圖片整體比例動態換算表格上下範圍。
+def get_subplot_layout(has_legend=False):
+    """用比例決定 axes 區塊位置，避免因圖片高低不同導致表格區跑位。"""
+    top = TOPBAR_BG_BOTTOM - 0.012
+    bottom = 0.060 if has_legend else 0.040
+    return UNIFIED_SUBPLOT_LEFT, UNIFIED_SUBPLOT_RIGHT, top, bottom
 
-    設計原則：
-    1. 表格上緣以 topbar 底部為基準往下留固定比例空隙。
-    2. 表格下緣依底部元素需求（僅浮水印 / 圖例+浮水印）預留不同空間。
-    3. 最後再轉成 axes 座標，避免不同圖片高寬比例時互相影響。
-    """
-    fig_table_top = TOPBAR_BG_BOTTOM - 0.014
-    fig_table_bottom = 0.058 if has_legend else 0.040
 
-    axes_span = UNIFIED_SUBPLOT_TOP - UNIFIED_SUBPLOT_BOTTOM
-    if axes_span <= 0:
-        return TABLE_TOP_Y, TABLE_TOTAL_H
-
-    top_y = (fig_table_top - UNIFIED_SUBPLOT_BOTTOM) / axes_span
-    bottom_y = (fig_table_bottom - UNIFIED_SUBPLOT_BOTTOM) / axes_span
-
-    # 安全夾限，避免極端情況超出 axes 範圍
-    top_y = max(0.78, min(0.995, top_y))
-    bottom_y = max(0.0, min(0.30, bottom_y))
-    total_h = max(0.60, min(0.975, top_y - bottom_y))
+def get_table_axis_layout():
+    """在 axes 內用比例配置表格上下範圍。"""
+    top_y = 0.982
+    bottom_y = 0.018
+    total_h = top_y - bottom_y
     return top_y, total_h
 
 
@@ -956,14 +957,15 @@ def draw_entering_image(data, signal_map=None):
     fig_h = calc_dynamic_fig_h(n, base_h=5.9, per_row_h=0.36, min_h=7.0, max_h=15.6)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
-                        top=UNIFIED_SUBPLOT_TOP, bottom=UNIFIED_SUBPLOT_BOTTOM)
+    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(has_legend=False)
+    fig.subplots_adjust(left=subplot_left, right=subplot_right,
+                        top=subplot_top, bottom=subplot_bottom)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
 
     draw_topbar(fig, theme, n)
 
-    header_h = calc_header_h(fig_h)
-    top_y, total_h = get_dynamic_table_layout(has_legend=False)
+    header_h = calc_header_h(fig_h, subplot_top, subplot_bottom)
+    top_y, total_h = get_table_axis_layout()
     row_h = (total_h - header_h) / max(n, 1)
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
@@ -1078,14 +1080,15 @@ def draw_releasing_image(data, signal_map=None):
     fig_h = calc_dynamic_fig_h(n, base_h=7.4, per_row_h=0.46, min_h=10.2, max_h=23.5)
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
-    fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
-                        top=UNIFIED_SUBPLOT_TOP, bottom=UNIFIED_SUBPLOT_BOTTOM)
+    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(has_legend=True)
+    fig.subplots_adjust(left=subplot_left, right=subplot_right,
+                        top=subplot_top, bottom=subplot_bottom)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
 
     draw_topbar(fig, theme, n)
 
-    header_h = calc_header_h(fig_h)
-    top_y, total_h = get_dynamic_table_layout(has_legend=True)
+    header_h = calc_header_h(fig_h, subplot_top, subplot_bottom)
+    top_y, total_h = get_table_axis_layout()
     row_h = (total_h - header_h) / max(n, 1)
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
@@ -1270,16 +1273,16 @@ def draw_injail_image(data, signal_map=None):
     fig_h = calc_dynamic_fig_h(rows_per_col, base_h=6.1, per_row_h=0.39, min_h=7.8, max_h=16.8)
 
     fig, ax = plt.subplots(figsize=(COMMON_FIG_WIDTH, fig_h), facecolor=BG_MAIN)
-    fig.subplots_adjust(left=UNIFIED_SUBPLOT_LEFT, right=UNIFIED_SUBPLOT_RIGHT,
-                        top=UNIFIED_SUBPLOT_TOP, bottom=UNIFIED_SUBPLOT_BOTTOM)
+    subplot_left, subplot_right, subplot_top, subplot_bottom = get_subplot_layout(has_legend=True)
+    fig.subplots_adjust(left=subplot_left, right=subplot_right,
+                        top=subplot_top, bottom=subplot_bottom)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_axis_off()
 
     draw_topbar(fig, theme, n)
 
-    header_h = calc_header_h(fig_h)
-    total_h = TABLE_TOTAL_H
+    header_h = calc_header_h(fig_h, subplot_top, subplot_bottom)
+    top_y, total_h = get_table_axis_layout()
     row_h = (total_h - header_h) / rows_per_col
-    top_y = TABLE_TOP_Y
 
     draw_table_frame(ax, theme, theme['subtitle_text'], top_y, total_h)
 
@@ -1301,16 +1304,8 @@ def draw_injail_image(data, signal_map=None):
     sub_labels = ["#", "代號", "名稱", "現價", "處置期間"]
     sub_aligns = ['center', 'center', 'left', 'right', 'center']
 
-    # [修正] 處置中現價字體：依「欄數」動態調整，未來股票變多自動變小
-    #   - 1 欄（n <= 12）  → 16   表格寬，可以放大字
-    #   - 2 欄（13 ~ 40）  → 14   中等
-    #   - 3 欄（n > 40）   → 12   表格擠，字必須縮才不會跟旁邊撞
-    if n_cols == 1:
-        price_fontsize = 16
-    elif n_cols == 2:
-        price_fontsize = 14
-    else:
-        price_fontsize = 12
+    # 現價字體固定，避免不同張圖或不同日期因欄數改變而忽大忽小。
+    price_fontsize = 14
 
     for col_idx in range(n_cols):
         col_x_start = col_xs[col_idx]
