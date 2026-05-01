@@ -416,9 +416,11 @@ def check_releasing_stocks(sh, price_map=None):
 
 
 # ============================
-# 🎨 【核心版面引擎】絕對統一的字體比例機制
+# 🎨 【核心版面引擎】徹底解決字體與縮放不一的最終解
 # ============================
-COMMON_FIG_WIDTH = 15.0  
+# 強制固定全部畫布寬度與邊界，確保 Discord 縮放比例 100% 相同！
+COMMON_FIG_WIDTH = 13.0  
+MARGIN_X = 0.4  
 
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明\n資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
@@ -439,29 +441,36 @@ def get_days_style(days):
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
 
 def get_base_layout(n_rows, has_legend=False):
-    top_offset = 1.7
-    header_h = 0.55       
-    row_h = 0.45         
-    bottom_offset = 0.80 if has_legend else 0.40  
+    """精準壓縮頂部和底部的絕對空白"""
+    top_offset = 1.35     # 頂部高度 (色條 + 標題區)
+    header_h = 0.60       # 表頭高度
+    row_h = 0.45          # 單列高度
+    bottom_offset = 0.65 if has_legend else 0.35  # 大幅縮小底部預留空間
+    
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
-    return fig_h, row_h, header_h
+    return fig_h, row_h, header_h, top_offset
 
 def setup_canvas(fig_w, fig_h):
+    """建立完全貼齊邊緣的畫布，解決色條上方的醜白邊"""
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
     ax.set_xlim(0, fig_w)
     ax.set_ylim(0, fig_h)
     ax.set_axis_off()
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    # 關鍵：將 padding 設為 0，確保色條可以從絕對最頂端開始畫！
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0) 
     return fig, ax
 
-def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, header_h, margin_x):
+def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, header_h, top_offset):
+    """繪製最頂部滿版色條、標題與表格外框"""
+    # 頂部裝飾滿版色條，絕對貼死圖片最上緣 (y=fig_h)
     bar_h = 0.15
     ax.add_patch(patches.Rectangle((0, fig_h - bar_h), fig_w, bar_h, facecolor=theme['accent'], linewidth=0))
     
-    title_y = fig_h - 0.65
-    title_text = clean_display_text(theme['title'])
-    ax.text(fig_w/2, title_y, title_text, ha='center', va='center', fontsize=26, fontproperties=FONT_BOLD, color='#2C3440', zorder=3)
+    # 標題配置 (字體統一為26pt)
+    title_y = fig_h - 0.55
+    ax.text(fig_w/2, title_y, clean_display_text(theme['title']), ha='center', va='center', fontsize=26, fontproperties=FONT_BOLD, color='#2C3440')
     
+    # 處理 Emoji Icon
     if theme.get('title_icon'):
         try:
             fig = ax.figure
@@ -473,44 +482,46 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
         except:
             draw_emoji_image(ax, theme['title_icon'], fig_w/2 - 2.5, title_y, fontsize=22, transform=ax.transData)
 
-    sub_y = fig_h - 1.10
+    # 副標題配置
+    sub_y = fig_h - 0.95
     today_str = datetime.now().strftime("%Y-%m-%d")
-    sub_text = clean_display_text(f"資料日期: {today_str} | 共 {total_count} 檔")
-    ax.text(fig_w/2, sub_y, sub_text, ha='center', va='center', fontsize=15, fontproperties=FONT_PROP, color='#8A97A8', zorder=3)
+    ax.text(fig_w/2, sub_y, clean_display_text(f"資料日期: {today_str} | 共 {total_count} 檔"), ha='center', va='center', fontsize=15, fontproperties=FONT_PROP, color='#8A97A8')
 
-    y_table_top = fig_h - 1.60
+    # 表格區域計算
+    y_table_top = fig_h - top_offset
     table_total_h = header_h + max(1, n_rows) * row_h
     y_table_bottom = y_table_top - table_total_h
     y_header_bottom = y_table_top - header_h
 
-    ax.text(margin_x + 0.05, y_table_top + 0.15, f"▌ {clean_display_text(theme['subtitle_text'])}",
-            ha='left', va='bottom', fontsize=17, fontproperties=FONT_BOLD, color=theme['accent'])
+    # 小標題 (例如 "▌ 即將出關...")
+    ax.text(MARGIN_X + 0.05, y_table_top + 0.15, f"▌ {clean_display_text(theme['subtitle_text'])}", ha='left', va='bottom', fontsize=17, fontproperties=FONT_BOLD, color=theme['accent'])
 
-    table_w = fig_w - 2 * margin_x
-    ax.add_patch(patches.Rectangle((margin_x, y_table_bottom), table_w, table_total_h, 
-                                   linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE, zorder=0))
-    ax.add_patch(patches.Rectangle((margin_x, y_header_bottom), table_w, header_h, 
-                                   linewidth=0, facecolor=theme['header'], zorder=1))
-    ax.plot([margin_x, fig_w - margin_x], [y_table_top, y_table_top], color=theme['accent'], linewidth=2.5, zorder=2)
+    # 表格外框
+    table_w = fig_w - 2 * MARGIN_X
+    ax.add_patch(patches.Rectangle((MARGIN_X, y_table_bottom), table_w, table_total_h, linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE))
+    ax.add_patch(patches.Rectangle((MARGIN_X, y_header_bottom), table_w, header_h, linewidth=0, facecolor=theme['header']))
+    ax.plot([MARGIN_X, fig_w - MARGIN_X], [y_table_top, y_table_top], color=theme['accent'], linewidth=2.5)
     
     return y_header_bottom
 
 def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
+    """共用渲染器：強制表頭與資料列使用相同規則，絕對對齊！"""
     if align == 'center':
         ax.text(xst + w/2, y, text, ha='center', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'right':
-        ax.text(xst + w - 0.2, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
+        ax.text(xst + w - 0.15, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'left':
-        ax.text(xst + 0.2, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
+        ax.text(xst + 0.15, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
-def draw_bottom_info(ax, fig_w, margin_x, has_legend=False):
-    y_pos_wm = 0.15
-    ax.text(fig_w - margin_x - 0.1, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom', 
+def draw_bottom_info(ax, fig_w, has_legend=False):
+    """統一繪製底部，不再留多餘空間"""
+    y_pos_wm = 0.12 # 浮水印距離底部高度
+    ax.text(fig_w - MARGIN_X - 0.05, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom', 
             fontsize=13, linespacing=1.3, fontproperties=FONT_PROP, color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
     
     if has_legend:
-        y_pos_leg = 0.40
-        x_inch = margin_x + 0.1
+        y_pos_leg = 0.40 # 圖例距離底部高度
+        x_inch = MARGIN_X + 0.05
         def add_text(inch_x, text, fs, fp, color):
             ax.text(inch_x, y_pos_leg, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=9)
 
@@ -530,7 +541,8 @@ def draw_bottom_info(ax, fig_w, margin_x, has_legend=False):
 
 def save_figure_to_buffer(fig):
     buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor(), bbox_inches='tight', pad_inches=0.02)
+    # 關鍵修正！移除 bbox_inches='tight' 以防 Matplotlib 亂切畫布導致寬度不一
+    plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor(), pad_inches=0)
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -541,22 +553,22 @@ def save_figure_to_buffer(fig):
 # ============================
 
 def draw_entering_image(data, signal_map=None):
+    """1. 瀕臨處置"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
-    fig_h, row_h, header_h = get_base_layout(n, has_legend=False)
+    fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=False)
     fig, ax = setup_canvas(fig_w, fig_h)
     
-    margin_x = 2.5
-    table_w = fig_w - 2 * margin_x
-    y_header_bottom = draw_topbar_and_frame(ax, THEME_ENTERING, n, fig_w, fig_h, n, row_h, header_h, margin_x)
+    y_header_bottom = draw_topbar_and_frame(ax, THEME_ENTERING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    col_widths_ratio = [0.10, 0.20, 0.40, 0.30]
+    col_widths_ratio = [0.10, 0.25, 0.40, 0.25]
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
-    col_aligns = ['center', 'right', 'left', 'center']
+    col_aligns = ['center', 'center', 'left', 'center']
 
+    table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
-    acc = margin_x
+    acc = MARGIN_X
     for w in x_widths:
         x_starts.append(acc)
         acc += w
@@ -572,9 +584,9 @@ def draw_entering_image(data, signal_map=None):
         code, name, days = clean_display_text(row['code']), clean_display_text(row['name'], True), row['days']
         name_color = get_signal_color(code, signal_map)
         
-        ax.add_patch(patches.Rectangle((margin_x, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
+        ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
-        ax.plot([margin_x + 0.1, fig_w - margin_x - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
+        ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
         rank_num = i + 1
         if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
@@ -593,7 +605,7 @@ def draw_entering_image(data, signal_map=None):
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
         ax.text(x_starts[3] + x_widths[3]/2, y_center, clean_display_text("明日處置" if days == 1 else f"剩 {days} 天"), ha='center', va='center', fontsize=16, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
-    draw_bottom_info(ax, fig_w, margin_x, has_legend=False)
+    draw_bottom_info(ax, fig_w, has_legend=False)
     return save_figure_to_buffer(fig)
 
 
@@ -601,22 +613,20 @@ def draw_releasing_image(data, signal_map=None):
     """2. 即將出關"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
-    fig_h, row_h, header_h = get_base_layout(n, has_legend=True)
+    fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
 
-    margin_x = 0.4
-    table_w = fig_w - 2 * margin_x
-    y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, margin_x)
+    y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # [調整重點]：縮減了前三欄佔比，讓「現價」整體向左移動。
-    # 並且讓現價右側的 5 個數值欄位（倒數天數、處置前、處置中、出關日）統一為 0.120 的比例
-    col_widths_ratio = [0.040, 0.080, 0.140, 0.100, 0.120, 0.160, 0.120, 0.120, 0.120]
+    col_widths_ratio = [0.05, 0.08, 0.16, 0.09, 0.11, 0.21, 0.10, 0.10, 0.10]
     col_labels = ["#", "代號", "名稱", "現價", "倒數天數", "狀態", "處置前", "處置中", "出關日"]
-    col_aligns = ['center', 'right', 'left', 'left', 'center', 'center', 'right', 'right', 'right']
+    # 確保現價為靠左(left)
+    col_aligns = ['center', 'center', 'left', 'left', 'center', 'center', 'center', 'center', 'center']
 
+    table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
-    acc = margin_x
+    acc = MARGIN_X
     for w in x_widths:
         x_starts.append(acc)
         acc += w
@@ -633,9 +643,9 @@ def draw_releasing_image(data, signal_map=None):
         icon, status_text, pre_pct, in_pct = row['icon'], clean_display_text(row['status_text']), row['pre_pct'], row['in_pct']
         name_color = get_signal_color(code, signal_map)
 
-        ax.add_patch(patches.Rectangle((margin_x, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
+        ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
-        ax.plot([margin_x + 0.1, fig_w - margin_x - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
+        ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
         rank_num = i + 1
         if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
@@ -673,28 +683,28 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 16, FONT_BOLD, get_pct_color(in_pct))
         draw_col_text(ax, x_starts[8], x_widths[8], y_center, date, col_aligns[8], 16, FONT_PROP, TEXT_MAIN)
 
-    draw_bottom_info(ax, fig_w, margin_x, has_legend=True)
+    draw_bottom_info(ax, fig_w, has_legend=True)
     return save_figure_to_buffer(fig)
 
 
 def draw_injail_image(data, signal_map=None):
-    """3. 處置中 (加寬邊界維持窄版視覺)"""
+    """3. 處置中"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
-    fig_h, row_h, header_h = get_base_layout(n, has_legend=True)
+    fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
 
-    margin_x = 2.0
-    table_w = fig_w - 2 * margin_x
-    y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, margin_x)
+    y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    col_widths_ratio = [0.08, 0.20, 0.32, 0.15, 0.25]
+    col_widths_ratio = [0.08, 0.15, 0.37, 0.15, 0.25]
     col_labels = ["#", "代號", "名稱", "現價", "處置期間"]
-    col_aligns = ['center', 'right', 'left', 'left', 'right']
+    # 確保現價為靠左(left)
+    col_aligns = ['center', 'center', 'left', 'left', 'center']
 
+    table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
-    acc = margin_x
+    acc = MARGIN_X
     for w in x_widths:
         x_starts.append(acc)
         acc += w
@@ -710,9 +720,9 @@ def draw_injail_image(data, signal_map=None):
         code, name, price, period = clean_display_text(row['code']), clean_display_text(row['name'], True), clean_display_text(str(row.get('price', '--'))), clean_display_text(row['period'])
         name_color = get_signal_color(code, signal_map)
 
-        ax.add_patch(patches.Rectangle((margin_x, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
+        ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
-        ax.plot([margin_x + 0.1, fig_w - margin_x - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
+        ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
         rank_num = i + 1
         if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
@@ -726,7 +736,7 @@ def draw_injail_image(data, signal_map=None):
         draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
         draw_col_text(ax, x_starts[4], x_widths[4], y_center, period, col_aligns[4], 16, FONT_PROP, TEXT_MAIN)
 
-    draw_bottom_info(ax, fig_w, margin_x, has_legend=True)
+    draw_bottom_info(ax, fig_w, has_legend=True)
     return save_figure_to_buffer(fig)
 
 
