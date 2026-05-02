@@ -287,13 +287,10 @@ def parse_roc_date(date_str):
     return None
 
 def code_sort_key(code):
-    """股票代號排序用：純數字照數字排，非純數字放後面。"""
     s = str(code).replace("'", "").strip()
     return int(s) if s.isdigit() else 999999
 
-
 def build_period_detail(period_str):
-    """將處置期間統一成 MM/DD-MM/DD，並保留結束日供排序。"""
     period = str(period_str).strip()
     dates = re.split(r'[~-～]', period)
     if len(dates) >= 2:
@@ -306,9 +303,7 @@ def build_period_detail(period_str):
             }
     return {'period': period if period else '日期未知', 'sort_start': None, 'sort_end': None}
 
-
 def injail_sort_key(item):
-    """處置中排序：先依處置期間結束日由近到遠，再依股票代號小到大。"""
     sort_end = item.get('sort_end')
     if sort_end is None:
         detail = build_period_detail(item.get('period', ''))
@@ -316,7 +311,6 @@ def injail_sort_key(item):
     if sort_end is None:
         sort_end = datetime.max
     return (sort_end, code_sort_key(item.get('code', '')))
-
 
 def get_merged_jail_period_details(sh):
     jail_map = {}
@@ -345,7 +339,6 @@ def get_merged_jail_period_details(sh):
         }
         for c, d in jail_map.items()
     }
-
 
 def get_merged_jail_periods(sh):
     return {c: d['period'] for c, d in get_merged_jail_period_details(sh).items()}
@@ -380,19 +373,15 @@ def get_price_rank_info(code, period_str, market):
         dates = re.split(r'[~-～]', str(period_str))
         start_date = parse_roc_date(dates[0])
         if not start_date: return "❓ 未知", "日期錯", "+0.0", "+0.0"
-        
         fetch_start = start_date - timedelta(days=60)
         end_date = datetime.now() + timedelta(days=1)
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
-        
         df = yf.Ticker(f"{code}{suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
         if not df.empty: df = df.ffill() 
         if df.empty or len(df) < 2: return "❓ 未知", "無股價", "+0.0", "+0.0"
-
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
         mask_before = df.index < pd.Timestamp(start_date)
-        
         if not mask_before.any(): pre_pct = 0.0
         else:
             jail_base_p = df[mask_before]['Close'].iloc[-1]
@@ -401,19 +390,16 @@ def get_price_rank_info(code, period_str, market):
             target_idx = max(0, loc_idx - jail_days_count + 1)
             pre_entry = df.iloc[target_idx]['Open']
             pre_pct = ((jail_base_p - pre_entry) / pre_entry) * 100
-
         if df_in_jail.empty: in_pct = 0.0
         else:
             jail_start_entry = df_in_jail['Open'].iloc[0]
             curr_p = df_in_jail['Close'].iloc[-1]
             in_pct = ((curr_p - jail_start_entry) / jail_start_entry) * 100
-
         if in_pct > 15:    icon, status_text = "👑", "妖股誕生"
         elif in_pct > 5:   icon, status_text = "🔥", "強勢突圍"
         elif in_pct < -15: icon, status_text = "💀", "人去樓空"
         elif in_pct < -5:  icon, status_text = "📉", "走勢疲軟"
         else:              icon, status_text = "🧊", "多空膠著"
-        
         return icon, clean_display_text(status_text), f"{'+' if pre_pct > 0 else ''}{pre_pct:.1f}", f"{'+' if in_pct > 0 else ''}{in_pct:.1f}"
     except: return "❓ 未知", "數據計算中", "+0.0", "+0.0"
 
@@ -424,14 +410,9 @@ def check_status_split(sh, releasing_codes, price_map=None):
     ent, inj, seen = [], [], set()
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
-        # 如果這檔代號已經被分類到「即將出關」 (<=5天)，則略過
         if code in releasing_codes or code in seen: continue
-        
         name, days_str, reason = clean_display_text(row.get('名稱', '')), str(row.get('最快處置天數', '99')), clean_display_text(row.get('處置觸發原因', ''))
-        
-        # 處理處置中股票
         if "處置中" in reason:
-            # 這裡能進來，代表它不在 releasing_codes 裡，也就是它差 6 天以上
             detail = jail_detail_map.get(code, {'period': '日期未知', 'sort_end': None})
             inj.append({
                 "code": code,
@@ -441,13 +422,11 @@ def check_status_split(sh, releasing_codes, price_map=None):
                 "sort_end": detail.get('sort_end'),
             })
             seen.add(code)
-        # 處理瀕臨處置股票
         elif days_str.isdigit():
             d = int(days_str) + 1  
             if d <= JAIL_ENTER_THRESHOLD:
                 ent.append({"code": code, "name": name, "days": d})
                 seen.add(code)
-            
     ent.sort(key=lambda x: (x['days'], code_sort_key(x['code'])))
     inj.sort(key=injail_sort_key)
     return {'entering': ent, 'in_jail': inj}
@@ -461,26 +440,21 @@ def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
         if code in seen: continue
         days_str = str(row.get('剩餘天數', '99'))
         if not days_str.isdigit(): continue
-        
         d = int(days_str) + 1
-        
         last_day_dt = parse_roc_date(row.get('出關日期', ''))
         actual_release_dt = None
         if last_day_dt:
             actual_release_dt = last_day_dt + timedelta(days=1)
             if actual_release_dt.weekday() == 5: actual_release_dt += timedelta(days=2)
             elif actual_release_dt.weekday() == 6: actual_release_dt += timedelta(days=1)
-
         tw_now = datetime.utcnow() + timedelta(hours=8)
-        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 五六日補償
+        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6:
             display_days = d + 1
         else:
             display_days = d
-
-        # 嚴格限制「即將出關」圖表只顯示 <= 5 天的股票；>5 天補到「處置中」圖表
         if display_days <= 5:
-            icon, status_text, pre_str, in_str = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
-            res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_str, "in_pct": in_str})
+            icon, status_text, pre_pct, in_pct = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
+            res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_pct, "in_pct": in_pct})
             seen.add(code)
         elif overflow_injail is not None:
             detail = build_period_detail(row.get('處置期間', ''))
@@ -492,7 +466,6 @@ def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
                 "sort_end": detail.get('sort_end'),
             })
             seen.add(code)
-            
     res.sort(key=lambda x: (x['days'], code_sort_key(x['code'])))
     return res
 
@@ -542,7 +515,6 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
     ax.add_patch(patches.Rectangle((0, fig_h - bar_h), fig_w, bar_h, facecolor=theme['accent'], linewidth=0))
     title_y = fig_h - 0.55
     ax.text(fig_w/2, title_y, clean_display_text(theme['title']), ha='center', va='center', fontsize=26, fontproperties=FONT_BOLD, color='#2C3440')
-    
     if theme.get('title_icon'):
         try:
             fig = ax.figure
@@ -553,16 +525,13 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
             draw_emoji_image(ax, theme['title_icon'], icon_x, title_y, fontsize=22, transform=ax.transData)
         except:
             draw_emoji_image(ax, theme['title_icon'], fig_w/2 - 2.5, title_y, fontsize=22, transform=ax.transData)
-
     sub_y = fig_h - 0.95
     today_str = datetime.now().strftime("%Y-%m-%d")
     ax.text(fig_w/2, sub_y, clean_display_text(f"資料日期: {today_str} | 共 {total_count} 檔"), ha='center', va='center', fontsize=15, fontproperties=FONT_PROP, color='#8A97A8')
-
     y_table_top = fig_h - top_offset
     table_total_h = header_h + max(1, n_rows) * row_h
     y_table_bottom = y_table_top - table_total_h
     y_header_bottom = y_table_top - header_h
-
     ax.text(MARGIN_X + 0.05, y_table_top + 0.15, f"▌ {clean_display_text(theme['subtitle_text'])}", ha='left', va='bottom', fontsize=17, fontproperties=FONT_BOLD, color=theme['accent'])
     table_w = fig_w - 2 * MARGIN_X
     ax.add_patch(patches.Rectangle((MARGIN_X, y_table_bottom), table_w, table_total_h, linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE))
@@ -574,7 +543,7 @@ def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
     if align == 'center':
         ax.text(xst + w/2, y, text, ha='center', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'right':
-        ax.text(xst + w - 0.15, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
+        ax.text(xst + w - 0.20, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'left':
         ax.text(xst + 0.15, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
@@ -658,15 +627,21 @@ def draw_entering_image(data, signal_map=None):
     return save_figure_to_buffer(fig)
 
 def draw_releasing_image(data, signal_map=None):
-    """2. 即將出關"""
+    """2. 即將出關 - 重新優化欄位間距，確保後方欄位間隔均勻"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
-    col_widths_ratio = [0.05, 0.08, 0.16, 0.08, 0.13, 0.20, 0.10, 0.10, 0.10]
+
+    # 【重新配比】縮減名稱佔比，將剩餘空間均分給後方 6 個欄位 (現價～出關日)
+    # 比例總和須為 1.0：[#, 代號, 名稱] = 0.05+0.08+0.15 = 0.28
+    # 剩餘 0.72 分給 6 欄 = 每欄約 0.12
+    col_widths_ratio = [0.05, 0.08, 0.15, 0.11, 0.13, 0.15, 0.11, 0.11, 0.11]
     col_labels = ["#", "代號", "股票名稱", "現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
+    # 對齊優化：績效與現價靠右、狀態居中
     col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'right', 'right', 'center']
+
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
@@ -674,9 +649,11 @@ def draw_releasing_image(data, signal_map=None):
     for w in x_widths:
         x_starts.append(acc)
         acc += w
+
     y_header_center = y_header_bottom + header_h / 2
     for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
-        draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 16, FONT_BOLD, TEXT_HEADER)
+        draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 15, FONT_BOLD, TEXT_HEADER)
+
     for i, row in enumerate(data):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
@@ -692,32 +669,32 @@ def draw_releasing_image(data, signal_map=None):
         elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
         elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
         else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
-        draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
-        draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
-        draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
-        draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
+        draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 15, rank_fw, rank_color)
+        draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 17, FONT_BOLD, name_color)
+        draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 16, FONT_PROP, name_color)
+        draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 15, FONT_BOLD, TEXT_PRICE)
         bg_clr, fg_clr = get_days_style(days)
-        capsule_w, capsule_h = 1.5, 0.28
+        capsule_w, capsule_h = 1.45, 0.28
         capsule_x = x_starts[4] + x_widths[4]/2 - capsule_w/2
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
         label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
-        ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text, ha='center', va='center', fontsize=14, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
+        ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text, ha='center', va='center', fontsize=13, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
         if "妖股" in status_text:    st_color = '#D69E2E'
         elif "強勢" in status_text:  st_color = '#E35D6A'
         elif "人去樓空" in status_text: st_color = '#9B59B6'
         elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
         status_group_center = x_starts[5] + x_widths[5] / 2
-        emoji_ok = draw_emoji_image(ax, icon, status_group_center - 0.45, y_center, fontsize=15, transform=ax.transData, zorder=4, fallback_color=st_color)
+        emoji_ok = draw_emoji_image(ax, icon, status_group_center - 0.40, y_center, fontsize=14, transform=ax.transData, zorder=4, fallback_color=st_color)
         if emoji_ok:
-            ax.text(status_group_center - 0.20, y_center, status_text, ha='left', va='center', fontsize=16, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+            ax.text(status_group_center - 0.15, y_center, status_text, ha='left', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
-            ax.text(status_group_center, y_center, f"{icon_fallback} {status_text}", ha='center', va='center', fontsize=16, fontproperties=FONT_BOLD, color=st_color, zorder=3)
-        draw_col_text(ax, x_starts[6], x_widths[6], y_center, f"{pre_pct}%", col_aligns[6], 16, FONT_BOLD, get_pct_color(pre_pct))
-        draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 16, FONT_BOLD, get_pct_color(in_pct))
-        draw_col_text(ax, x_starts[8], x_widths[8], y_center, date, col_aligns[8], 16, FONT_PROP, TEXT_MAIN)
+            ax.text(status_group_center, y_center, f"{icon_fallback} {status_text}", ha='center', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+        draw_col_text(ax, x_starts[6], x_widths[6], y_center, f"{pre_pct}%", col_aligns[6], 15, FONT_BOLD, get_pct_color(pre_pct))
+        draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 15, FONT_BOLD, get_pct_color(in_pct))
+        draw_col_text(ax, x_starts[8], x_widths[8], y_center, date, col_aligns[8], 15, FONT_PROP, TEXT_MAIN)
     draw_bottom_info(ax, fig_w, has_legend=True)
     return save_figure_to_buffer(fig)
 
@@ -772,13 +749,10 @@ def main():
     signal_map = load_signal_status_map(sh)
     price_map = load_current_price_map(sh)
     
-    # 1. 抓取即將出關名單 (嚴格過濾 display_days <= 5)
-    #    display_days > 5 的股票會補到「處置中」圖表，避免被即將出關濾掉後消失。
     releasing_over5_injail = []
     rel = check_releasing_stocks(sh, price_map=price_map, overflow_injail=releasing_over5_injail)
     rel_codes = {x['code'] for x in rel}
     
-    # 2. 抓取處置中名單，並合併「即將出關監控」中 display_days > 5 的股票
     stats = check_status_split(sh, rel_codes, price_map=price_map)
     if releasing_over5_injail:
         existing_codes = {x.get('code') for x in stats['in_jail']}
