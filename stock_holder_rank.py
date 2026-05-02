@@ -138,49 +138,54 @@ def parse_latest_trade_date(raw_date):
 
 def get_week_price_info(code, market_suffix, latest_date_str):
     """
-    計算股價與週漲跌：
-    以 latest_date_str 所在週為基準，抓該週第一個有效交易日的 Open，
-    以及該週最後一個有效交易日的 Close。
-    若週一或週五休市，會自動改用週二開盤或週四收盤等可取得的交易日。
+    計算股價與週漲跌 (標準跨週算法)：
+    抓取這週的最後收盤價，以及「上週」的最後收盤價來計算漲跌幅，
+    這樣計算出的數值才會與一般看盤軟體的周K漲跌幅完全一致。
     """
     try:
         ref_date = parse_latest_trade_date(latest_date_str)
+        # 本週一的日期
         week_start = ref_date - timedelta(days=ref_date.weekday())
-        week_end = week_start + timedelta(days=7)
+        
+        # 往前多抓一點時間 (抓15天)，確保一定能抓到上週與本週的日K資料
+        fetch_start = week_start - timedelta(days=15)
+        fetch_end = week_start + timedelta(days=7)
 
         ticker = f"{code}{market_suffix}"
         df = yf.Ticker(ticker).history(
-            start=week_start.strftime("%Y-%m-%d"),
-            end=week_end.strftime("%Y-%m-%d"),
+            start=fetch_start.strftime("%Y-%m-%d"),
+            end=fetch_end.strftime("%Y-%m-%d"),
             auto_adjust=True
         )
 
-        # 若資料來源當週尚未更新，往前補抓一段時間，仍取最新可用週資料。
-        if df.empty:
-            fallback_start = ref_date - timedelta(days=14)
-            fallback_end = ref_date + timedelta(days=2)
-            df = yf.Ticker(ticker).history(
-                start=fallback_start.strftime("%Y-%m-%d"),
-                end=fallback_end.strftime("%Y-%m-%d"),
-                auto_adjust=True
-            )
-
-        if df.empty or "Open" not in df.columns or "Close" not in df.columns:
+        if df.empty or "Close" not in df.columns:
             return "-", "-"
 
-        df = df.dropna(subset=["Open", "Close"])
-        if df.empty:
+        df = df.dropna(subset=["Close"])
+        
+        # 移除 index 的時區資訊，方便與 week_start (datetime) 做比對
+        df.index = df.index.tz_localize(None)
+
+        # 1. 篩選出「本週一之前」的所有交易日，取最後一筆作為「上週收盤價」
+        past_df = df[df.index < week_start]
+        # 2. 篩選出「本週一(含)之後」的所有交易日，取最後一筆作為「本週最新收盤價」
+        current_week_df = df[df.index >= week_start]
+
+        if past_df.empty or current_week_df.empty:
             return "-", "-"
 
-        first_open = float(df["Open"].iloc[0])
-        last_close = float(df["Close"].iloc[-1])
+        prev_close = float(past_df["Close"].iloc[-1])
+        current_close = float(current_week_df["Close"].iloc[-1])
 
-        if first_open <= 0:
-            return f"{last_close:.1f}", "-"
+        if prev_close <= 0:
+            return f"{current_close:.1f}", "-"
 
-        week_pct = ((last_close - first_open) / first_open) * 100
+        # 用上週收盤價來計算標準週漲跌幅
+        week_pct = ((current_close - prev_close) / prev_close) * 100
         arrow = "▲" if week_pct > 0 else "▼" if week_pct < 0 else "—"
-        return f"{last_close:.1f}", f"{arrow}{abs(week_pct):.1f}%"
+        
+        return f"{current_close:.1f}", f"{arrow}{abs(week_pct):.1f}%"
+        
     except Exception as e:
         print(f"⚠️ 股價資料取得失敗 ({code}{market_suffix}): {e}")
         return "-", "-"
@@ -454,10 +459,10 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
               size=12, color="#FFFFFF", weight='bold', bold=True, ha='right')
 
     # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
-    # 重新分配右半部欄位寬度，讓「類別 / 現價 / 週漲跌 / 總增減%」之間的間距更平均。
-    col_rel = [0.060, 0.080, 0.230, 0.110, 0.135, 0.155, 0.230]
+    # 【關鍵修正】：重新分配欄寬比例，並將靠左對齊的欄位統一 padding 間距
+    col_rel = [0.060, 0.080, 0.210, 0.150, 0.130, 0.150, 0.220]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
-    aligns = ["center", "center", "left", "left", "left", "left", "left"]
+    aligns = ["center", "center", "left", "left", "left", "left", "right"]
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -481,15 +486,12 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if aligns[i] == "center":
             tx, ha = cell_x + cell_w / 2, "center"
         elif aligns[i] == "right":
-            pad = 0.010 if i == 4 else 0.012 if i == 6 else 0.006
+            pad = 0.012
             tx, ha = cell_x + cell_w - pad, "right"
         else:
-            if i == 3:      # 類別
-                tx, ha = cell_x + 0.014, "left"
-            elif i == 5:    # 週漲跌
-                tx, ha = cell_x + 0.022, "left"
-            else:
-                tx, ha = cell_x + 0.006, "left"
+            # 統一所有靠左對齊欄位的間距，確保整齊度
+            tx, ha = cell_x + 0.010, "left"
+            
         draw_text(ax, tx, header_top - header_h / 2, label, size=12,
                   color=TEXT_MUTED, weight='bold', ha=ha, bold=True)
 
@@ -542,7 +544,6 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         chg_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
         chg_display = "-" if fmt_change(change_val) == "-" else f"{change_val:+.2f}%"
 
-        # 資料太多時，控制文字長度，避免壓到隔壁欄位
         values = [
             f"{i+1:02d}",
             code,
@@ -582,15 +583,12 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             if aligns[j] == "center":
                 tx, ha = cell_x + cell_w / 2, "center"
             elif aligns[j] == "right":
-                pad = 0.010 if j == 4 else 0.012 if j == 6 else 0.006
+                pad = 0.012
                 tx, ha = cell_x + cell_w - pad, "right"
             else:
-                if j == 3:      # 類別
-                    tx, ha = cell_x + 0.014, "left"
-                elif j == 5:    # 週漲跌
-                    tx, ha = cell_x + 0.022, "left"
-                else:
-                    tx, ha = cell_x + 0.006, "left"
+                # 統一靠左對齊間距
+                tx, ha = cell_x + 0.010, "left"
+                
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                       color=colors[j], weight=weights[j], ha=ha,
                       bold=(weights[j] == 'bold'))
@@ -742,8 +740,8 @@ def push_rank_to_dc():
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
         h_cat  = pad_visual("類別", W_CAT)
-        h_price = pad_visual("現價", W_PRICE, align='right')
-        h_week = pad_visual("週漲跌", W_WEEK, align='right')
+        h_price = pad_visual("現價", W_PRICE, align='left')
+        h_week = pad_visual("週漲跌", W_WEEK, align='left')
         h_chg  = pad_visual("總增減%", W_CHANGE, align='left')
 
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_cat}{GAP}{h_price}{GAP}{h_week}{GAP}{h_chg}\n"
@@ -789,8 +787,8 @@ def push_rank_to_dc():
             s_rank = pad_visual(f"{i+1:02d}", W_RANK) 
             s_code = pad_visual(code, W_CODE)
             s_cat = pad_visual(category, W_CAT, align='left')
-            s_price = pad_visual(price, W_PRICE, align='right')
-            s_week = pad_visual(week_chg, W_WEEK, align='right')
+            s_price = pad_visual(price, W_PRICE, align='left')
+            s_week = pad_visual(week_chg, W_WEEK, align='left')
             s_chg  = pad_visual(change_str, W_CHANGE, align='left')
 
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_cat}{GAP}{s_price}{GAP}{s_week}{GAP}{s_chg}\n"
