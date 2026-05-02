@@ -632,15 +632,16 @@ def draw_entering_image(data, signal_map=None):
     return save_figure_to_buffer(fig)
 
 def draw_releasing_image(data, signal_map=None):
-    """2. 即將出關 - 依資訊量重新分配欄寬，避免後段欄位擠成一團"""
+    """2. 即將出關 - 重新配置欄寬，避免倒數交易日與狀態欄擠在一起"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # 依實際資訊量配置：狀態欄加寬、價格與百分比欄維持適中寬度
-    col_widths_ratio = [0.05, 0.08, 0.20, 0.09, 0.11, 0.18, 0.10, 0.10, 0.09]
+    # 依實際內容重新分配欄寬：
+    # 狀態欄需要 emoji + 中文文字，因此加寬；倒數交易日也加寬，避免與狀態欄貼太近。
+    col_widths_ratio = [0.05, 0.08, 0.19, 0.09, 0.13, 0.18, 0.10, 0.10, 0.08]
     col_labels = ["#", "代號", "股票名稱", "現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'right', 'center', 'left', 'right', 'right', 'right']
 
@@ -691,14 +692,16 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 15, FONT_BOLD, TEXT_PRICE)
 
         bg_clr, fg_clr = get_days_style(days)
-        capsule_w, capsule_h = 1.35, 0.28
-        capsule_x = x_starts[4] + x_widths[4]/2 - capsule_w/2
-        capsule_y = y_center - capsule_h/2
-        ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h,
-                                            boxstyle="round,pad=0,rounding_size=0.14",
-                                            facecolor=bg_clr, linewidth=0, zorder=2))
+        capsule_w, capsule_h = 1.55, 0.28
+        capsule_x = x_starts[4] + x_widths[4] / 2 - capsule_w / 2
+        capsule_y = y_center - capsule_h / 2
+        ax.add_patch(patches.FancyBboxPatch(
+            (capsule_x, capsule_y), capsule_w, capsule_h,
+            boxstyle="round,pad=0,rounding_size=0.14",
+            facecolor=bg_clr, linewidth=0, zorder=2
+        ))
         label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
-        ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text,
+        ax.text(x_starts[4] + x_widths[4] / 2, y_center, label_text,
                 ha='center', va='center', fontsize=13, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
         if "妖股" in status_text:
@@ -712,16 +715,17 @@ def draw_releasing_image(data, signal_map=None):
         else:
             st_color = TEXT_MUTED
 
+        # 狀態欄改為固定左起點，避免 emoji / 文字因置中而壓到前一欄
         status_x = x_starts[5]
         emoji_ok = draw_emoji_image(ax, icon, status_x + 0.22, y_center, fontsize=14,
                                     transform=ax.transData, zorder=4, fallback_color=st_color)
         if emoji_ok:
-            ax.text(status_x + 0.42, y_center, status_text, ha='left', va='center',
-                    fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+            ax.text(status_x + 0.45, y_center, status_text,
+                    ha='left', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
-            ax.text(status_x + 0.15, y_center, f"{icon_fallback} {status_text}", ha='left', va='center',
-                    fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+            ax.text(status_x + 0.16, y_center, f"{icon_fallback} {status_text}",
+                    ha='left', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
         draw_col_text(ax, x_starts[6], x_widths[6], y_center, f"{pre_pct}%", col_aligns[6], 15, FONT_BOLD, get_pct_color(pre_pct))
         draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 15, FONT_BOLD, get_pct_color(in_pct))
@@ -731,7 +735,7 @@ def draw_releasing_image(data, signal_map=None):
     return save_figure_to_buffer(fig)
 
 
-def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None, total_pages=None):
+def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None, total_pages=None, rank_offset=0):
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
@@ -744,6 +748,7 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
     col_widths_ratio = [0.10, 0.18, 0.24, 0.16, 0.32]
     col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
     col_aligns = ['center', 'center', 'left', 'right', 'center']
+
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
@@ -770,7 +775,7 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
-        rank_num = i + 1
+        rank_num = rank_offset + i + 1
         if rank_num == 1:
             rank_color, rank_fw = GOLD, FONT_BOLD
         elif rank_num == 2:
@@ -790,7 +795,7 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
     return save_figure_to_buffer(fig)
 
 
-def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=None, total_pages=None):
+def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=None, total_pages=None, rank_offset=0):
     rows_per_col = max(1, int(np.ceil(len(page_data) / 2)))
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(rows_per_col, has_legend=True)
@@ -819,6 +824,7 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
         for w in widths:
             starts.append(acc)
             acc += w
+
         y_header_center = y_header_bottom + header_h / 2
         for xst, w, label, align in zip(starts, widths, col_labels, col_aligns):
             draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 15, FONT_BOLD, TEXT_HEADER)
@@ -837,7 +843,7 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
             ax.add_patch(patches.Rectangle((starts[0], y_top - row_h), widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
             ax.plot([x_base + 0.05, x_base + half_w - 0.05], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
-            rank_num = half_idx * rows_per_col + i + 1
+            rank_num = rank_offset + half_idx * rows_per_col + i + 1
             if rank_num == 1:
                 rank_color, rank_fw = GOLD, FONT_BOLD
             elif rank_num == 2:
@@ -863,20 +869,27 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
 
 
 def draw_injail_image(data, signal_map=None):
-    """3. 處置中 - 少量單欄、中量雙欄、大量分頁雙欄"""
+    """3. 處置中 - 18 檔以下單欄，19 檔以上雙欄，超過 44 檔自動分頁"""
     n = len(data)
     if n <= 18:
         return _draw_injail_single_column(data, n, signal_map=signal_map)
 
-    if n <= 44:
-        return _draw_injail_two_column(data, n, signal_map=signal_map)
-
     page_size = 44
     pages = [data[i:i + page_size] for i in range(0, n, page_size)]
+    if len(pages) == 1:
+        return _draw_injail_two_column(pages[0], n, signal_map=signal_map)
+
     buffers = []
     total_pages = len(pages)
     for page_no, page_data in enumerate(pages, start=1):
-        buffers.append(_draw_injail_two_column(page_data, n, signal_map=signal_map, page_no=page_no, total_pages=total_pages))
+        buffers.append(_draw_injail_two_column(
+            page_data,
+            n,
+            signal_map=signal_map,
+            page_no=page_no,
+            total_pages=total_pages,
+            rank_offset=(page_no - 1) * page_size
+        ))
     return buffers
 
 def draw_injail_image(data, signal_map=None):
@@ -949,18 +962,14 @@ def main():
             buf = draw_entering_image(stats['entering'], signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
-        except Exception as e:
-            print(f"❌ 瀕臨處置圖片產生失敗: {e}")
-
+        except Exception as e: print(f"❌ 瀕臨處置圖片產生失敗: {e}")
     if rel:
         print(f"📊 產生即將出關圖片 ({len(rel)} 檔)...")
         try:
             buf = draw_releasing_image(rel, signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
-        except Exception as e:
-            print(f"❌ 即將出關圖片產生失敗: {e}")
-
+        except Exception as e: print(f"❌ 即將出關圖片產生失敗: {e}")
     if stats['in_jail']:
         print(f"📊 產生處置中圖片 ({len(stats['in_jail'])} 檔)...")
         try:
@@ -973,9 +982,7 @@ def main():
             else:
                 send_discord_image(injail_result)
                 time.sleep(2)
-        except Exception as e:
-            print(f"❌ 處置中圖片產生失敗: {e}")
-
+        except Exception as e: print(f"❌ 處置中圖片產生失敗: {e}")
     print("✅ 完成")
 
 if __name__ == "__main__":
