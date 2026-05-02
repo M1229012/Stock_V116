@@ -409,6 +409,15 @@ def check_releasing_stocks(sh, price_map=None):
         if d <= JAIL_EXIT_THRESHOLD:
             icon, status_text, pre_str, in_str = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             dt = parse_roc_date(row.get('出關日期', ''))
+            
+            # 【新增推算真正出關日的邏輯】
+            if dt:
+                dt = dt + timedelta(days=1)
+                if dt.weekday() == 5:    # 如果推算是禮拜六，順延2天至週一
+                    dt = dt + timedelta(days=2)
+                elif dt.weekday() == 6:  # 如果推算是禮拜天，順延1天至週一
+                    dt = dt + timedelta(days=1)
+                    
             res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": d, "price": format_display_price((price_map or {}).get(code, "--")), "date": dt.strftime("%m/%d") if dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_str, "in_pct": in_str})
             seen.add(code)
     res.sort(key=lambda x: (x['days'], x['code']))
@@ -605,7 +614,6 @@ def draw_releasing_image(data, signal_map=None):
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
     col_widths_ratio = [0.05, 0.08, 0.16, 0.09, 0.11, 0.21, 0.10, 0.10, 0.10]
-    # 【更新表頭名稱】
     col_labels = ["#", "代號", "股票名稱", "現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'left', 'center', 'center', 'center', 'center', 'center']
 
@@ -645,13 +653,11 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
 
         bg_clr, fg_clr = get_days_style(days)
-        # 【微調膠囊寬度以容納交易日字眼】
         capsule_w, capsule_h = 1.5, 0.28
         capsule_x = x_starts[4] + x_widths[4]/2 - capsule_w/2
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
         
-        # 【新增文字邏輯：明日出關 或 剩 X 交易日】
         label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
         ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text, ha='center', va='center', fontsize=15, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
