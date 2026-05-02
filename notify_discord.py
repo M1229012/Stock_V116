@@ -381,17 +381,22 @@ def check_status_split(sh, releasing_codes, price_map=None):
     ent, inj, seen = [], [], set()
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
-        # 【修正】排除掉已被歸類在「即將出關」名單中的股票代號
+        # 如果這檔代號已經被分類到「即將出關」 (<=5天)，則略過
         if code in releasing_codes or code in seen: continue
+        
         name, days_str, reason = clean_display_text(row.get('名稱', '')), str(row.get('最快處置天數', '99')), clean_display_text(row.get('處置觸發原因', ''))
-        if not days_str.isdigit(): continue
-        d = int(days_str) + 1  
+        
+        # 處理處置中股票
         if "處置中" in reason:
+            # 這裡能進來，代表它不在 releasing_codes 裡，也就是它差 6 天以上
             inj.append({"code": code, "name": name, "price": format_display_price((price_map or {}).get(code, "--")), "period": jail_map.get(code, "日期未知")})
             seen.add(code)
-        elif d <= JAIL_ENTER_THRESHOLD:
-            ent.append({"code": code, "name": name, "days": d})
-            seen.add(code)
+        # 處理瀕臨處置股票
+        elif days_str.isdigit():
+            d = int(days_str) + 1  
+            if d <= JAIL_ENTER_THRESHOLD:
+                ent.append({"code": code, "name": name, "days": d})
+                seen.add(code)
             
     ent.sort(key=lambda x: (x['days'], x['code']))
     inj.sort(key=lambda x: (x.get('period', '').split('-')[1] if '-' in x.get('period', '') else "9999/12/31", x['code']))
@@ -417,12 +422,12 @@ def check_releasing_stocks(sh, price_map=None):
             elif actual_release_dt.weekday() == 6: actual_release_dt += timedelta(days=1)
 
         tw_now = datetime.utcnow() + timedelta(hours=8)
-        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 週五、六、日看圖時顯示天數+1
+        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 五六日補償
             display_days = d + 1
         else:
             display_days = d
 
-        # 【核心修正】嚴格限制顯示條件：只有剩餘 5 個交易日(含)以下的才進入此名單
+        # 嚴格限制「即將出關」圖表只顯示 <= 5 天的股票
         if display_days <= 5:
             icon, status_text, pre_str, in_str = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_str, "in_pct": in_str})
@@ -707,11 +712,11 @@ def main():
     signal_map = load_signal_status_map(sh)
     price_map = load_current_price_map(sh)
     
-    # 1. 抓取即將出關名單，此函式內已限制 display_days <= 5
+    # 1. 抓取即將出關名單 (嚴格過濾 display_days <= 5)
     rel = check_releasing_stocks(sh, price_map=price_map)
     rel_codes = {x['code'] for x in rel}
     
-    # 2. 抓取處置中名單，已自動排除即將出關的 code
+    # 2. 抓取處置中名單 (會排除 rel_codes，即自動包含 display_days > 5 的股票)
     stats = check_status_split(sh, rel_codes, price_map=price_map)
     
     if stats['entering']:
