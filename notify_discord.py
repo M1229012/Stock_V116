@@ -405,20 +405,34 @@ def check_releasing_stocks(sh, price_map=None):
         if code in seen: continue
         days_str = str(row.get('剩餘天數', '99'))
         if not days_str.isdigit(): continue
+        
+        # 邏輯 A：表單 0 代表最後一天處置日，因此加 1 代表熬過今天出關所需步數
         d = int(days_str) + 1
+        
         if d <= JAIL_EXIT_THRESHOLD:
             icon, status_text, pre_str, in_str = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
-            dt = parse_roc_date(row.get('出關日期', ''))
             
-            # 【新增推算真正出關日的邏輯】
-            if dt:
-                dt = dt + timedelta(days=1)
-                if dt.weekday() == 5:    # 如果推算是禮拜六，順延2天至週一
-                    dt = dt + timedelta(days=2)
-                elif dt.weekday() == 6:  # 如果推算是禮拜天，順延1天至週一
-                    dt = dt + timedelta(days=1)
-                    
-            res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": d, "price": format_display_price((price_map or {}).get(code, "--")), "date": dt.strftime("%m/%d") if dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_str, "in_pct": in_str})
+            # 【關鍵邏輯：推算真正恢復買賣日】
+            # 表單存的是最後處置日 (5/4)，真正的出關交易日為下一個交易日 (5/5)
+            last_day_dt = parse_roc_date(row.get('出關日期', ''))
+            actual_release_dt = None
+            if last_day_dt:
+                actual_release_dt = last_day_dt + timedelta(days=1)
+                # 遇週末順延機制
+                if actual_release_dt.weekday() == 5:    # 週六順延至下週一
+                    actual_release_dt += timedelta(days=2)
+                elif actual_release_dt.weekday() == 6:  # 週日順延至下週一
+                    actual_release_dt += timedelta(days=1)
+
+            # 【週末顯示天數補償機制】
+            # 確保五六日看圖時天數一致，顯示「剩 2 交易日」搭配「05/05」
+            tw_now = datetime.utcnow() + timedelta(hours=8)
+            if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 週五、六、日
+                display_days = d + 1
+            else:
+                display_days = d
+
+            res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_str, "in_pct": in_str})
             seen.add(code)
     res.sort(key=lambda x: (x['days'], x['code']))
     return res
@@ -658,8 +672,9 @@ def draw_releasing_image(data, signal_map=None):
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
         
+        # 標籤顯示邏輯優化
         label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
-        ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text, ha='center', va='center', fontsize=15, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
+        ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text, ha='center', va='center', fontsize=14, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
         if "妖股" in status_text:    st_color = '#D69E2E'
         elif "強勢" in status_text:  st_color = '#E35D6A'
@@ -693,9 +708,7 @@ def draw_injail_image(data, signal_map=None):
     y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
     col_widths_ratio = [0.10, 0.18, 0.20, 0.20, 0.32]
-    
     col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
-    
     col_aligns = ['center', 'center', 'left', 'left', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
@@ -743,43 +756,33 @@ def draw_injail_image(data, signal_map=None):
 def main():
     sh = connect_google_sheets()
     if not sh: return
-
     signal_map = load_signal_status_map(sh)
     price_map = load_current_price_map(sh)
-
     rel = check_releasing_stocks(sh, price_map=price_map)
     rel_codes = {x['code'] for x in rel}
     stats = check_status_split(sh, rel_codes, price_map=price_map)
-
     if stats['entering']:
         print(f"📊 產生瀕臨處置圖片 ({len(stats['entering'])} 檔)...")
         try:
             buf = draw_entering_image(stats['entering'], signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
-        except Exception as e:
-            print(f"❌ 瀕臨處置圖片產生失敗: {e}")
-
+        except Exception as e: print(f"❌ 瀕臨處置圖片產生失敗: {e}")
     if rel:
         print(f"📊 產生即將出關圖片 ({len(rel)} 檔)...")
         try:
             buf = draw_releasing_image(rel, signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
-        except Exception as e:
-            print(f"❌ 即將出關圖片產生失敗: {e}")
-
+        except Exception as e: print(f"❌ 即將出關圖片產生失敗: {e}")
     if stats['in_jail']:
         print(f"📊 產生處置中圖片 ({len(stats['in_jail'])} 檔)...")
         try:
             buf = draw_injail_image(stats['in_jail'], signal_map=signal_map)
             send_discord_image(buf)
             time.sleep(2)
-        except Exception as e:
-            print(f"❌ 處置中圖片產生失敗: {e}")
-
+        except Exception as e: print(f"❌ 處置中圖片產生失敗: {e}")
     print("✅ 完成")
-
 
 if __name__ == "__main__":
     main()
