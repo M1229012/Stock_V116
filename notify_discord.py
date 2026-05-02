@@ -381,6 +381,7 @@ def check_status_split(sh, releasing_codes, price_map=None):
     ent, inj, seen = [], [], set()
     for row in records:
         code = str(row.get('代號', '')).replace("'", "").strip()
+        # 【修正】排除掉已被歸類在「即將出關」名單中的股票代號
         if code in releasing_codes or code in seen: continue
         name, days_str, reason = clean_display_text(row.get('名稱', '')), str(row.get('最快處置天數', '99')), clean_display_text(row.get('處置觸發原因', ''))
         if not days_str.isdigit(): continue
@@ -406,40 +407,33 @@ def check_releasing_stocks(sh, price_map=None):
         days_str = str(row.get('剩餘天數', '99'))
         if not days_str.isdigit(): continue
         
-        # 邏輯 A：表單 0 代表最後一天處置日，因此加 1 代表熬過今天出關所需步數
         d = int(days_str) + 1
         
-        if d <= JAIL_EXIT_THRESHOLD:
+        last_day_dt = parse_roc_date(row.get('出關日期', ''))
+        actual_release_dt = None
+        if last_day_dt:
+            actual_release_dt = last_day_dt + timedelta(days=1)
+            if actual_release_dt.weekday() == 5: actual_release_dt += timedelta(days=2)
+            elif actual_release_dt.weekday() == 6: actual_release_dt += timedelta(days=1)
+
+        tw_now = datetime.utcnow() + timedelta(hours=8)
+        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 週五、六、日看圖時顯示天數+1
+            display_days = d + 1
+        else:
+            display_days = d
+
+        # 【核心修正】嚴格限制顯示條件：只有剩餘 5 個交易日(含)以下的才進入此名單
+        if display_days <= 5:
             icon, status_text, pre_str, in_str = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
-            
-            # 【關鍵邏輯：推算真正恢復買賣日】
-            # 表單存的是最後處置日 (5/4)，真正的出關交易日為下一個交易日 (5/5)
-            last_day_dt = parse_roc_date(row.get('出關日期', ''))
-            actual_release_dt = None
-            if last_day_dt:
-                actual_release_dt = last_day_dt + timedelta(days=1)
-                # 遇週末順延機制
-                if actual_release_dt.weekday() == 5:    # 週六順延至下週一
-                    actual_release_dt += timedelta(days=2)
-                elif actual_release_dt.weekday() == 6:  # 週日順延至下週一
-                    actual_release_dt += timedelta(days=1)
-
-            # 【週末顯示天數補償機制】
-            # 確保五六日看圖時天數一致，顯示「剩 2 交易日」搭配「05/05」
-            tw_now = datetime.utcnow() + timedelta(hours=8)
-            if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 週五、六、日
-                display_days = d + 1
-            else:
-                display_days = d
-
             res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_str, "in_pct": in_str})
             seen.add(code)
+            
     res.sort(key=lambda x: (x['days'], x['code']))
     return res
 
 
 # ============================
-# 🎨 【核心版面引擎】徹底解決字體與縮放不一的最終解
+# 🎨 【核心版面引擎】
 # ============================
 COMMON_FIG_WIDTH = 13.0  
 MARGIN_X = 0.4  
@@ -466,9 +460,7 @@ def get_base_layout(n_rows, has_legend=False):
     top_offset = 1.35     
     header_h = 0.60       
     row_h = 0.45          
-    
     bottom_offset = 0.90 if has_legend else 0.75  
-    
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
     return fig_h, row_h, header_h, top_offset
 
@@ -483,7 +475,6 @@ def setup_canvas(fig_w, fig_h):
 def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, header_h, top_offset):
     bar_h = 0.15
     ax.add_patch(patches.Rectangle((0, fig_h - bar_h), fig_w, bar_h, facecolor=theme['accent'], linewidth=0))
-    
     title_y = fig_h - 0.55
     ax.text(fig_w/2, title_y, clean_display_text(theme['title']), ha='center', va='center', fontsize=26, fontproperties=FONT_BOLD, color='#2C3440')
     
@@ -508,12 +499,10 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
     y_header_bottom = y_table_top - header_h
 
     ax.text(MARGIN_X + 0.05, y_table_top + 0.15, f"▌ {clean_display_text(theme['subtitle_text'])}", ha='left', va='bottom', fontsize=17, fontproperties=FONT_BOLD, color=theme['accent'])
-
     table_w = fig_w - 2 * MARGIN_X
     ax.add_patch(patches.Rectangle((MARGIN_X, y_table_bottom), table_w, table_total_h, linewidth=1.2, edgecolor=BORDER_MID, facecolor=BG_TABLE))
     ax.add_patch(patches.Rectangle((MARGIN_X, y_header_bottom), table_w, header_h, linewidth=0, facecolor=theme['header']))
     ax.plot([MARGIN_X, fig_w - MARGIN_X], [y_table_top, y_table_top], color=theme['accent'], linewidth=2.5)
-    
     return y_header_bottom
 
 def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
@@ -528,13 +517,11 @@ def draw_bottom_info(ax, fig_w, has_legend=False):
     y_pos_wm = 0.20 
     ax.text(fig_w - MARGIN_X - 0.05, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom', 
             fontsize=13, linespacing=1.3, fontproperties=FONT_PROP, color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
-    
     if has_legend:
         y_pos_leg = 0.45 
         x_inch = MARGIN_X + 0.05
         def add_text(inch_x, text, fs, fp, color):
             ax.text(inch_x, y_pos_leg, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=9)
-
         add_text(x_inch, "顏色說明", 14, FONT_BOLD, '#5B6678')
         x_inch += 0.90
         add_text(x_inch, "｜", 13, FONT_PROP, '#A0AAB8')
@@ -556,24 +543,19 @@ def save_figure_to_buffer(fig):
     buf.seek(0)
     return buf
 
-
 # ============================
 # 📊 圖表繪製函式
 # ============================
 
 def draw_entering_image(data, signal_map=None):
-    """1. 瀕臨處置"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=False)
     fig, ax = setup_canvas(fig_w, fig_h)
-    
     y_header_bottom = draw_topbar_and_frame(ax, THEME_ENTERING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
-
     col_widths_ratio = [0.10, 0.22, 0.36, 0.32]
     col_labels = ["#", "代號", "股票名稱", "倒數天數"]
     col_aligns = ['center', 'center', 'left', 'center']
-
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
@@ -581,42 +563,34 @@ def draw_entering_image(data, signal_map=None):
     for w in x_widths:
         x_starts.append(acc)
         acc += w
-
     y_header_center = y_header_bottom + header_h / 2
     for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 16, FONT_BOLD, TEXT_HEADER)
-
     for i, row in enumerate(data):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
         bg_color = BG_ROW_ODD if i % 2 == 0 else BG_ROW_EVEN
         code, name, days = clean_display_text(row['code']), clean_display_text(row['name'], True), row['days']
         name_color = get_signal_color(code, signal_map)
-        
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
-
         rank_num = i + 1
         if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
         elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
         elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
         else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
-
         draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
-
         bg_clr, fg_clr = get_days_style(days)
         capsule_w, capsule_h = 1.2, 0.28
         capsule_x = x_starts[3] + x_widths[3]/2 - capsule_w/2
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
         ax.text(x_starts[3] + x_widths[3]/2, y_center, clean_display_text("明日處置" if days == 1 else f"剩 {days} 天"), ha='center', va='center', fontsize=16, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
-
     draw_bottom_info(ax, fig_w, has_legend=False)
     return save_figure_to_buffer(fig)
-
 
 def draw_releasing_image(data, signal_map=None):
     """2. 即將出關"""
@@ -624,13 +598,10 @@ def draw_releasing_image(data, signal_map=None):
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
-
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
-
-    col_widths_ratio = [0.05, 0.08, 0.16, 0.09, 0.11, 0.21, 0.10, 0.10, 0.10]
+    col_widths_ratio = [0.05, 0.08, 0.16, 0.08, 0.13, 0.20, 0.10, 0.10, 0.10]
     col_labels = ["#", "代號", "股票名稱", "現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
     col_aligns = ['center', 'center', 'left', 'left', 'center', 'center', 'center', 'center', 'center']
-
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
@@ -638,11 +609,9 @@ def draw_releasing_image(data, signal_map=None):
     for w in x_widths:
         x_starts.append(acc)
         acc += w
-
     y_header_center = y_header_bottom + header_h / 2
     for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 16, FONT_BOLD, TEXT_HEADER)
-
     for i, row in enumerate(data):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
@@ -650,38 +619,30 @@ def draw_releasing_image(data, signal_map=None):
         code, name, price, days, date = clean_display_text(row['code']), clean_display_text(row['name'], True), clean_display_text(str(row.get('price', '--'))), row['days'], clean_display_text(row['date'])
         icon, status_text, pre_pct, in_pct = row['icon'], clean_display_text(row['status_text']), row['pre_pct'], row['in_pct']
         name_color = get_signal_color(code, signal_map)
-
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
-
         rank_num = i + 1
         if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
         elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
         elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
         else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
-
         draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
         draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
-
         bg_clr, fg_clr = get_days_style(days)
         capsule_w, capsule_h = 1.5, 0.28
         capsule_x = x_starts[4] + x_widths[4]/2 - capsule_w/2
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
-        
-        # 標籤顯示邏輯優化
         label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
         ax.text(x_starts[4] + x_widths[4]/2, y_center, label_text, ha='center', va='center', fontsize=14, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
-
         if "妖股" in status_text:    st_color = '#D69E2E'
         elif "強勢" in status_text:  st_color = '#E35D6A'
         elif "人去樓空" in status_text: st_color = '#9B59B6'
         elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
-
         status_group_center = x_starts[5] + x_widths[5] / 2
         emoji_ok = draw_emoji_image(ax, icon, status_group_center - 0.45, y_center, fontsize=15, transform=ax.transData, zorder=4, fallback_color=st_color)
         if emoji_ok:
@@ -689,14 +650,11 @@ def draw_releasing_image(data, signal_map=None):
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
             ax.text(status_group_center, y_center, f"{icon_fallback} {status_text}", ha='center', va='center', fontsize=16, fontproperties=FONT_BOLD, color=st_color, zorder=3)
-
         draw_col_text(ax, x_starts[6], x_widths[6], y_center, f"{pre_pct}%", col_aligns[6], 16, FONT_BOLD, get_pct_color(pre_pct))
         draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 16, FONT_BOLD, get_pct_color(in_pct))
         draw_col_text(ax, x_starts[8], x_widths[8], y_center, date, col_aligns[8], 16, FONT_PROP, TEXT_MAIN)
-
     draw_bottom_info(ax, fig_w, has_legend=True)
     return save_figure_to_buffer(fig)
-
 
 def draw_injail_image(data, signal_map=None):
     """3. 處置中"""
@@ -704,13 +662,10 @@ def draw_injail_image(data, signal_map=None):
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
-
     y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
-
     col_widths_ratio = [0.10, 0.18, 0.20, 0.20, 0.32]
     col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
     col_aligns = ['center', 'center', 'left', 'left', 'center']
-
     table_w = fig_w - 2 * MARGIN_X
     x_widths = [r * table_w for r in col_widths_ratio]
     x_starts = []
@@ -718,37 +673,30 @@ def draw_injail_image(data, signal_map=None):
     for w in x_widths:
         x_starts.append(acc)
         acc += w
-
     y_header_center = y_header_bottom + header_h / 2
     for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 16, FONT_BOLD, TEXT_HEADER)
-
     for i, row in enumerate(data):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
         bg_color = BG_ROW_ODD if i % 2 == 0 else BG_ROW_EVEN
         code, name, price, period = clean_display_text(row['code']), clean_display_text(row['name'], True), clean_display_text(str(row.get('price', '--'))), clean_display_text(row['period'])
         name_color = get_signal_color(code, signal_map)
-
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
-
         rank_num = i + 1
         if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
         elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
         elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
         else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
-
         draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
         draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
         draw_col_text(ax, x_starts[4], x_widths[4], y_center, period, col_aligns[4], 16, FONT_PROP, TEXT_MAIN)
-
     draw_bottom_info(ax, fig_w, has_legend=True)
     return save_figure_to_buffer(fig)
-
 
 # ============================
 # 🚀 主程式
@@ -758,9 +706,14 @@ def main():
     if not sh: return
     signal_map = load_signal_status_map(sh)
     price_map = load_current_price_map(sh)
+    
+    # 1. 抓取即將出關名單，此函式內已限制 display_days <= 5
     rel = check_releasing_stocks(sh, price_map=price_map)
     rel_codes = {x['code'] for x in rel}
+    
+    # 2. 抓取處置中名單，已自動排除即將出關的 code
     stats = check_status_split(sh, rel_codes, price_map=price_map)
+    
     if stats['entering']:
         print(f"📊 產生瀕臨處置圖片 ({len(stats['entering'])} 檔)...")
         try:
