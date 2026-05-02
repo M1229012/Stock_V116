@@ -690,7 +690,7 @@ def draw_entering_image(data, signal_map=None):
 #   → 第 N 欄的內容右緣 到 第 N+1 欄的內容左緣 = pad_right_N + pad_left_N+1 = 2 * SIDE_PAD
 # ===========================================================================
 def draw_releasing_image(data, signal_map=None):
-    """即將出關 - 內容寬度 + 統一 padding 排版。"""
+    """即將出關 - 視覺等距版：把狀態欄整體往右移，讓欄位間隔看起來更平均。"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
@@ -701,27 +701,28 @@ def draw_releasing_image(data, signal_map=None):
     table_left = MARGIN_X
     table_right = MARGIN_X + table_w
 
-    # ---------- 後 6 欄：內容典型寬度（inch）----------
-    # 這些值是依現有資料估算的，欄寬絕對放得下
-    SIDE_PAD = 0.18                    # 每欄左右 padding（統一）
-    PRICE_W      = 0.95                # 現價：'5380' / '388.5' 最大 4-5 字
-    DAYS_W       = 1.55                # 倒數交易日膠囊
-    STATUS_W     = 1.45                # 狀態：emoji + 4 中文字（妖股誕生）
-    PRE_PCT_W    = 0.95                # 處置前：'+62.3%' 最大 6 字
-    IN_PCT_W     = 0.95                # 處置中
-    DATE_W       = 0.75                # 出關日：'05/05'
+    # ---------- 後 6 欄：視覺等距調整 ----------
+    # 調整策略：
+    # 1. 狀態欄寬加大，讓 emoji + 文字有更完整空間。
+    # 2. 移除原本把「現價 / 狀態」整欄往左推的做法。
+    # 3. 狀態群組再微幅往右推，讓「倒數交易日 → 狀態 → 處置前」三段視覺間距更平均。
+    SIDE_PAD      = 0.16
+    PRICE_W       = 0.92
+    DAYS_W        = 1.52
+    STATUS_W      = 1.82
+    PRE_PCT_W     = 0.90
+    IN_PCT_W      = 0.90
+    DATE_W        = 0.74
+    STATUS_SHIFT  = 0.10   # 狀態整組往右微調
 
     right_col_labels  = ["現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
-    right_col_aligns  = ['right', 'center',     'center', 'right', 'right', 'center']
+    right_col_aligns  = ['right', 'center', 'center', 'right', 'right', 'center']
     right_col_content = [PRICE_W, DAYS_W, STATUS_W, PRE_PCT_W, IN_PCT_W, DATE_W]
 
-    # 後 6 欄總寬 = sum(content) + 6 * 2 * SIDE_PAD
     right_block_w = sum(right_col_content) + 6 * 2 * SIDE_PAD
-    # 前 3 欄佔剩下的部分
     left_block_w = table_w - right_block_w
 
     if left_block_w < 3.0:
-        # 萬一表格太窄塞不下，把 SIDE_PAD 縮小
         excess = 3.0 - left_block_w
         SIDE_PAD = max(0.08, SIDE_PAD - excess / 12.0)
         right_block_w = sum(right_col_content) + 6 * 2 * SIDE_PAD
@@ -751,7 +752,6 @@ def draw_releasing_image(data, signal_map=None):
         return right_x_starts[col_idx] + right_x_widths[col_idx] / 2
 
     def col_right_inner_x(col_idx):
-        """該欄『內容右緣』x 座標（離欄右邊界 SIDE_PAD）"""
         return right_x_starts[col_idx] + right_x_widths[col_idx] - SIDE_PAD
 
     # ---------- 表頭 ----------
@@ -763,17 +763,13 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 15, FONT_BOLD, TEXT_HEADER)
 
     for col_idx, (label, align) in enumerate(zip(right_col_labels, right_col_aligns)):
-        # 現價(col_idx=0) 跟 狀態(col_idx=2) 整欄往左挪 0.30 inch
-        if col_idx == 0 or col_idx == 2:
-            extra_offset = -0.30
-        else:
-            extra_offset = 0.0
+        x_shift = STATUS_SHIFT if col_idx == 2 else 0.0
         if align == 'right':
-            ax.text(col_right_inner_x(col_idx) + extra_offset, y_header_center, clean_display_text(label),
+            ax.text(col_right_inner_x(col_idx) + x_shift, y_header_center, clean_display_text(label),
                     ha='right', va='center',
                     fontsize=15, fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
         else:
-            ax.text(col_center_x(col_idx) + extra_offset, y_header_center, clean_display_text(label),
+            ax.text(col_center_x(col_idx) + x_shift, y_header_center, clean_display_text(label),
                     ha='center', va='center',
                     fontsize=15, fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
 
@@ -808,8 +804,8 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, left_x_starts[1], left_x_widths[1], y_center, code, 'center', 17, FONT_BOLD, name_color)
         draw_col_text(ax, left_x_starts[2], left_x_widths[2], y_center, name, 'left', 16, FONT_PROP, name_color)
 
-        # [0] 現價 - 靠右（整欄往左挪 0.30 inch，跟下一欄拉開距離）
-        ax.text(col_right_inner_x(0) - 0.30, y_center, price,
+        # [0] 現價 - 靠右
+        ax.text(col_right_inner_x(0), y_center, price,
                 ha='right', va='center',
                 fontsize=15, fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
 
@@ -828,19 +824,18 @@ def draw_releasing_image(data, signal_map=None):
                 ha='center', va='center',
                 fontsize=13, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
-        # [2] 狀態 - emoji + 文字 整組置中
+        # [2] 狀態 - emoji + 文字（整組往右微調）
         if "妖股" in status_text:    st_color = '#D69E2E'
         elif "強勢" in status_text:  st_color = '#E35D6A'
         elif "人去樓空" in status_text: st_color = '#9B59B6'
         elif "走勢疲軟" in status_text: st_color = '#2F9E72'
         else:                         st_color = TEXT_MUTED
 
-        emoji_w = 0.30
-        gap = 0.10
-        text_w_est = 1.00   # 4 中文字 fontsize 15 約 0.95~1.0
+        emoji_w = 0.28
+        gap = 0.08
+        text_w_est = 1.08
         total_w = emoji_w + gap + text_w_est
-        # 狀態欄整組往左挪 0.30 inch，跟前一欄拉開距離
-        group_left = col_center_x(2) - total_w / 2 - 0.30
+        group_left = col_center_x(2) - total_w / 2 + STATUS_SHIFT
         emoji_center_x = group_left + emoji_w / 2
         text_left_x = group_left + emoji_w + gap
 
@@ -852,7 +847,7 @@ def draw_releasing_image(data, signal_map=None):
                     fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
-            ax.text(col_center_x(2) - 0.30, y_center, f"{icon_fallback} {status_text}",
+            ax.text(col_center_x(2) + STATUS_SHIFT, y_center, f"{icon_fallback} {status_text}",
                     ha='center', va='center',
                     fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
