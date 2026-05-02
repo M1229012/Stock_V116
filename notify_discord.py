@@ -762,12 +762,17 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 15, FONT_BOLD, TEXT_HEADER)
 
     for col_idx, (label, align) in enumerate(zip(right_col_labels, right_col_aligns)):
+        # 現價(col_idx=0) 跟 狀態(col_idx=2) 整欄往左挪 0.15 inch
+        if col_idx == 0 or col_idx == 2:
+            extra_offset = -0.15
+        else:
+            extra_offset = 0.0
         if align == 'right':
-            ax.text(col_right_inner_x(col_idx), y_header_center, clean_display_text(label),
+            ax.text(col_right_inner_x(col_idx) + extra_offset, y_header_center, clean_display_text(label),
                     ha='right', va='center',
                     fontsize=15, fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
         else:
-            ax.text(col_center_x(col_idx), y_header_center, clean_display_text(label),
+            ax.text(col_center_x(col_idx) + extra_offset, y_header_center, clean_display_text(label),
                     ha='center', va='center',
                     fontsize=15, fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
 
@@ -802,8 +807,8 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, left_x_starts[1], left_x_widths[1], y_center, code, 'center', 17, FONT_BOLD, name_color)
         draw_col_text(ax, left_x_starts[2], left_x_widths[2], y_center, name, 'left', 16, FONT_PROP, name_color)
 
-        # [0] 現價 - 靠右（右緣對齊到 col_right_inner_x）
-        ax.text(col_right_inner_x(0), y_center, price,
+        # [0] 現價 - 靠右（整欄往左挪 0.15 inch，跟下一欄拉開距離）
+        ax.text(col_right_inner_x(0) - 0.15, y_center, price,
                 ha='right', va='center',
                 fontsize=15, fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
 
@@ -833,7 +838,8 @@ def draw_releasing_image(data, signal_map=None):
         gap = 0.10
         text_w_est = 1.00   # 4 中文字 fontsize 15 約 0.95~1.0
         total_w = emoji_w + gap + text_w_est
-        group_left = col_center_x(2) - total_w / 2
+        # 狀態欄整組往左挪 0.15 inch，跟前一欄拉開距離
+        group_left = col_center_x(2) - total_w / 2 - 0.15
         emoji_center_x = group_left + emoji_w / 2
         text_left_x = group_left + emoji_w + gap
 
@@ -845,7 +851,7 @@ def draw_releasing_image(data, signal_map=None):
                     fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
-            ax.text(col_center_x(2), y_center, f"{icon_fallback} {status_text}",
+            ax.text(col_center_x(2) - 0.15, y_center, f"{icon_fallback} {status_text}",
                     ha='center', va='center',
                     fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
