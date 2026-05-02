@@ -33,9 +33,10 @@ if not DISCORD_WEBHOOK_URL:
 else:
     print(f"✅ DISCORD_WEBHOOK_URL_TEST 已載入 (長度: {len(DISCORD_WEBHOOK_URL)} 字元)")
 
-JAIL_ENTER_THRESHOLD = 3   
-JAIL_EXIT_THRESHOLD = 5    
+JAIL_ENTER_THRESHOLD = 3
+JAIL_EXIT_THRESHOLD = 5
 TECH_TRACK_SHEET_NAME = "處置股技術追蹤"
+
 
 def format_display_price(value):
     try:
@@ -49,6 +50,7 @@ def format_display_price(value):
         s = str(value).strip()
         return s if s else "--"
 
+
 # ============================
 # 🎨 圖片風格與字型設定
 # ============================
@@ -56,6 +58,7 @@ CJK_FONT_PATH = None
 CJK_BOLD_FONT_PATH = None
 EMOJI_IMAGE_CACHE = {}
 FONT_DOWNLOAD_DIR = os.path.join(os.getenv("RUNNER_TEMP", "/tmp"), "stock_monitor_fonts")
+
 
 def _download_font_if_needed(url, filename):
     try:
@@ -69,6 +72,7 @@ def _download_font_if_needed(url, filename):
             if os.path.getsize(font_path) > 1024 * 1024: return font_path
     except Exception: pass
     return None
+
 
 def load_chinese_font():
     global CJK_FONT_PATH
@@ -93,6 +97,7 @@ def load_chinese_font():
         return font_manager.FontProperties(fname=fallback_path)
     return font_manager.FontProperties(family="DejaVu Sans")
 
+
 def load_chinese_bold_font():
     global CJK_BOLD_FONT_PATH
     search_paths = [
@@ -116,6 +121,7 @@ def load_chinese_bold_font():
     CJK_BOLD_FONT_PATH = CJK_FONT_PATH
     return load_chinese_font()
 
+
 try: cache_dir = matplotlib.get_cachedir()
 except: pass
 
@@ -135,10 +141,12 @@ try:
     plt.rcParams['axes.unicode_minus'] = False
 except Exception: pass
 
+
 # ============================
 # 🧹 文字清洗工具與 Emoji
 # ============================
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
+
 
 def to_fullwidth(s):
     res = []
@@ -149,6 +157,7 @@ def to_fullwidth(s):
         else: res.append(char)
     return "".join(res)
 
+
 def clean_cell(s) -> str:
     s = "" if s is None else str(s)
     s = s.replace("\xa0", " ")
@@ -156,26 +165,33 @@ def clean_cell(s) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
 def fix_common_cjk_mojibake(s) -> str:
     s = clean_cell(s)
     replacements = {"卅卅": "碁"}
     for bad, good in replacements.items(): s = s.replace(bad, good)
     return s
 
+
 def clean_display_text(s, fullwidth_ascii=False) -> str:
     s = fix_common_cjk_mojibake(s)
     if fullwidth_ascii: s = to_fullwidth(s)
     return s
 
+
 EMOJI_FALLBACK_SYMBOLS = {
-    "🚨": "!", "🔓": "OPEN", "⛓️": "LOCK", "👑": "★", 
+    "🚨": "!", "🔓": "OPEN", "⛓️": "LOCK", "👑": "★",
     "🔥": "▲", "💀": "▼", "📉": "↓", "🧊": "◆", "❓": "?",
 }
 
+
 def _twemoji_codepoints_keep_vs16(emoji_text):
     return "-".join(f"{ord(ch):x}" for ch in emoji_text)
+
+
 def _twemoji_codepoints(emoji_text):
     return "-".join(f"{ord(ch):x}" for ch in emoji_text if ord(ch) != 0xfe0f)
+
 
 def get_twemoji_image(emoji_text):
     if emoji_text in EMOJI_IMAGE_CACHE: return EMOJI_IMAGE_CACHE[emoji_text]
@@ -197,6 +213,7 @@ def get_twemoji_image(emoji_text):
     EMOJI_IMAGE_CACHE[emoji_text] = None
     return None
 
+
 def draw_emoji_image(ax, emoji_text, x, y, fontsize=18, transform=None, zorder=5, fallback_color="#4A5565"):
     transform = transform or ax.transData
     img = get_twemoji_image(emoji_text)
@@ -210,6 +227,7 @@ def draw_emoji_image(ax, emoji_text, x, y, fontsize=18, transform=None, zorder=5
     if fallback:
         ax.text(x, y, fallback, transform=transform, ha='center', va='center', fontsize=fontsize, fontweight='bold', fontproperties=FONT_BOLD, color=fallback_color, zorder=zorder)
     return False
+
 
 # ---- 共用顏色 ----
 BG_MAIN     = '#F5F7FA'
@@ -267,6 +285,7 @@ def connect_google_sheets():
         except Exception: return None
     return None
 
+
 def send_discord_image(image_buf, content_text=""):
     if not DISCORD_WEBHOOK_URL: return
     try:
@@ -274,6 +293,7 @@ def send_discord_image(image_buf, content_text=""):
         data = {"username": "台股處置監控機器人", "avatar_url": "https://cdn-icons-png.flaticon.com/512/2502/2502697.png", "content": content_text}
         requests.post(DISCORD_WEBHOOK_URL, data=data, files=files)
     except Exception: pass
+
 
 def parse_roc_date(date_str):
     s = str(date_str).strip()
@@ -286,9 +306,11 @@ def parse_roc_date(date_str):
         except: continue
     return None
 
+
 def code_sort_key(code):
     s = str(code).replace("'", "").strip()
     return int(s) if s.isdigit() else 999999
+
 
 def build_period_detail(period_str):
     period = str(period_str).strip()
@@ -303,6 +325,7 @@ def build_period_detail(period_str):
             }
     return {'period': period if period else '日期未知', 'sort_start': None, 'sort_end': None}
 
+
 def injail_sort_key(item):
     sort_end = item.get('sort_end')
     if sort_end is None:
@@ -311,6 +334,7 @@ def injail_sort_key(item):
     if sort_end is None:
         sort_end = datetime.max
     return (sort_end, code_sort_key(item.get('code', '')))
+
 
 def get_merged_jail_period_details(sh):
     jail_map = {}
@@ -340,8 +364,10 @@ def get_merged_jail_period_details(sh):
         for c, d in jail_map.items()
     }
 
+
 def get_merged_jail_periods(sh):
     return {c: d['period'] for c, d in get_merged_jail_period_details(sh).items()}
+
 
 def load_tech_tracking_latest_map(sh):
     tech_map = {}
@@ -356,17 +382,21 @@ def load_tech_tracking_latest_map(sh):
     except: pass
     return tech_map
 
+
 def load_signal_status_map(sh):
     return {c: v.get('status', '') for c, v in load_tech_tracking_latest_map(sh).items()}
 
+
 def load_current_price_map(sh):
     return {c: v.get('price', '--') for c, v in load_tech_tracking_latest_map(sh).items()}
+
 
 def get_signal_color(code, signal_map):
     status = signal_map.get(code, '') if signal_map else ''
     if status == "回測後轉強": return SIGNAL_COLOR_BREAKOUT
     if status == "目前回測月線": return SIGNAL_COLOR_RETEST
     return TEXT_MAIN
+
 
 def get_price_rank_info(code, period_str, market):
     try:
@@ -377,7 +407,7 @@ def get_price_rank_info(code, period_str, market):
         end_date = datetime.now() + timedelta(days=1)
         suffix = ".TWO" if any(x in str(market) for x in ["上櫃", "TPEx"]) else ".TW"
         df = yf.Ticker(f"{code}{suffix}").history(start=fetch_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True)
-        if not df.empty: df = df.ffill() 
+        if not df.empty: df = df.ffill()
         if df.empty or len(df) < 2: return "❓ 未知", "無股價", "+0.0", "+0.0"
         df.index = df.index.tz_localize(None)
         df_in_jail = df[df.index >= pd.Timestamp(start_date)]
@@ -403,6 +433,7 @@ def get_price_rank_info(code, period_str, market):
         return icon, clean_display_text(status_text), f"{'+' if pre_pct > 0 else ''}{pre_pct:.1f}", f"{'+' if in_pct > 0 else ''}{in_pct:.1f}"
     except: return "❓ 未知", "數據計算中", "+0.0", "+0.0"
 
+
 def check_status_split(sh, releasing_codes, price_map=None):
     try: records = sh.worksheet("近30日熱門統計").get_all_records()
     except: return {'entering': [], 'in_jail': []}
@@ -423,13 +454,14 @@ def check_status_split(sh, releasing_codes, price_map=None):
             })
             seen.add(code)
         elif days_str.isdigit():
-            d = int(days_str) + 1  
+            d = int(days_str) + 1
             if d <= JAIL_ENTER_THRESHOLD:
                 ent.append({"code": code, "name": name, "days": d})
                 seen.add(code)
     ent.sort(key=lambda x: (x['days'], code_sort_key(x['code'])))
     inj.sort(key=injail_sort_key)
     return {'entering': ent, 'in_jail': inj}
+
 
 def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
     try: records = sh.worksheet("即將出關監控").get_all_records()
@@ -473,15 +505,17 @@ def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
 # ============================
 # 🎨 【核心版面引擎】
 # ============================
-COMMON_FIG_WIDTH = 13.0  
-MARGIN_X = 0.4  
+COMMON_FIG_WIDTH = 13.0
+MARGIN_X = 0.4
 
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明\n資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
 
+
 def parse_pct(s):
     try: return float(str(s).replace('%', '').replace('+', ''))
     except: return 0
+
 
 def get_pct_color(pct_str):
     pct = parse_pct(pct_str)
@@ -489,26 +523,30 @@ def get_pct_color(pct_str):
     if pct < 0: return TEXT_NEG
     return TEXT_FLAT
 
+
 def get_days_style(days):
     if days <= 1:  return DAYS_URGENT_BG, DAYS_URGENT_FG
     if days <= 3:  return DAYS_WARN_BG, DAYS_WARN_FG
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
 
+
 def get_base_layout(n_rows, has_legend=False):
-    top_offset = 1.35     
-    header_h = 0.60       
-    row_h = 0.45          
-    bottom_offset = 0.90 if has_legend else 0.75  
+    top_offset = 1.35
+    header_h = 0.60
+    row_h = 0.45
+    bottom_offset = 0.90 if has_legend else 0.75
     fig_h = top_offset + header_h + max(1, n_rows) * row_h + bottom_offset
     return fig_h, row_h, header_h, top_offset
+
 
 def setup_canvas(fig_w, fig_h):
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=BG_MAIN)
     ax.set_xlim(0, fig_w)
     ax.set_ylim(0, fig_h)
     ax.set_axis_off()
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0) 
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
     return fig, ax
+
 
 def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, header_h, top_offset):
     bar_h = 0.15
@@ -521,7 +559,7 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
             fig.canvas.draw()
             bbox = ax.texts[-1].get_window_extent(renderer=fig.canvas.get_renderer())
             bbox_data = ax.transData.inverted().transform(bbox)
-            icon_x = bbox_data[0][0] - 0.40 
+            icon_x = bbox_data[0][0] - 0.40
             draw_emoji_image(ax, theme['title_icon'], icon_x, title_y, fontsize=22, transform=ax.transData)
         except:
             draw_emoji_image(ax, theme['title_icon'], fig_w/2 - 2.5, title_y, fontsize=22, transform=ax.transData)
@@ -539,6 +577,7 @@ def draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n_rows, row_h, h
     ax.plot([MARGIN_X, fig_w - MARGIN_X], [y_table_top, y_table_top], color=theme['accent'], linewidth=2.5)
     return y_header_bottom
 
+
 def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
     if align == 'center':
         ax.text(xst + w/2, y, text, ha='center', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
@@ -548,12 +587,13 @@ def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
     elif align == 'left':
         ax.text(xst + 0.15, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
+
 def draw_bottom_info(ax, fig_w, has_legend=False):
-    y_pos_wm = 0.20 
-    ax.text(fig_w - MARGIN_X - 0.05, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom', 
+    y_pos_wm = 0.20
+    ax.text(fig_w - MARGIN_X - 0.05, y_pos_wm, WATERMARK_TEXT, ha='right', va='bottom',
             fontsize=13, linespacing=1.3, fontproperties=FONT_PROP, color='#2C3440', alpha=WATERMARK_ALPHA, zorder=10)
     if has_legend:
-        y_pos_leg = 0.45 
+        y_pos_leg = 0.45
         x_inch = MARGIN_X + 0.05
         def add_text(inch_x, text, fs, fp, color):
             ax.text(inch_x, y_pos_leg, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=9)
@@ -571,6 +611,7 @@ def draw_bottom_info(ax, fig_w, has_legend=False):
         x_inch += 0.25
         add_text(x_inch, "回測20MA後再轉強", 14, FONT_PROP, '#5B6678')
 
+
 def save_figure_to_buffer(fig):
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor(), pad_inches=0)
@@ -578,10 +619,10 @@ def save_figure_to_buffer(fig):
     buf.seek(0)
     return buf
 
+
 # ============================
 # 📊 圖表繪製函式
 # ============================
-
 def draw_entering_image(data, signal_map=None):
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
@@ -619,44 +660,108 @@ def draw_entering_image(data, signal_map=None):
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
         bg_clr, fg_clr = get_days_style(days)
-        # 【修正】色塊顯著加長 (1.2 -> 1.8)，字體縮小 (16 -> 14) 解決擁擠
         capsule_w, capsule_h = 1.8, 0.28
         capsule_x = x_starts[3] + x_widths[3]/2 - capsule_w/2
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
-        
-        # 【修正】語意精準化：1天顯示明日，其餘顯示「最快 X 天」
         label_text = "明日處置" if days == 1 else f"最快 {days} 天"
         ax.text(x_starts[3] + x_widths[3]/2, y_center, clean_display_text(label_text), ha='center', va='center', fontsize=14, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
     draw_bottom_info(ax, fig_w, has_legend=False)
     return save_figure_to_buffer(fig)
 
+
+# ===========================================================================
+# 即將出關 - 完全重寫的對齊邏輯
+# ---------------------------------------------------------------------------
+# 核心設計：「重心等距網格」(Visual Anchor Grid)
+#
+# 問題根源：
+#   後 6 欄混合了「靠右」和「置中」對齊：
+#     - 現價 / 處置前 / 處置中：靠右（位數變動，靠右最整齊）
+#     - 倒數交易日 / 狀態 / 出關日：置中（膠囊、emoji+文字、固定日期）
+#   如果只是用「等寬欄位」，靠右的內容會貼欄位右緣、置中內容會在欄位中央
+#   → 兩種內容的「視覺重心」不在同一條等距線上 → 看起來歪歪的
+#
+# 解法：
+#   1. 把後 6 欄的總寬度切成 6 個等距「重心點」(anchor)
+#   2. 置中欄 → 內容中心放在 anchor
+#   3. 靠右欄 → 內容右緣放在「anchor + half_anchor_pitch * 0.5」（也就是兩 anchor 中點偏右）
+#      這樣靠右欄的「視覺重心」也會回落到 anchor 上
+#   4. Header 也用相同 anchor，標題跟資料對齊一致
+# ===========================================================================
 def draw_releasing_image(data, signal_map=None):
-    """2. 即將出關 - 重新配置欄寬，避免倒數交易日與狀態欄擠在一起"""
+    """即將出關 - 後 6 欄等距重心對齊。"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # 依實際內容重新分配欄寬：
-    # 狀態欄需要 emoji + 中文文字，因此加寬；倒數交易日也加寬，避免與狀態欄貼太近。
-    col_widths_ratio = [0.05, 0.08, 0.19, 0.09, 0.13, 0.18, 0.10, 0.10, 0.08]
-    col_labels = ["#", "代號", "股票名稱", "現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
-    col_aligns = ['center', 'center', 'left', 'right', 'center', 'left', 'right', 'right', 'right']
-
     table_w = fig_w - 2 * MARGIN_X
-    x_widths = [r * table_w for r in col_widths_ratio]
-    x_starts = []
+
+    # ---------- 第 1 步：切版面 ----------
+    # 前 3 欄（#、代號、股票名稱）佔表格左半邊 35%
+    # 後 6 欄（現價、倒數交易日、狀態、處置前、處置中、出關日）佔右半邊 65%
+    LEFT_BLOCK_RATIO = 0.35
+    RIGHT_BLOCK_RATIO = 0.65
+
+    left_block_w = table_w * LEFT_BLOCK_RATIO
+    right_block_w = table_w * RIGHT_BLOCK_RATIO
+    right_block_start_x = MARGIN_X + left_block_w
+    right_block_end_x = MARGIN_X + table_w
+
+    # ---------- 第 2 步：前 3 欄欄寬 ----------
+    left_col_ratios = [0.13, 0.22, 0.65]   # # / 代號 / 股票名稱
+    left_x_widths = [r * left_block_w for r in left_col_ratios]
+    left_x_starts = []
     acc = MARGIN_X
-    for w in x_widths:
-        x_starts.append(acc)
+    for w in left_x_widths:
+        left_x_starts.append(acc)
         acc += w
 
+    # ---------- 第 3 步：後 6 欄重心網格 ----------
+    # 在 right_block 中放 6 個等距重心點。
+    # anchor_pitch = 兩個重心點之間的距離
+    # 第 1 個重心點與右邊框各留 anchor_pitch/2 的邊距，視覺最舒服
+    anchor_pitch = right_block_w / 6.0
+    anchors_x = [right_block_start_x + anchor_pitch * (i + 0.5) for i in range(6)]
+
+    # 後 6 欄定義
+    right_col_labels = ["現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
+    right_col_aligns = ['right', 'center', 'center', 'right', 'center', 'center']
+    #                   現價    倒數      狀態     處置前   處置中   出關日
+
+    # 靠右欄需要的「半寬」: 把資料右緣放在 anchor + half_pitch_offset 位置
+    # 這個值越大，靠右的數字會越往該欄右側貼；
+    # 為了讓「視覺重心」依然落在 anchor 上，half_pitch_offset 需略小於 anchor_pitch/2
+    # 經驗值：anchor_pitch * 0.30
+    right_text_offset = anchor_pitch * 0.30
+
+    def get_anchor_x(col_idx, align):
+        """依該欄對齊方式回傳要放文字的 X 座標。"""
+        anchor = anchors_x[col_idx]
+        if align == 'right':
+            return anchor + right_text_offset
+        return anchor   # center
+
+    # ---------- 第 4 步：畫表頭 ----------
     y_header_center = y_header_bottom + header_h / 2
-    for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
+
+    # 前 3 欄表頭
+    front_labels = ["#", "代號", "股票名稱"]
+    front_aligns = ['center', 'center', 'left']
+    for xst, w, label, align in zip(left_x_starts, left_x_widths, front_labels, front_aligns):
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 15, FONT_BOLD, TEXT_HEADER)
 
+    # 後 6 欄表頭：用重心網格對齊
+    for col_idx, (label, align) in enumerate(zip(right_col_labels, right_col_aligns)):
+        text_x = get_anchor_x(col_idx, align)
+        ha_style = 'right' if align == 'right' else 'center'
+        ax.text(text_x, y_header_center, clean_display_text(label),
+                ha=ha_style, va='center',
+                fontsize=15, fontproperties=FONT_BOLD, color=TEXT_HEADER, zorder=3)
+
+    # ---------- 第 5 步：畫每一列 ----------
     for i, row in enumerate(data):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
@@ -672,28 +777,33 @@ def draw_releasing_image(data, signal_map=None):
         in_pct = row['in_pct']
         name_color = get_signal_color(code, signal_map)
 
+        # 列底色 + 排名底色 + 分隔線
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
-        ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
+        ax.add_patch(patches.Rectangle((left_x_starts[0], y_top - row_h), left_x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
+        # 排名顏色
         rank_num = i + 1
-        if rank_num == 1:
-            rank_color, rank_fw = GOLD, FONT_BOLD
-        elif rank_num == 2:
-            rank_color, rank_fw = SILVER, FONT_BOLD
-        elif rank_num == 3:
-            rank_color, rank_fw = BRONZE, FONT_BOLD
-        else:
-            rank_color, rank_fw = TEXT_MUTED, FONT_PROP
+        if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
+        elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
+        elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
+        else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
 
-        draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 15, rank_fw, rank_color)
-        draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 17, FONT_BOLD, name_color)
-        draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 16, FONT_PROP, name_color)
-        draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 15, FONT_BOLD, TEXT_PRICE)
+        # 前 3 欄：# / 代號 / 股票名稱
+        draw_col_text(ax, left_x_starts[0], left_x_widths[0], y_center, f"{rank_num:02d}", 'center', 15, rank_fw, rank_color)
+        draw_col_text(ax, left_x_starts[1], left_x_widths[1], y_center, code, 'center', 17, FONT_BOLD, name_color)
+        draw_col_text(ax, left_x_starts[2], left_x_widths[2], y_center, name, 'left', 16, FONT_PROP, name_color)
 
+        # 後 6 欄：用重心網格
+        # [0] 現價 - 靠右
+        ax.text(get_anchor_x(0, 'right'), y_center, price,
+                ha='right', va='center',
+                fontsize=15, fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
+
+        # [1] 倒數交易日 - 置中（膠囊）
         bg_clr, fg_clr = get_days_style(days)
         capsule_w, capsule_h = 1.55, 0.28
-        capsule_x = x_starts[4] + x_widths[4] / 2 - capsule_w / 2
+        capsule_x = anchors_x[1] - capsule_w / 2
         capsule_y = y_center - capsule_h / 2
         ax.add_patch(patches.FancyBboxPatch(
             (capsule_x, capsule_y), capsule_w, capsule_h,
@@ -701,41 +811,69 @@ def draw_releasing_image(data, signal_map=None):
             facecolor=bg_clr, linewidth=0, zorder=2
         ))
         label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
-        ax.text(x_starts[4] + x_widths[4] / 2, y_center, label_text,
-                ha='center', va='center', fontsize=13, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
+        ax.text(anchors_x[1], y_center, label_text,
+                ha='center', va='center',
+                fontsize=13, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
 
-        if "妖股" in status_text:
-            st_color = '#D69E2E'
-        elif "強勢" in status_text:
-            st_color = '#E35D6A'
-        elif "人去樓空" in status_text:
-            st_color = '#9B59B6'
-        elif "走勢疲軟" in status_text:
-            st_color = '#2F9E72'
-        else:
-            st_color = TEXT_MUTED
+        # [2] 狀態 - 置中（emoji + 文字當整組置中）
+        if "妖股" in status_text:    st_color = '#D69E2E'
+        elif "強勢" in status_text:  st_color = '#E35D6A'
+        elif "人去樓空" in status_text: st_color = '#9B59B6'
+        elif "走勢疲軟" in status_text: st_color = '#2F9E72'
+        else:                         st_color = TEXT_MUTED
 
-        # 狀態欄改為固定左起點，避免 emoji / 文字因置中而壓到前一欄
-        status_x = x_starts[5]
-        emoji_ok = draw_emoji_image(ax, icon, status_x + 0.22, y_center, fontsize=14,
+        # 估算 emoji + 文字整組的寬度，再放到 anchor 中心
+        # emoji 視覺寬度 ≈ 0.30 inch，文字（4 中文字 fontsize 15）≈ 0.95 inch，間隔 0.10
+        emoji_w = 0.30
+        text_w_est = 0.95
+        gap = 0.10
+        total_w = emoji_w + gap + text_w_est
+        group_left = anchors_x[2] - total_w / 2
+        emoji_center_x = group_left + emoji_w / 2
+        text_left_x = group_left + emoji_w + gap
+
+        emoji_ok = draw_emoji_image(ax, icon, emoji_center_x, y_center, fontsize=14,
                                     transform=ax.transData, zorder=4, fallback_color=st_color)
         if emoji_ok:
-            ax.text(status_x + 0.45, y_center, status_text,
-                    ha='left', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+            ax.text(text_left_x, y_center, status_text,
+                    ha='left', va='center',
+                    fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
         else:
+            # emoji 載入失敗時用 ASCII fallback 整組重新置中
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
-            ax.text(status_x + 0.16, y_center, f"{icon_fallback} {status_text}",
-                    ha='left', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+            ax.text(anchors_x[2], y_center, f"{icon_fallback} {status_text}",
+                    ha='center', va='center',
+                    fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
 
-        draw_col_text(ax, x_starts[6], x_widths[6], y_center, f"{pre_pct}%", col_aligns[6], 15, FONT_BOLD, get_pct_color(pre_pct))
-        draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 15, FONT_BOLD, get_pct_color(in_pct))
-        draw_col_text(ax, x_starts[8], x_widths[8], y_center, date, col_aligns[8], 15, FONT_PROP, TEXT_MAIN)
+        # [3] 處置前 - 靠右
+        ax.text(get_anchor_x(3, 'right'), y_center, f"{pre_pct}%",
+                ha='right', va='center',
+                fontsize=15, fontproperties=FONT_BOLD, color=get_pct_color(pre_pct), zorder=3)
+
+        # [4] 處置中 - 靠右
+        ax.text(get_anchor_x(4, 'right'), y_center, f"{in_pct}%",
+                ha='right', va='center',
+                fontsize=15, fontproperties=FONT_BOLD, color=get_pct_color(in_pct), zorder=3)
+
+        # [5] 出關日 - 置中
+        ax.text(anchors_x[5], y_center, date,
+                ha='center', va='center',
+                fontsize=15, fontproperties=FONT_PROP, color=TEXT_MAIN, zorder=3)
 
     draw_bottom_info(ax, fig_w, has_legend=True)
     return save_figure_to_buffer(fig)
 
 
+# ===========================================================================
+# 處置中 - 雙欄佈局
+# ---------------------------------------------------------------------------
+# 規則：
+#   ≤ 18 檔  → 單欄
+#   19-44 檔 → 雙欄
+#   > 44 檔  → 雙欄分頁，每頁 44 檔
+# ===========================================================================
 def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None, total_pages=None, rank_offset=0):
+    """處置中 - 單欄版（≤18 檔用）"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
@@ -776,14 +914,10 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
         rank_num = rank_offset + i + 1
-        if rank_num == 1:
-            rank_color, rank_fw = GOLD, FONT_BOLD
-        elif rank_num == 2:
-            rank_color, rank_fw = SILVER, FONT_BOLD
-        elif rank_num == 3:
-            rank_color, rank_fw = BRONZE, FONT_BOLD
-        else:
-            rank_color, rank_fw = TEXT_MUTED, FONT_PROP
+        if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
+        elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
+        elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
+        else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
 
         draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
@@ -796,6 +930,7 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
 
 
 def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=None, total_pages=None, rank_offset=0):
+    """處置中 - 雙欄版（19~44 檔用，每欄最多 22 列）"""
     rows_per_col = max(1, int(np.ceil(len(page_data) / 2)))
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(rows_per_col, has_legend=True)
@@ -844,14 +979,10 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
             ax.plot([x_base + 0.05, x_base + half_w - 0.05], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
 
             rank_num = rank_offset + half_idx * rows_per_col + i + 1
-            if rank_num == 1:
-                rank_color, rank_fw = GOLD, FONT_BOLD
-            elif rank_num == 2:
-                rank_color, rank_fw = SILVER, FONT_BOLD
-            elif rank_num == 3:
-                rank_color, rank_fw = BRONZE, FONT_BOLD
-            else:
-                rank_color, rank_fw = TEXT_MUTED, FONT_PROP
+            if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
+            elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
+            elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
+            else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
 
             draw_col_text(ax, starts[0], widths[0], y_center, f"{rank_num:02d}", 'center', 15, rank_fw, rank_color)
             draw_col_text(ax, starts[1], widths[1], y_center, code, col_aligns[1], 17, FONT_BOLD, name_color)
@@ -869,7 +1000,12 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
 
 
 def draw_injail_image(data, signal_map=None):
-    """3. 處置中 - 18 檔以下單欄，19 檔以上雙欄，超過 44 檔自動分頁"""
+    """處置中圖片產生器：依檔數自動決定單欄/雙欄/分頁。
+
+    回傳值：
+        - 單一 buffer (≤18 檔，或 19~44 檔單頁雙欄)
+        - list of buffer (>44 檔，多頁雙欄)
+    """
     n = len(data)
     if n <= 18:
         return _draw_injail_single_column(data, n, signal_map=signal_map)
@@ -892,47 +1028,6 @@ def draw_injail_image(data, signal_map=None):
         ))
     return buffers
 
-def draw_injail_image(data, signal_map=None):
-    """3. 處置中"""
-    n = len(data)
-    fig_w = COMMON_FIG_WIDTH
-    fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
-    fig, ax = setup_canvas(fig_w, fig_h)
-    y_header_bottom = draw_topbar_and_frame(ax, THEME_INJAIL, n, fig_w, fig_h, n, row_h, header_h, top_offset)
-    col_widths_ratio = [0.10, 0.18, 0.20, 0.20, 0.32]
-    col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
-    col_aligns = ['center', 'center', 'left', 'right', 'center']
-    table_w = fig_w - 2 * MARGIN_X
-    x_widths = [r * table_w for r in col_widths_ratio]
-    x_starts = []
-    acc = MARGIN_X
-    for w in x_widths:
-        x_starts.append(acc)
-        acc += w
-    y_header_center = y_header_bottom + header_h / 2
-    for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
-        draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 16, FONT_BOLD, TEXT_HEADER)
-    for i, row in enumerate(data):
-        y_top = y_header_bottom - i * row_h
-        y_center = y_top - row_h / 2
-        bg_color = BG_ROW_ODD if i % 2 == 0 else BG_ROW_EVEN
-        code, name, price, period = clean_display_text(row['code']), clean_display_text(row['name'], True), clean_display_text(str(row.get('price', '--'))), clean_display_text(row['period'])
-        name_color = get_signal_color(code, signal_map)
-        ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
-        ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
-        ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
-        rank_num = i + 1
-        if rank_num == 1:   rank_color, rank_fw = GOLD, FONT_BOLD
-        elif rank_num == 2: rank_color, rank_fw = SILVER, FONT_BOLD
-        elif rank_num == 3: rank_color, rank_fw = BRONZE, FONT_BOLD
-        else:               rank_color, rank_fw = TEXT_MUTED, FONT_PROP
-        draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
-        draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
-        draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
-        draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
-        draw_col_text(ax, x_starts[4], x_widths[4], y_center, period, col_aligns[4], 16, FONT_PROP, TEXT_MAIN)
-    draw_bottom_info(ax, fig_w, has_legend=True)
-    return save_figure_to_buffer(fig)
 
 # ============================
 # 🚀 主程式
@@ -984,6 +1079,7 @@ def main():
                 time.sleep(2)
         except Exception as e: print(f"❌ 處置中圖片產生失敗: {e}")
     print("✅ 完成")
+
 
 if __name__ == "__main__":
     main()
