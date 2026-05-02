@@ -387,7 +387,7 @@ THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴
 
 
 # ============================
-# 🛠️ 工具函式 (原本邏輯,加上重試)
+# 🛠️ 工具函式 (包含重試與修正)
 # ============================
 def connect_google_sheets():
     """連線 Google Sheets (含指數退避重試,解決 Google API 偶發 5xx/429 錯誤)"""
@@ -455,7 +455,7 @@ def parse_roc_date(date_str):
 
 
 def get_merged_jail_periods(sh):
-    """讀取並合併處置期間 (原本邏輯)"""
+    """讀取並合併處置期間 (已修正：包含 datetime 供跨年排序)"""
     jail_map = {} 
     tw_now = datetime.utcnow() + timedelta(hours=8)
     today = datetime(tw_now.year, tw_now.month, tw_now.day)
@@ -477,21 +477,21 @@ def get_merged_jail_periods(sh):
                         jail_map[code]['start'] = min(jail_map[code]['start'], s_date)
                         jail_map[code]['end'] = max(jail_map[code]['end'], e_date)
     except: return {}
-    return {c: f"{d['start'].strftime('%m/%d')}-{d['end'].strftime('%m/%d')}" for c, d in jail_map.items()}
+    # 【修正】不僅回傳字串，還帶有實際的結束日期(datetime)用來排序
+    return {
+        c: {
+            "display": f"{d['start'].strftime('%m/%d')}-{d['end'].strftime('%m/%d')}",
+            "end_dt": d['end']
+        }
+        for c, d in jail_map.items()
+    }
 
 
 # ============================
-# 🎯 訊號狀態 → 顏色對照（讀取「處置股技術追蹤」工作表）
+# 🎯 訊號狀態 → 顏色對照
 # ============================
 def load_signal_status_map(sh):
-    """從「處置股技術追蹤」工作表讀取每檔股票的訊號狀態。
-
-    若同一檔股票有多筆紀錄（不同計算日期或不同狀態：正在處置 / 即將出關），
-    取「計算日期最新」的那筆作為當前訊號狀態。
-
-    回傳：{代號: 訊號狀態} 的 dict
-    例如：{'2330': '回測後轉強', '6196': '目前回測月線', '2317': '未符合'}
-    """
+    """從「處置股技術追蹤」工作表讀取每檔股票的訊號狀態。"""
     signal_map = {}
     try:
         ws = sh.worksheet(TECH_TRACK_SHEET_NAME)
@@ -502,10 +502,17 @@ def load_signal_status_map(sh):
             if not code:
                 continue
             status = str(row.get('訊號狀態', '')).strip()
-            calc_date = str(row.get('計算日期', '')).strip()
-            # 同一檔有多筆 → 比較計算日期，保留最新那筆
-            if code not in latest_by_code or calc_date >= latest_by_code[code]['date']:
-                latest_by_code[code] = {'status': status, 'date': calc_date}
+            calc_date_str = str(row.get('計算日期', '')).strip()
+            
+            # 【修正】將字串轉為 pandas Timestamp，避免月份字首比對錯誤 (例 10/1 被認為小於 5/2)
+            try:
+                calc_date_dt = pd.to_datetime(calc_date_str)
+            except:
+                calc_date_dt = pd.Timestamp.min
+
+            if code not in latest_by_code or calc_date_dt >= latest_by_code[code]['date_dt']:
+                latest_by_code[code] = {'status': status, 'date_dt': calc_date_dt}
+                
         signal_map = {c: v['status'] for c, v in latest_by_code.items()}
         # 統計各訊號狀態檔數
         retest_n = sum(1 for s in signal_map.values() if s == "目前回測月線")
@@ -517,13 +524,6 @@ def load_signal_status_map(sh):
 
 
 def get_signal_color(code, signal_map, default_color=None):
-    """依訊號狀態決定股號股名顏色。
-
-    規則：
-        訊號狀態 = "回測後轉強"   → 深藍 (#1D4ED8)
-        訊號狀態 = "目前回測月線" → 深橘 (#C2410C)
-        其他狀態 / 沒有資料        → 預設色 (TEXT_MAIN)
-    """
     if default_color is None:
         default_color = TEXT_MAIN
     if not signal_map:
@@ -537,7 +537,7 @@ def get_signal_color(code, signal_map, default_color=None):
 
 
 # ============================
-# 📊 價格數據處理邏輯 (原本邏輯)
+# 📊 價格數據處理邏輯
 # ============================
 def get_price_rank_info(code, period_str, market):
     """計算處置前 vs 處置中的績效對比"""
@@ -595,7 +595,7 @@ def get_price_rank_info(code, period_str, market):
 
 
 # ============================
-# 🔍 監控邏輯 (原本邏輯)
+# 🔍 監控邏輯
 # ============================
 def check_status_split(sh, releasing_codes):
     try:
@@ -611,7 +611,14 @@ def check_status_split(sh, releasing_codes):
         if not days_str.isdigit(): continue
         d = int(days_str) + 1  
         if "處置中" in reason:
-            inj.append({"code": code, "name": name, "period": jail_map.get(code, "日期未知")})
+            # 【修正】抓取包含真實 datetime 的字典，防止年底跨年時排序出錯
+            p_info = jail_map.get(code, {"display": "日期未知", "end_dt": datetime.max})
+            inj.append({
+                "code": code, 
+                "name": name, 
+                "period": p_info["display"],
+                "end_dt": p_info["end_dt"]
+            })
             seen.add(code)
         elif d <= JAIL_ENTER_THRESHOLD:
             ent.append({"code": code, "name": name, "days": d})
@@ -619,10 +626,9 @@ def check_status_split(sh, releasing_codes):
             
     ent.sort(key=lambda x: (x['days'], x['code']))
     
+    # 【修正】用 datetime 物件代替字串排序
     def get_inj_sort_key(item):
-        p = item.get('period', '')
-        end_date = p.split('-')[1] if '-' in p else "9999/12/31"
-        return (end_date, item['code'])
+        return (item.get('end_dt', datetime.max), item['code'])
     
     inj.sort(key=get_inj_sort_key)
     
@@ -644,6 +650,15 @@ def check_releasing_stocks(sh):
         if d <= JAIL_EXIT_THRESHOLD:
             icon, status_text, pre_str, in_str = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             dt = parse_roc_date(row.get('出關日期', ''))
+            
+            # 【新增修正邏輯】自動推算真正的出關日 (遇到六日自動順延)
+            if dt:
+                dt = dt + timedelta(days=1)
+                if dt.weekday() == 5:    # 如果是禮拜六
+                    dt = dt + timedelta(days=2)
+                elif dt.weekday() == 6:  # 如果是禮拜天
+                    dt = dt + timedelta(days=1)
+
             res.append({
                 "code": code,
                 "name": clean_display_text(row.get('名稱', '')),
@@ -716,8 +731,6 @@ def draw_topbar(fig, theme, total, page_info=""):
                          color='#2C3440', zorder=2)
 
     if theme.get('title_icon'):
-        # 以「emoji + 標題文字」整組置中，而不是只讓文字置中。
-        # 這樣不同圖片寬度下，標題區視覺中心會一致，不會因 emoji 在左側而看起來偏掉。
         try:
             fig.canvas.draw()
             title_obj.set_position((TOPBAR_TITLE_X + (icon_width + icon_gap) / 2, title_y))
@@ -728,7 +741,6 @@ def draw_topbar(fig, theme, total, page_info=""):
             icon_x = max(0.05, bbox_fig.x0 - icon_gap - icon_width / 2)
             draw_emoji_on_fig(fig, theme['title_icon'], icon_x, title_y, fontsize=icon_fontsize, zorder=4)
         except Exception:
-            # 若 bbox 計算失敗，退回較保守的位置
             draw_emoji_on_fig(fig, theme['title_icon'], 0.24, title_y, fontsize=icon_fontsize, zorder=4)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -762,7 +774,6 @@ COMMON_FIG_WIDTH = 15
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
 WATERMARK_ALPHA = 0.80
 
-# 底部圖例（只顯示在「即將出關」與「處置中」兩張圖）
 LEGEND_BG = '#F8FAFC'
 LEGEND_BORDER = '#D6DEE8'
 LEGEND_TEXT = '#5B6678'
@@ -779,7 +790,6 @@ def draw_watermark(fig):
 
 
 def draw_signal_legend(fig):
-    """在圖片底部加入訊號顏色圖例（即將出關 / 處置中使用）。"""
     box_x = 0.028
     box_y = 0.012
     box_w = 0.62
@@ -808,7 +818,6 @@ def draw_signal_legend(fig):
              fontproperties=FONT_BOLD, color=LEGEND_TEXT, zorder=9)
     x += 0.082
 
-    # 橘色圖例
     swatch_w = 0.010
     swatch_h = 0.012
     fig.add_artist(patches.Rectangle(
@@ -826,7 +835,6 @@ def draw_signal_legend(fig):
              fontproperties=FONT_PROP, color='#A0AAB8', zorder=9)
     x += 0.014
 
-    # 藍色圖例
     fig.add_artist(patches.Rectangle(
         (x, text_y - swatch_h / 2), swatch_w, swatch_h,
         linewidth=0, facecolor=LEGEND_BOX_BLUE,
@@ -854,7 +862,6 @@ def calc_dynamic_fig_h(n, *, base_h, per_row_h, min_h, max_h):
 
 
 def calc_header_h(fig_h):
-    """依圖片實際高度反推表頭比例，讓三張圖的表頭視覺高度一致。"""
     axes_h_inch = fig_h * (UNIFIED_SUBPLOT_TOP - UNIFIED_SUBPLOT_BOTTOM)
     if axes_h_inch <= 0:
         return 0.05
@@ -862,12 +869,9 @@ def calc_header_h(fig_h):
 
 
 def get_injail_n_cols(n):
-    if n <= 12:
-        return 1
-    elif n <= 40:
-        return 2
-    else:
-        return 3
+    if n <= 12: return 1
+    elif n <= 40: return 2
+    else: return 3
 
 
 def save_figure_to_buffer(fig):
@@ -879,14 +883,6 @@ def save_figure_to_buffer(fig):
 
 
 def draw_entering_image(data, signal_map=None):
-    """瀕臨處置 - 單欄詳細圖
-
-    signal_map: {代號: 訊號狀態} dict（從處置股技術追蹤讀取），
-                用來決定股號股名的顏色：
-                - 回測後轉強 → 深藍
-                - 目前回測月線 → 深橘
-                - 其他/沒資料 → 預設深灰
-    """
     theme = THEME_ENTERING
     n = len(data)
     fig_h = calc_dynamic_fig_h(n, base_h=5.9, per_row_h=0.36, min_h=7.0, max_h=15.6)
@@ -938,7 +934,6 @@ def draw_entering_image(data, signal_map=None):
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
 
-        # 依訊號狀態決定股號股名的顏色
         name_color = get_signal_color(code, signal_map)
 
         ax.add_patch(patches.Rectangle(
@@ -997,10 +992,6 @@ def draw_entering_image(data, signal_map=None):
 
 
 def draw_releasing_image(data, signal_map=None):
-    """即將出關 - 單欄詳細含績效
-
-    signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
-    """
     theme = THEME_RELEASING
     n = len(data)
     fig_w = 16.2
@@ -1055,7 +1046,6 @@ def draw_releasing_image(data, signal_map=None):
         y_top = header_top - header_h - row_i * row_h
         bg_color = BG_ROW_ODD if row_i % 2 == 0 else BG_ROW_EVEN
 
-        # 依訊號狀態決定股號股名的顏色
         name_color = get_signal_color(code, signal_map)
 
         ax.add_patch(patches.Rectangle(
@@ -1152,10 +1142,6 @@ def draw_releasing_image(data, signal_map=None):
 
 
 def draw_injail_image(data, signal_map=None):
-    """處置中 - 動態欄數版
-
-    signal_map: {代號: 訊號狀態} dict，用來決定股號股名的顏色（同 draw_entering_image）。
-    """
     theme = THEME_INJAIL
     n = len(data)
     n_cols = get_injail_n_cols(n)
@@ -1223,7 +1209,6 @@ def draw_injail_image(data, signal_map=None):
         if col_idx >= n_cols:
             break
 
-        # 依訊號狀態決定股號股名的顏色
         name_color = get_signal_color(code, signal_map)
 
         col_x_start = col_xs[col_idx]
