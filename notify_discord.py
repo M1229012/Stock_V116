@@ -543,7 +543,8 @@ def draw_col_text(ax, xst, w, y, text, align, fs, fp, color):
     if align == 'center':
         ax.text(xst + w/2, y, text, ha='center', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'right':
-        ax.text(xst + w - 0.20, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
+        # 加大右間距，確保靠右對齊時不會貼邊且整齊
+        ax.text(xst + w - 0.35, y, text, ha='right', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
     elif align == 'left':
         ax.text(xst + 0.15, y, text, ha='left', va='center', fontsize=fs, fontproperties=fp, color=color, zorder=3)
 
@@ -618,28 +619,30 @@ def draw_entering_image(data, signal_map=None):
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
         bg_clr, fg_clr = get_days_style(days)
-        capsule_w, capsule_h = 1.2, 0.28
+        # 【修正】色塊顯著加長 (1.2 -> 1.8)，字體縮小 (16 -> 14) 解決擁擠
+        capsule_w, capsule_h = 1.8, 0.28
         capsule_x = x_starts[3] + x_widths[3]/2 - capsule_w/2
         capsule_y = y_center - capsule_h/2
         ax.add_patch(patches.FancyBboxPatch((capsule_x, capsule_y), capsule_w, capsule_h, boxstyle="round,pad=0,rounding_size=0.14", facecolor=bg_clr, linewidth=0, zorder=2))
-        ax.text(x_starts[3] + x_widths[3]/2, y_center, clean_display_text("明日處置" if days == 1 else f"剩 {days} 天"), ha='center', va='center', fontsize=16, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
+        
+        # 【修正】語意精準化：1天顯示明日，其餘顯示「最快 X 天」
+        label_text = "明日處置" if days == 1 else f"最快 {days} 天"
+        ax.text(x_starts[3] + x_widths[3]/2, y_center, clean_display_text(label_text), ha='center', va='center', fontsize=14, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
     draw_bottom_info(ax, fig_w, has_legend=False)
     return save_figure_to_buffer(fig)
 
 def draw_releasing_image(data, signal_map=None):
-    """2. 即將出關 - 重新優化欄位間距，確保後方欄位間隔均勻"""
+    """2. 即將出關 - 達成欄位平均分配且數字整齊靠右"""
     n = len(data)
     fig_w = COMMON_FIG_WIDTH
     fig_h, row_h, header_h, top_offset = get_base_layout(n, has_legend=True)
     fig, ax = setup_canvas(fig_w, fig_h)
     y_header_bottom = draw_topbar_and_frame(ax, THEME_RELEASING, n, fig_w, fig_h, n, row_h, header_h, top_offset)
 
-    # 【重新配比】縮減名稱佔比，將剩餘空間均分給後方 6 個欄位 (現價～出關日)
-    # 比例總和須為 1.0：[#, 代號, 名稱] = 0.05+0.08+0.15 = 0.28
-    # 剩餘 0.72 分給 6 欄 = 每欄約 0.12
-    col_widths_ratio = [0.05, 0.08, 0.15, 0.11, 0.13, 0.15, 0.11, 0.11, 0.11]
+    # 【核心修正】強迫後方 6 個欄位等寬（各給 0.11），實現真正的平均間隔感
+    col_widths_ratio = [0.05, 0.08, 0.21, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11]
     col_labels = ["#", "代號", "股票名稱", "現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
-    # 對齊優化：績效與現價靠右、狀態居中
+    # 【核心修正】現價、績效欄位全部採 right 搭配Padding；狀態置中
     col_aligns = ['center', 'center', 'left', 'right', 'center', 'center', 'right', 'right', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
@@ -652,6 +655,7 @@ def draw_releasing_image(data, signal_map=None):
 
     y_header_center = y_header_bottom + header_h / 2
     for xst, w, label, align in zip(x_starts, x_widths, col_labels, col_aligns):
+        # 表頭也改用相同的 align 邏輯，確保視覺對齊
         draw_col_text(ax, xst, w, y_header_center, clean_display_text(label), align, 15, FONT_BOLD, TEXT_HEADER)
 
     for i, row in enumerate(data):
@@ -672,7 +676,10 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 15, rank_fw, rank_color)
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 17, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 16, FONT_PROP, name_color)
+        
+        # 數值欄位：均為 right 對齊
         draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 15, FONT_BOLD, TEXT_PRICE)
+        
         bg_clr, fg_clr = get_days_style(days)
         capsule_w, capsule_h = 1.45, 0.28
         capsule_x = x_starts[4] + x_widths[4]/2 - capsule_w/2
@@ -692,6 +699,8 @@ def draw_releasing_image(data, signal_map=None):
         else:
             icon_fallback = EMOJI_FALLBACK_SYMBOLS.get(icon, icon)
             ax.text(status_group_center, y_center, f"{icon_fallback} {status_text}", ha='center', va='center', fontsize=15, fontproperties=FONT_BOLD, color=st_color, zorder=3)
+        
+        # 數值欄位：均為 right 對齊
         draw_col_text(ax, x_starts[6], x_widths[6], y_center, f"{pre_pct}%", col_aligns[6], 15, FONT_BOLD, get_pct_color(pre_pct))
         draw_col_text(ax, x_starts[7], x_widths[7], y_center, f"{in_pct}%", col_aligns[7], 15, FONT_BOLD, get_pct_color(in_pct))
         draw_col_text(ax, x_starts[8], x_widths[8], y_center, date, col_aligns[8], 15, FONT_PROP, TEXT_MAIN)
