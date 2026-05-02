@@ -286,6 +286,53 @@ def parse_roc_date(date_str):
         except: continue
     return None
 
+
+def parse_period_date_token(token):
+    """解析處置期間中的單一日期，支援 115/04/24、2026-04-24、04/24。"""
+    s = clean_cell(token)
+    dt = parse_roc_date(s)
+    if dt:
+        return dt
+    match = re.match(r'^(\d{1,2})[/-](\d{1,2})$', s)
+    if match:
+        m, d = map(int, match.groups())
+        tw_now = datetime.utcnow() + timedelta(hours=8)
+        try:
+            return datetime(tw_now.year, m, d)
+        except Exception:
+            return None
+    return None
+
+
+def parse_period_dates(period_str):
+    """解析處置期間，回傳 (start_dt, end_dt)。"""
+    s = clean_cell(period_str).replace('～', '~').replace('–', '-').replace('—', '-')
+    tokens = re.findall(r'\d{2,4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}', s)
+    if len(tokens) < 2:
+        return None, None
+    start_dt = parse_period_date_token(tokens[0])
+    end_dt = parse_period_date_token(tokens[1])
+    if start_dt and end_dt and end_dt < start_dt:
+        try:
+            end_dt = end_dt.replace(year=end_dt.year + 1)
+        except Exception:
+            pass
+    return start_dt, end_dt
+
+
+def format_period_mmdd(period_str):
+    """處置期間統一顯示成 MM/DD-MM/DD。"""
+    start_dt, end_dt = parse_period_dates(period_str)
+    if start_dt and end_dt:
+        return f"{start_dt.strftime('%m/%d')}-{end_dt.strftime('%m/%d')}"
+    return clean_display_text(period_str) if clean_cell(period_str) else "日期未知"
+
+
+def get_period_end_sort_value(period_str):
+    """取得處置結束日排序值，無法解析者排最後。"""
+    _, end_dt = parse_period_dates(period_str)
+    return end_dt if end_dt else datetime.max
+
 def get_merged_jail_periods(sh):
     jail_map = {} 
     tw_now = datetime.utcnow() + timedelta(hours=8)
@@ -388,8 +435,8 @@ def check_status_split(sh, releasing_codes, price_map=None):
         
         # 處理處置中股票
         if "處置中" in reason:
-            # 這裡能進來，代表它不在 releasing_codes 裡，也就是它差 6 天以上
-            inj.append({"code": code, "name": name, "price": format_display_price((price_map or {}).get(code, "--")), "period": jail_map.get(code, "日期未知")})
+            period = format_period_mmdd(jail_map.get(code, "日期未知"))
+            inj.append({"code": code, "name": name, "price": format_display_price((price_map or {}).get(code, "--")), "period": period})
             seen.add(code)
         # 處理瀕臨處置股票
         elif days_str.isdigit():
@@ -397,9 +444,34 @@ def check_status_split(sh, releasing_codes, price_map=None):
             if d <= JAIL_ENTER_THRESHOLD:
                 ent.append({"code": code, "name": name, "days": d})
                 seen.add(code)
+
+    # 補回「即將出關監控」中剩餘天數 > 5 的股票，避免它們被即將出關圖表過濾後消失。
+    try:
+        release_records = sh.worksheet("即將出關監控").get_all_records()
+        tw_now = datetime.utcnow() + timedelta(hours=8)
+        for row in release_records:
+            code = str(row.get('代號', '')).replace("'", "").strip()
+            if not code or code in releasing_codes or code in seen:
+                continue
+            days_str = str(row.get('剩餘天數', '99'))
+            if not days_str.isdigit():
+                continue
+            d = int(days_str) + 1
+            display_days = d + 1 if 4 <= tw_now.weekday() <= 6 else d
+            if display_days > JAIL_EXIT_THRESHOLD:
+                period = format_period_mmdd(row.get('處置期間', jail_map.get(code, "日期未知")))
+                inj.append({
+                    "code": code,
+                    "name": clean_display_text(row.get('名稱', '')),
+                    "price": format_display_price((price_map or {}).get(code, "--")),
+                    "period": period
+                })
+                seen.add(code)
+    except Exception:
+        pass
             
     ent.sort(key=lambda x: (x['days'], x['code']))
-    inj.sort(key=lambda x: (x.get('period', '').split('-')[1] if '-' in x.get('period', '') else "9999/12/31", x['code']))
+    inj.sort(key=lambda x: (get_period_end_sort_value(x.get('period', '')), x['code']))
     return {'entering': ent, 'in_jail': inj}
 
 def check_releasing_stocks(sh, price_map=None):
@@ -434,49 +506,6 @@ def check_releasing_stocks(sh, price_map=None):
             seen.add(code)
             
     res.sort(key=lambda x: (x['days'], x['code']))
-    return res
-
-
-def check_release_sheet_gt5_as_injail(sh, price_map=None, releasing_codes=None):
-    """將「即將出關監控」中剩餘天數 > 5 的處置中股票補回處置中圖表。
-
-    原本 check_releasing_stocks() 會把 display_days > 5 的股票排除在「即將出關」之外，
-    但這些股票本質上仍在處置中，因此這裡將它們轉成處置中圖表資料。
-    """
-    releasing_codes = releasing_codes or set()
-    try: records = sh.worksheet("即將出關監控").get_all_records()
-    except: return []
-
-    res, seen = [], set()
-    for row in records:
-        code = str(row.get('代號', '')).strip()
-        if not code or code in releasing_codes or code in seen:
-            continue
-
-        days_str = str(row.get('剩餘天數', '99'))
-        if not days_str.isdigit():
-            continue
-
-        d = int(days_str) + 1
-        tw_now = datetime.utcnow() + timedelta(hours=8)
-        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6: # 五六日補償，需與即將出關判斷一致
-            display_days = d + 1
-        else:
-            display_days = d
-
-        if display_days > JAIL_EXIT_THRESHOLD:
-            period = clean_display_text(row.get('處置期間', ''))
-            if not period:
-                period = "日期未知"
-            res.append({
-                "code": code,
-                "name": clean_display_text(row.get('名稱', '')),
-                "price": format_display_price((price_map or {}).get(code, "--")),
-                "period": period,
-            })
-            seen.add(code)
-
-    res.sort(key=lambda x: (x.get('period', '').split('-')[1] if '-' in x.get('period', '') else "9999/12/31", x['code']))
     return res
 
 
@@ -728,7 +757,7 @@ def draw_injail_image(data, signal_map=None):
         y_top = y_header_bottom - i * row_h
         y_center = y_top - row_h / 2
         bg_color = BG_ROW_ODD if i % 2 == 0 else BG_ROW_EVEN
-        code, name, price, period = clean_display_text(row['code']), clean_display_text(row['name'], True), clean_display_text(str(row.get('price', '--'))), clean_display_text(row['period'])
+        code, name, price, period = clean_display_text(row['code']), clean_display_text(row['name'], True), clean_display_text(str(row.get('price', '--'))), format_period_mmdd(row.get('period', '日期未知'))
         name_color = get_signal_color(code, signal_map)
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
@@ -759,16 +788,8 @@ def main():
     rel = check_releasing_stocks(sh, price_map=price_map)
     rel_codes = {x['code'] for x in rel}
     
-    # 2. 抓取處置中名單，並把「即將出關監控」中 >5 天的股票補回處置中圖表
+    # 2. 抓取處置中名單 (會排除 rel_codes，即自動包含 display_days > 5 的股票)
     stats = check_status_split(sh, rel_codes, price_map=price_map)
-    extra_injail = check_release_sheet_gt5_as_injail(sh, price_map=price_map, releasing_codes=rel_codes)
-    if extra_injail:
-        existed_codes = {x.get('code') for x in stats['in_jail']}
-        for item in extra_injail:
-            if item.get('code') not in existed_codes:
-                stats['in_jail'].append(item)
-                existed_codes.add(item.get('code'))
-        stats['in_jail'].sort(key=lambda x: (x.get('period', '').split('-')[1] if '-' in x.get('period', '') else "9999/12/31", x['code']))
     
     if stats['entering']:
         print(f"📊 產生瀕臨處置圖片 ({len(stats['entering'])} 檔)...")
