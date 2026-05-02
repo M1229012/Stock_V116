@@ -457,7 +457,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     # 重新分配右半部欄位寬度，讓「類別 / 現價 / 週漲跌 / 總增減%」之間的間距更平均。
     col_rel = [0.060, 0.080, 0.230, 0.110, 0.135, 0.155, 0.230]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
-    aligns = ["center", "center", "left", "left", "right", "left", "right"]
+    aligns = ["center", "center", "left", "left", "left", "left", "left"]
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
