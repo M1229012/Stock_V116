@@ -1010,7 +1010,7 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA20_GAP_PCT'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
     # 回測 MA20 判斷改用「盤中最低價 Low」，避免收盤已拉開時漏判
-    df['LOW_MA20_GAP_PCT'] = ((df['Low'] - df['MA20']) / df['MA20']) * 100
+    df['LOW_MA20_GAP_PCT'] = ((df['Low'] - df['MA20']) / df['Low']) * 100
 
     pre_10_open = float(pre_df.tail(10)['Open'].iloc[0])
     pre_last_close = float(pre_df['Close'].iloc[-1])
@@ -1020,7 +1020,7 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     current_low = float(df['Low'].iloc[-1])
     ma20 = float(df['MA20'].iloc[-1]) if not pd.isna(df['MA20'].iloc[-1]) else 0.0
     ma20_gap_pct = ((current_price - ma20) / ma20) * 100 if ma20 > 0 else 0.0
-    current_low_ma20_gap_pct = ((current_low - ma20) / ma20) * 100 if ma20 > 0 else 0.0
+    current_low_ma20_gap_pct = ((current_low - ma20) / current_low) * 100 if current_low > 0 else 0.0
 
     pre_rise_ok = pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
     current_retest_ok = pre_rise_ok and (abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
