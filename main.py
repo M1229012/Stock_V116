@@ -1025,7 +1025,8 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     pre_rise_ok = pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
     current_retest_ok = pre_rise_ok and (abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
 
-    jail_df = df[df.index.date >= sd].copy()
+    # 回測後轉強的『曾回測 MA20』嚴格限定在處置期間內（處置開始日～處置結束日）
+    jail_df = df[(df.index.date >= sd) & (df.index.date <= ed)].copy()
     jail_df = jail_df.dropna(subset=['MA20', 'MA20_GAP_PCT', 'LOW_MA20_GAP_PCT'])
     retest_df = jail_df[jail_df['LOW_MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD]
     has_retested_ma20 = not retest_df.empty
@@ -1054,7 +1055,7 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
         reason_text = (
             f"✅ 已達成「回測後轉強」｜"
             f"處置前10日漲幅 {pre_10d_pct:+.2f}% (≥{TECH_PRE_10D_RISE_THRESHOLD:.0f}%)；"
-            f"於 {retest_date_str} 盤中低點回測 MA20；"
+            f"於 {retest_date_str} 處置期間內盤中低點回測 MA20；"
             f"目前收盤距離 MA20 {ma20_gap_pct:+.2f}% (≥+{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
         )
     elif current_retest_ok:
@@ -1087,12 +1088,12 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
             # ---- 訊號 B：回測後轉強 ----
             if not has_retested_ma20:
                 parts.append(
-                    f"✗「回測後轉強」不成立 (處置期間尚未出現盤中低點回測 MA20，"
+                    f"✗「回測後轉強」不成立 (處置期間內尚未出現盤中低點回測 MA20，"
                     f"今日低點距離 {current_low_ma20_gap_pct:+.2f}%)"
                 )
             elif ma20_gap_pct < TECH_BREAKOUT_MA20_GAP_THRESHOLD:
                 parts.append(
-                    f"✗「回測後轉強」不成立 ({retest_date_str} 已由盤中低點回測 MA20，"
+                    f"✗「回測後轉強」不成立 ({retest_date_str} 已於處置期間內由盤中低點回測 MA20，"
                     f"但目前收盤距離 MA20 僅 {ma20_gap_pct:+.2f}%，未達 +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
                 )
             else:
