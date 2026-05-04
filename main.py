@@ -869,36 +869,65 @@ def _safe_round(v, ndigits=2):
 
 
 def _fetch_technical_history(code, market, start_date, end_date):
-    """抓取技術追蹤用股價資料；若市場別判斷錯誤，會自動嘗試另一個後綴。"""
-    suffix = get_ticker_suffix(market)
-    ticker = f"{code}{suffix}"
-    try:
-        df = yf.Ticker(ticker).history(
-            start=start_date.strftime("%Y-%m-%d"),
-            end=end_date.strftime("%Y-%m-%d"),
-            auto_adjust=True
-        )
-        if not df.empty:
-            df.index = df.index.tz_localize(None)
-            return df, ticker
-    except Exception as e:
-        print(f"⚠️ 技術追蹤股價抓取失敗 ({ticker}): {e}")
+    """抓取技術追蹤用股價資料；改用 FinMind 官方日線資料計算 MA20。"""
+    code = str(code).replace("'", "").strip()
+    source_label = f"FinMind:{code}"
 
-    alt_suffix = '.TWO' if suffix == '.TW' else '.TW'
-    alt_ticker = f"{code}{alt_suffix}"
     try:
-        df = yf.Ticker(alt_ticker).history(
-            start=start_date.strftime("%Y-%m-%d"),
-            end=end_date.strftime("%Y-%m-%d"),
-            auto_adjust=True
+        df = finmind_get(
+            "TaiwanStockPrice",
+            data_id=code,
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d")
         )
-        if not df.empty:
-            df.index = df.index.tz_localize(None)
-            return df, alt_ticker
-    except Exception as e:
-        print(f"⚠️ 技術追蹤備援股價抓取失敗 ({alt_ticker}): {e}")
 
-    return pd.DataFrame(), ticker
+        if df.empty:
+            print(f"⚠️ 技術追蹤 FinMind 無股價資料 ({source_label})")
+            return pd.DataFrame(), source_label
+
+        required_cols = ['date', 'open', 'max', 'min', 'close']
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            print(f"⚠️ 技術追蹤 FinMind 欄位不足 ({source_label})：缺少 {missing_cols}")
+            return pd.DataFrame(), source_label
+
+        df = df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
+        df = df.sort_values('date').drop_duplicates(subset=['date'], keep='last')
+        df = df.set_index('date')
+
+        # 對齊原本 calc_jail_technical_track_row 需要的欄位名稱。
+        df = df.rename(columns={
+            'open': 'Open',
+            'max': 'High',
+            'min': 'Low',
+            'close': 'Close',
+            'Trading_Volume': 'Volume',
+            'Trading_money': 'Trading_money',
+        })
+
+        for col in ['Open', 'High', 'Low', 'Close']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        if 'Volume' in df.columns:
+            df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce')
+        else:
+            df['Volume'] = 0.0
+
+        df = df.dropna(subset=['Open', 'Close', 'Low']).copy()
+        if df.empty:
+            print(f"⚠️ 技術追蹤 FinMind 股價資料清理後為空 ({source_label})")
+            return pd.DataFrame(), source_label
+
+        if getattr(df.index, 'tz', None) is not None:
+            df.index = df.index.tz_localize(None)
+
+        return df, source_label
+
+    except Exception as e:
+        print(f"⚠️ 技術追蹤 FinMind 股價抓取失敗 ({source_label}): {e}")
+        return pd.DataFrame(), source_label
 
 
 # ===========================================================================
