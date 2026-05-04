@@ -1282,6 +1282,63 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
     ws = get_or_create_ws(sh, TECH_TRACK_SHEET_NAME, headers=TECH_TRACK_HEADERS, cols=TECH_TRACK_COL_COUNT)
     last_col = TECH_TRACK_LAST_COL
 
+    def _is_retryable_sheet_error(e):
+        msg = str(e)
+        return any(code in msg for code in ['429', '500', '502', '503', '504'])
+
+    def _run_sheet_write(action_desc, fn, max_retries=5):
+        """Google Sheets 寫入用重試，避免 429 / 暫時性 5xx 造成流程中斷。"""
+        for attempt in range(max_retries):
+            try:
+                return fn()
+            except gspread.exceptions.APIError as e:
+                if _is_retryable_sheet_error(e) and attempt < max_retries - 1:
+                    wait = (2 ** attempt) + random.uniform(0.5, 1.5)
+                    print(f"⚠️ {action_desc} 遇到 Google API 暫時性限制，{wait:.1f} 秒後重試 ({attempt + 1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                raise
+
+    def _sheet_title_for_range(title):
+        return str(title).replace("'", "''")
+
+    def _batch_update_row_values(value_ranges, batch_size=80):
+        """將多列更新合併成 values_batch_update，避免逐列 ws.update 造成 429。"""
+        if not value_ranges:
+            return
+
+        sheet_title = _sheet_title_for_range(ws.title)
+        for start_idx in range(0, len(value_ranges), batch_size):
+            chunk = value_ranges[start_idx:start_idx + batch_size]
+            data = [
+                {
+                    "range": f"'{sheet_title}'!{item['range']}",
+                    "values": item['values'],
+                }
+                for item in chunk
+            ]
+            body = {
+                "valueInputOption": "USER_ENTERED",
+                "data": data,
+            }
+
+            def _do_batch_update():
+                # 優先使用 Spreadsheet.values_batch_update，確保多個不連續 range 合併成一次 API 寫入。
+                if hasattr(sh, 'values_batch_update'):
+                    return sh.values_batch_update(body)
+                # 備援：較新版 gspread Worksheet.batch_update。
+                worksheet_data = [{"range": item['range'], "values": item['values']} for item in chunk]
+                return ws.batch_update(worksheet_data, value_input_option='USER_ENTERED')
+
+            _run_sheet_write(
+                f"{TECH_TRACK_SHEET_NAME} 批次更新第 {start_idx + 1}-{start_idx + len(chunk)} 筆",
+                _do_batch_update
+            )
+
+            # 批次之間稍微停一下，降低連續寫入被限流的機率。
+            if start_idx + batch_size < len(value_ranges):
+                time.sleep(0.8)
+
     if not rows:
         print(f"⚠️ {TECH_TRACK_SHEET_NAME} 無符合正在處置或即將出關的資料需要寫入。")
         # 即使沒有資料列，仍套用欄位格式（避免欄位格式遺失）
@@ -1298,14 +1355,20 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
 
     if not all_values:
         # 工作表是空的
-        ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        _run_sheet_write(
+            f"{TECH_TRACK_SHEET_NAME} 建立表頭",
+            lambda: ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        )
         all_values = [TECH_TRACK_HEADERS]
         existing_key_to_row = {}
     elif header_mismatch:
         # Header 不一致 → 整個 clear 重建
         print(f"⚠️ {TECH_TRACK_SHEET_NAME} 偵測到 header 變動，執行 clear 重建...")
-        ws.clear()
-        ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        _run_sheet_write(f"{TECH_TRACK_SHEET_NAME} 清空工作表", lambda: ws.clear())
+        _run_sheet_write(
+            f"{TECH_TRACK_SHEET_NAME} 重建表頭",
+            lambda: ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        )
         all_values = [TECH_TRACK_HEADERS]
         existing_key_to_row = {}
     else:
@@ -1324,6 +1387,7 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
 
     rows_to_append = []
     row_style_targets = []
+    update_value_ranges = []
     update_count = 0
 
     for row in rows:
@@ -1340,16 +1404,26 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
 
         if key in existing_key_to_row:
             r = existing_key_to_row[key]
-            ws.update(values=[row], range_name=f"A{r}:{last_col}{r}", value_input_option='USER_ENTERED')
+            update_value_ranges.append({
+                "range": f"A{r}:{last_col}{r}",
+                "values": [row],
+            })
             row_style_targets.append((r, is_match, is_breakout))
             update_count += 1
         else:
             rows_to_append.append(row)
             existing_key_to_row[key] = -1
 
+    # 原本是逐列 ws.update，容易觸發 Google Sheets 429；改成批次更新。
+    if update_value_ranges:
+        _batch_update_row_values(update_value_ranges)
+
     if rows_to_append:
         append_start_row = len(all_values) + 1
-        ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        _run_sheet_write(
+            f"{TECH_TRACK_SHEET_NAME} 批次新增 {len(rows_to_append)} 筆",
+            lambda: ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        )
         for offset, row in enumerate(rows_to_append):
             row_style_targets.append((
                 append_start_row + offset,
