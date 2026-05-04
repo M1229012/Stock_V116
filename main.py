@@ -1976,37 +1976,22 @@ def main():
         ticker_code = f"{code}{suffix}"
 
         # ===========================================================
-        # [V116.28 修正] 構造該股的 clause_map 子集，傳給新蒐集函式
+        # [V116.29 修正] 熱門統計直接以「每日紀錄」為準
+        #
+        # 之前即使用 get_last_n_trade_dates_with_attention()，仍可能因為
+        # jail_map / 處置期間資料、舊處置區間或 stock_calendar 重建邏輯，
+        # 讓「每日紀錄明明有公告」的日期沒有正確反映到近30日注意次數。
+        #
+        # 近30日熱門統計本質上應該回答：
+        #   最近30個交易日內，每日紀錄中這檔股票有效注意股出現幾次？
+        #
+        # 因此這裡不再讓 jail_map / exclude_map 介入注意次數計算；
+        # 只取 safe_cal_dates 最後30個交易日，逐日回查 clause_map。
+        # 這樣像 4/29、4/30、5/4 連續三個交易日皆為第1款時，
+        # 近30日注意次數會正確顯示為 3。
         # ===========================================================
-        clause_map_of_code = {
-            d_str: cl for (c, d_str), cl in clause_map.items() if c == code
-        }
+        stock_calendar = [d for d in safe_cal_dates if d <= target_trade_date_obj][-30:]
 
-        # ===========================================================
-        # [V116.28 修正] 改用新函式蒐集 stock_calendar
-        # 規則：
-        #   - 該日有公告 → 強制納入 (不論 jail_map / cutoff)
-        #   - 該日無公告且在處置中 → 跳過
-        #   - 該日無公告且非處置中 → 納入
-        # ===========================================================
-        stock_calendar = get_last_n_trade_dates_with_attention(
-            stock_id=code,
-            cal_dates=safe_cal_dates,
-            jail_map=jail_map,
-            clause_map_of_code=clause_map_of_code,
-            n=30,
-            target_date=target_trade_date_obj,
-        )
-
-        # ===========================================================
-        # [V116.28 修正] bits 構造迴圈
-        # 規則：
-        #   - 該日有公告 → 無條件納入 (bit=1)
-        #     (因為公告本身證明該日股票不在處置中，
-        #      不該被 cutoff / exclude_map 切掉)
-        #   - 該日無公告但在處置中 → bit=0 (處置凍結期)
-        #   - 該日無公告且非處置中 → bit=0 (普通自由日)
-        # ===========================================================
         bits = []
         clauses = []
         for d in stock_calendar:
@@ -2014,17 +1999,11 @@ def main():
             c = clause_map.get((code, d_str), "")
 
             if c:
-                # 有公告 → 強制納入
                 bits.append(1)
                 clauses.append(c)
             else:
-                # 沒公告，再看是否處置中
-                if jail_map and is_in_jail(code, d, jail_map):
-                    bits.append(0)
-                    clauses.append("")
-                else:
-                    bits.append(0)
-                    clauses.append("")
+                bits.append(0)
+                clauses.append("")
 
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses,
