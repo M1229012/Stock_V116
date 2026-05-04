@@ -1282,6 +1282,63 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
     ws = get_or_create_ws(sh, TECH_TRACK_SHEET_NAME, headers=TECH_TRACK_HEADERS, cols=TECH_TRACK_COL_COUNT)
     last_col = TECH_TRACK_LAST_COL
 
+    def _is_retryable_sheet_error(e):
+        msg = str(e)
+        return any(code in msg for code in ['429', '500', '502', '503', '504'])
+
+    def _run_sheet_write(action_desc, fn, max_retries=5):
+        """Google Sheets 寫入用重試，避免 429 / 暫時性 5xx 造成流程中斷。"""
+        for attempt in range(max_retries):
+            try:
+                return fn()
+            except gspread.exceptions.APIError as e:
+                if _is_retryable_sheet_error(e) and attempt < max_retries - 1:
+                    wait = (2 ** attempt) + random.uniform(0.5, 1.5)
+                    print(f"⚠️ {action_desc} 遇到 Google API 暫時性限制，{wait:.1f} 秒後重試 ({attempt + 1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                raise
+
+    def _sheet_title_for_range(title):
+        return str(title).replace("'", "''")
+
+    def _batch_update_row_values(value_ranges, batch_size=80):
+        """將多列更新合併成 values_batch_update，避免逐列 ws.update 造成 429。"""
+        if not value_ranges:
+            return
+
+        sheet_title = _sheet_title_for_range(ws.title)
+        for start_idx in range(0, len(value_ranges), batch_size):
+            chunk = value_ranges[start_idx:start_idx + batch_size]
+            data = [
+                {
+                    "range": f"'{sheet_title}'!{item['range']}",
+                    "values": item['values'],
+                }
+                for item in chunk
+            ]
+            body = {
+                "valueInputOption": "USER_ENTERED",
+                "data": data,
+            }
+
+            def _do_batch_update():
+                # 優先使用 Spreadsheet.values_batch_update，確保多個不連續 range 合併成一次 API 寫入。
+                if hasattr(sh, 'values_batch_update'):
+                    return sh.values_batch_update(body)
+                # 備援：較新版 gspread Worksheet.batch_update。
+                worksheet_data = [{"range": item['range'], "values": item['values']} for item in chunk]
+                return ws.batch_update(worksheet_data, value_input_option='USER_ENTERED')
+
+            _run_sheet_write(
+                f"{TECH_TRACK_SHEET_NAME} 批次更新第 {start_idx + 1}-{start_idx + len(chunk)} 筆",
+                _do_batch_update
+            )
+
+            # 批次之間稍微停一下，降低連續寫入被限流的機率。
+            if start_idx + batch_size < len(value_ranges):
+                time.sleep(0.8)
+
     if not rows:
         print(f"⚠️ {TECH_TRACK_SHEET_NAME} 無符合正在處置或即將出關的資料需要寫入。")
         # 即使沒有資料列，仍套用欄位格式（避免欄位格式遺失）
@@ -1298,14 +1355,20 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
 
     if not all_values:
         # 工作表是空的
-        ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        _run_sheet_write(
+            f"{TECH_TRACK_SHEET_NAME} 建立表頭",
+            lambda: ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        )
         all_values = [TECH_TRACK_HEADERS]
         existing_key_to_row = {}
     elif header_mismatch:
         # Header 不一致 → 整個 clear 重建
         print(f"⚠️ {TECH_TRACK_SHEET_NAME} 偵測到 header 變動，執行 clear 重建...")
-        ws.clear()
-        ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        _run_sheet_write(f"{TECH_TRACK_SHEET_NAME} 清空工作表", lambda: ws.clear())
+        _run_sheet_write(
+            f"{TECH_TRACK_SHEET_NAME} 重建表頭",
+            lambda: ws.append_row(TECH_TRACK_HEADERS, value_input_option='USER_ENTERED')
+        )
         all_values = [TECH_TRACK_HEADERS]
         existing_key_to_row = {}
     else:
@@ -1324,6 +1387,7 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
 
     rows_to_append = []
     row_style_targets = []
+    update_value_ranges = []
     update_count = 0
 
     for row in rows:
@@ -1340,16 +1404,26 @@ def upsert_jail_technical_tracking_sheet(sh, rows):
 
         if key in existing_key_to_row:
             r = existing_key_to_row[key]
-            ws.update(values=[row], range_name=f"A{r}:{last_col}{r}", value_input_option='USER_ENTERED')
+            update_value_ranges.append({
+                "range": f"A{r}:{last_col}{r}",
+                "values": [row],
+            })
             row_style_targets.append((r, is_match, is_breakout))
             update_count += 1
         else:
             rows_to_append.append(row)
             existing_key_to_row[key] = -1
 
+    # 原本是逐列 ws.update，容易觸發 Google Sheets 429；改成批次更新。
+    if update_value_ranges:
+        _batch_update_row_values(update_value_ranges)
+
     if rows_to_append:
         append_start_row = len(all_values) + 1
-        ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        _run_sheet_write(
+            f"{TECH_TRACK_SHEET_NAME} 批次新增 {len(rows_to_append)} 筆",
+            lambda: ws.append_rows(rows_to_append, value_input_option='USER_ENTERED')
+        )
         for offset, row in enumerate(rows_to_append):
             row_style_targets.append((
                 append_start_row + offset,
@@ -1972,13 +2046,20 @@ def main():
             code, safe_cal_dates, jail_map, exclude_map, 30, target_date=TARGET_DATE.date()
         )
 
-        # [修正] 若「最終鎖定運算日」已經在每日紀錄出現，必須納入熱門統計。
-        # 原本若該股已被寫入「處置股90日明細」，可能會被 jail_map / exclude_map 排除，
-        # 導致每日紀錄明明有 4/29、4/30、5/4 三次，但近30日熱門統計只算到 4/30。
-        # 這裡只針對「運算日當天已有每日紀錄」的情況補回，不改變其他歷史處置排除邏輯。
+        # [修正] 若最終鎖定運算日已有「每日紀錄」，代表該日確實有公告注意股，
+        # 不應因為同檔股票已被寫入「處置股90日明細」而讓新一輪統計少算。
+        # 例如大量 4/29、4/30、5/4 連續三個交易日皆為第1款，
+        # 若官方處置資料已先進入 jail_map，原本 stock_calendar 可能停在 4/30，導致只算 2 次。
         target_clause_for_code = clause_map.get((code, target_date_str), "")
-        if target_clause_for_code and target_trade_date_obj not in stock_calendar:
-            stock_calendar = sorted(set(stock_calendar + [target_trade_date_obj]))[-30:]
+        force_target_attention = bool(target_clause_for_code)
+        if force_target_attention:
+            last_calendar_date = stock_calendar[-1] if stock_calendar else None
+            if (not stock_calendar) or (last_calendar_date < target_trade_date_obj):
+                target_calendar = [d for d in safe_cal_dates if d <= target_trade_date_obj]
+                past_jail_end = get_last_jail_end(code, target_trade_date_obj, jail_map)
+                if past_jail_end:
+                    target_calendar = [d for d in target_calendar if d > past_jail_end]
+                stock_calendar = target_calendar[-30:]
 
         cutoff = get_last_jail_end(code, TARGET_DATE.date(), jail_map)
 
@@ -1986,6 +2067,8 @@ def main():
         for d in stock_calendar:
             d0 = d
             c = clause_map.get((code, d.strftime("%Y-%m-%d")), "")
+            # 只針對「最終鎖定運算日已有每日紀錄」的情況強制納入，
+            # 避免官方處置明細先被寫入後，最新一筆注意股被 exclude_map / cutoff 排除。
             force_include_target_attention = (d == target_trade_date_obj and bool(c))
 
             if cutoff and d0 <= cutoff and not force_include_target_attention:
