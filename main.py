@@ -922,44 +922,32 @@ def _safe_round(v, ndigits=2):
 
 
 def _fetch_technical_history(code, market, start_date, end_date):
-    """抓取技術追蹤用股價資料；改用 FinMind 官方日線資料計算 MA20。"""
+    """抓取技術追蹤用股價資料；改回以 Yahoo Finance 日線資料計算 MA20。"""
     code = str(code).replace("'", "").strip()
-    source_label = f"FinMind:{code}"
+    suffix = get_ticker_suffix(market)
+    primary_ticker = f"{code}{suffix}"
+    fallback_suffix = ".TWO" if suffix == ".TW" else ".TW"
+    fallback_ticker = f"{code}{fallback_suffix}"
+    source_label = f"Yahoo:{primary_ticker}"
 
-    try:
-        df = finmind_get(
-            "TaiwanStockPrice",
-            data_id=code,
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d")
-        )
+    def _clean_yahoo_history(raw_df):
+        if raw_df is None or raw_df.empty:
+            return pd.DataFrame()
 
-        if df.empty:
-            print(f"技術追蹤 FinMind 無股價資料 ({source_label})")
-            return pd.DataFrame(), source_label
+        df = raw_df.copy()
 
-        required_cols = ['date', 'open', 'max', 'min', 'close']
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+        if getattr(df.index, 'tz', None) is not None:
+            df.index = df.index.tz_localize(None)
+
+        required_cols = ['Open', 'High', 'Low', 'Close']
         missing_cols = [c for c in required_cols if c not in df.columns]
         if missing_cols:
-            print(f"技術追蹤 FinMind 欄位不足 ({source_label})：缺少 {missing_cols}")
-            return pd.DataFrame(), source_label
+            return pd.DataFrame()
 
-        df = df.copy()
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-        df = df.dropna(subset=['date'])
-        df = df.sort_values('date').drop_duplicates(subset=['date'], keep='last')
-        df = df.set_index('date')
-
-        df = df.rename(columns={
-            'open': 'Open',
-            'max': 'High',
-            'min': 'Low',
-            'close': 'Close',
-            'Trading_Volume': 'Volume',
-            'Trading_money': 'Trading_money',
-        })
-
-        for col in ['Open', 'High', 'Low', 'Close']:
+        for col in required_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
         if 'Volume' in df.columns:
@@ -968,18 +956,25 @@ def _fetch_technical_history(code, market, start_date, end_date):
             df['Volume'] = 0.0
 
         df = df.dropna(subset=['Open', 'Close', 'Low']).copy()
-        if df.empty:
-            print(f"技術追蹤 FinMind 股價資料清理後為空 ({source_label})")
-            return pd.DataFrame(), source_label
+        df = df.sort_index()
+        return df
 
-        if getattr(df.index, 'tz', None) is not None:
-            df.index = df.index.tz_localize(None)
+    for ticker in [primary_ticker, fallback_ticker]:
+        try:
+            source_label = f"Yahoo:{ticker}"
+            raw_df = yf.Ticker(ticker).history(
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+                auto_adjust=False
+            )
+            df = _clean_yahoo_history(raw_df)
+            if not df.empty:
+                return df, source_label
+            print(f"技術追蹤 Yahoo 無可用股價資料 ({source_label})")
+        except Exception as e:
+            print(f"技術追蹤 Yahoo 股價抓取失敗 ({source_label}): {e}")
 
-        return df, source_label
-
-    except Exception as e:
-        print(f"技術追蹤 FinMind 股價抓取失敗 ({source_label}): {e}")
-        return pd.DataFrame(), source_label
+    return pd.DataFrame(), source_label
 
 
 # ===========================================================================
