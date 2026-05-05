@@ -2033,7 +2033,7 @@ def main():
     print(f"掃描 {len(target_stocks)} 檔股票...")
     for idx, code in enumerate(target_stocks):
         code = str(code).strip()
-        name = fresh_stats_name_map.get(code) or (df_log[df_log['代號']==code]['名稱'].iloc[-1] if not df_log[df_log['代號']==code].empty else "未知")
+        name = (df_log[df_log['代號']==code]['名稱'].iloc[-1] if not df_log[df_log['代號']==code].empty else "未知")
 
         db_info = precise_db.get(code, {})
         m_type = str(db_info.get('market', '上市')).upper()
