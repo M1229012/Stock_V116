@@ -2004,19 +2004,26 @@ def main():
     # ===========================================================
     # 近30日熱門統計資料來源固定為 Google Sheet「每日紀錄」
     # ===========================================================
-    # 重要：這裡不要直接用重新爬取的官方公告結果來產生熱門統計。
-    # 正確流程應維持：每日紀錄 → 30/10/5 日狀態碼與注意次數 → 處置倒數。
-    # 如需校正舊資料，應先校正「每日紀錄」，再讓本段重新讀每日紀錄計算。
-    fresh_stats_clause_map = clause_map
-    fresh_stats_name_map = {}
-    fresh_stats_dates = safe_cal_dates[-30:]
-    print("近30日熱門統計：使用 Google Sheet「每日紀錄」作為唯一統計來源。")
+    # 正確流程：
+    #   1. 以「最終鎖定運算日期」target_trade_date_obj 為基準。
+    #   2. 從交易日曆 safe_cal_dates 往回取最近 30 / 10 / 5 個交易日。
+    #   3. 逐日回查 Google Sheet「每日紀錄」是否有該股票的有效注意股紀錄。
+    #   4. 產生 30日狀態碼、10日狀態碼、注意次數與處置倒數。
+    #
+    # 重要：這裡不要使用處置股90日明細、jail_map、exclude_map 或重新爬取資料
+    #       來決定注意次數；注意次數只由「每日紀錄 + 交易日曆」決定。
+    recent_30_trade_dates = safe_cal_dates[-30:]
+    recent_10_trade_dates = recent_30_trade_dates[-10:]
+    recent_5_trade_dates = recent_30_trade_dates[-5:]
+
+    print(
+        "近30日熱門統計：使用 Google Sheet「每日紀錄」作為唯一統計來源，"
+        f"統計區間 {recent_30_trade_dates[0].strftime('%Y-%m-%d')} ~ {recent_30_trade_dates[-1].strftime('%Y-%m-%d')}。"
+    )
 
     jail_map = get_jail_map_from_sheet(sh)
 
-    exclude_map = build_exclude_map(cal_dates, jail_map)
-
-    stats_date_set = {d.strftime("%Y-%m-%d") for d in fresh_stats_dates}
+    stats_date_set = {d.strftime("%Y-%m-%d") for d in recent_30_trade_dates}
     df_recent = df_log[df_log['日期'].isin(stats_date_set)]
     target_stocks = sorted(set(df_recent['代號'].unique()))
 
@@ -2034,34 +2041,29 @@ def main():
         ticker_code = f"{code}{suffix}"
 
         # ===========================================================
-        # [V116.29 修正] 熱門統計直接以「每日紀錄」為準
-        #
-        # 之前即使用 get_last_n_trade_dates_with_attention()，仍可能因為
-        # jail_map / 處置期間資料、舊處置區間或 stock_calendar 重建邏輯，
-        # 讓「每日紀錄明明有公告」的日期沒有正確反映到近30日注意次數。
-        #
-        # 近30日熱門統計本質上應該回答：
-        #   最近30個交易日內，每日紀錄中這檔股票有效注意股出現幾次？
-        #
-        # 因此這裡不再讓 jail_map / exclude_map 介入注意次數計算；
-        # 只取 safe_cal_dates 最後30個交易日，逐日回查 clause_map。
-        # 這樣像 4/29、4/30、5/4 連續三個交易日皆為第1款時，
-        # 近30日注意次數會正確顯示為 3。
+        # [核心修正] 近30日熱門統計只依「每日紀錄 + 固定交易日窗」計算
         # ===========================================================
-        stock_calendar = fresh_stats_dates[-30:]
+        # stock_calendar 固定為：從最終鎖定運算日期往回 30 個交易日。
+        # 每一天都去每日紀錄查：
+        #   - 有該股票，且條款屬於可累積處置的第1~9款 → 狀態碼記 1
+        #   - 沒有該股票，或條款不是第1~9款 → 狀態碼記 0
+        #
+        # 這裡不再依照個股處置期間重建 stock_calendar，也不再使用重新爬取資料；
+        # 目的就是讓 30/10/5 日注意次數完全對齊 Google Sheet「每日紀錄」。
+        stock_calendar = recent_30_trade_dates
 
         bits = []
         clauses = []
+        valid_bits = []
         for d in stock_calendar:
             d_str = d.strftime("%Y-%m-%d")
-            c = fresh_stats_clause_map.get((code, d_str), "")
+            c = clause_map.get((code, d_str), "")
+            ids = parse_clause_ids_strict(c)
+            is_valid_attention = bool(c) and is_valid_accumulation_day(ids)
 
-            if c:
-                bits.append(1)
-                clauses.append(c)
-            else:
-                bits.append(0)
-                clauses.append("")
+            bits.append(1 if is_valid_attention else 0)
+            valid_bits.append(1 if is_valid_attention else 0)
+            clauses.append(c if c else "")
 
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses,
@@ -2121,10 +2123,11 @@ def main():
 
         risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
 
-        valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
+        # valid_bits 已在上方依最近30個交易日固定窗口建立。
+        # 連續天數從最新交易日往回計算，最多反映最近5個交易日連續注意狀況。
         streak = 0
-        for v in reversed(valid_bits):
-            if v: streak+=1
+        for v in reversed(valid_bits[-5:]):
+            if v: streak += 1
             else: break
 
         status_30 = "".join(map(str, valid_bits)).zfill(30)
@@ -2137,7 +2140,11 @@ def main():
             return str(v)
 
         last_date_val = ""
-        attention_dates = [d.strftime("%Y-%m-%d") for d, c in zip(stock_calendar, clauses) if c]
+        attention_dates = [
+            d.strftime("%Y-%m-%d")
+            for d, v in zip(stock_calendar, valid_bits)
+            if v == 1
+        ]
         if attention_dates:
             last_date_val = attention_dates[-1]
 
