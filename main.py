@@ -116,14 +116,12 @@ VERIFY_RECENT_DAYS = 2
 # ==========================================
 # ⚠️ 近30日熱門統計資料校正開關
 # ==========================================
-# True  ：本次執行會重新抓取最近30個交易日官方注意股公告，
-#         用來修正 Google Sheet「每日紀錄」或「近30日熱門統計」中可能殘留的舊錯誤資料。
-# False ：恢復一般每日模式，不會每次重抓近30日公告，只使用 Google Sheet 既有每日紀錄進行統計。
+# 目前近30日熱門統計已固定改為：只讀 Google Sheet「每日紀錄」計算。
+# 這個開關保留為舊版校正用途的備註，不再影響熱門統計資料來源。
 #
-# 使用方式：
-# 1. 當你發現近30日注意次數、30日狀態碼、10日狀態碼明顯錯誤時，先設為 True 跑一次校正。
-# 2. 確認 Google Sheet 統計資料正確後，請改回 False，避免每次執行都重抓近30日公告。
-FORCE_REFRESH_30D_STATS = True
+# 正確資料流：每日紀錄 → 30/10/5 日狀態碼與注意次數 → 處置倒數。
+# 若未來要校正舊資料，請先修正「每日紀錄」，再重新執行本程式。
+FORCE_REFRESH_30D_STATS = False
 
 # ==========================================
 # FinMind 金鑰設定
@@ -187,7 +185,7 @@ def merge_clause_text(a, b):
 
 def is_valid_accumulation_day(ids):
     if not ids: return False
-    return any(1 <= x <= 8 for x in ids)
+    return any(1 <= x <= 9 for x in ids)
 
 def is_special_risk_day(ids):
     if not ids: return False
@@ -2003,24 +2001,24 @@ def main():
 
     safe_cal_dates = [d for d in cal_dates if d <= target_trade_date_obj]
 
-    if FORCE_REFRESH_30D_STATS:
-        print("FORCE_REFRESH_30D_STATS=True，本次將重新抓取近30個交易日官方公告來校正熱門統計。")
-        fresh_stats_clause_map, fresh_stats_name_map, fresh_stats_dates = build_fresh_stats_clause_map(
-            cal_dates, target_trade_date_obj, lookback_days=30
-        )
-    else:
-        print("FORCE_REFRESH_30D_STATS=False，使用 Google Sheet 每日紀錄進行熱門統計，不重抓近30日公告。")
-        fresh_stats_clause_map = clause_map
-        fresh_stats_name_map = {}
-        fresh_stats_dates = safe_cal_dates[-30:]
+    # ===========================================================
+    # 近30日熱門統計資料來源固定為 Google Sheet「每日紀錄」
+    # ===========================================================
+    # 重要：這裡不要直接用重新爬取的官方公告結果來產生熱門統計。
+    # 正確流程應維持：每日紀錄 → 30/10/5 日狀態碼與注意次數 → 處置倒數。
+    # 如需校正舊資料，應先校正「每日紀錄」，再讓本段重新讀每日紀錄計算。
+    fresh_stats_clause_map = clause_map
+    fresh_stats_name_map = {}
+    fresh_stats_dates = safe_cal_dates[-30:]
+    print("近30日熱門統計：使用 Google Sheet「每日紀錄」作為唯一統計來源。")
 
     jail_map = get_jail_map_from_sheet(sh)
 
     exclude_map = build_exclude_map(cal_dates, jail_map)
 
-    start_dt_str = cal_dates[-90].strftime("%Y-%m-%d")
-    df_recent = df_log[df_log['日期'] >= start_dt_str]
-    target_stocks = sorted(set(df_recent['代號'].unique()).union({code for code, _ in fresh_stats_clause_map.keys()}))
+    stats_date_set = {d.strftime("%Y-%m-%d") for d in fresh_stats_dates}
+    df_recent = df_log[df_log['日期'].isin(stats_date_set)]
+    target_stocks = sorted(set(df_recent['代號'].unique()))
 
     precise_db = load_precise_db_from_sheet(sh)
     rows_stats = []
@@ -2139,8 +2137,9 @@ def main():
             return str(v)
 
         last_date_val = ""
-        if stock_calendar:
-            last_date_val = stock_calendar[-1].strftime("%Y-%m-%d")
+        attention_dates = [d.strftime("%Y-%m-%d") for d, c in zip(stock_calendar, clauses) if c]
+        if attention_dates:
+            last_date_val = attention_dates[-1]
 
         row = [
             f"'{code}", name, safe(streak), safe(sum(valid_bits)), safe(sum(valid_bits[-10:])),
