@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.28 台股注意股系統 (修正『有公告紀錄就強制納入』累積邏輯)
+V116.30 台股注意股系統 (修正注意股條款嚴格解析 + Yahoo MA20)
 
 本版相對於 V116.27 的修正重點：
 [修正] 「每日紀錄出現 3 次但近30日熱門統計只記 2 次」的 bug：
@@ -112,6 +112,8 @@ IS_AFTER_DAYTRADE = TARGET_DATE.time() >= DAYTRADE_PUBLISH_TIME
 
 MAX_BACKFILL_TRADING_DAYS = 40
 VERIFY_RECENT_DAYS = 2
+# 重新比對最近 N 個交易日的每日紀錄條款，修正舊版 KEYWORD_MAP 造成的錯誤款別。
+REFRESH_DAILY_LOG_CLAUSES_DAYS = 40
 
 # ==========================================
 # FinMind 金鑰設定
@@ -125,7 +127,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"啟動 V116.28 台股注意股系統 (修正『有公告就強制納入』累積邏輯)")
+print(f"啟動 V116.30 台股注意股系統 (修正注意股條款嚴格解析 + Yahoo MA20)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -134,8 +136,17 @@ except: pass
 # ============================
 # 工具函式
 # ============================
-CN_NUM = {"一":"1","二":"2","三":"3","四":"4","五":"5","六":"6","七":"7","八":"8","九":"9","十":"10"}
+# 中文款次轉換表：必須先處理「十一、十二」等長字串，避免被「一、二」提前替換。
+CN_NUM = {
+    "十四": "14", "十三": "13", "十二": "12", "十一": "11", "十": "10",
+    "九": "9", "八": "8", "七": "7", "六": "6", "五": "5",
+    "四": "4", "三": "3", "二": "2", "一": "1",
+}
 
+# 舊版曾用關鍵字推測款別，容易把官方文字中的「成交量 / 週轉率 / 本益比」等字樣
+# 誤判成可累積處置款別，導致近30日注意次數被灌高。
+# 本版保留 KEYWORD_MAP 變數作為歷史註記，但 parse_clause_ids_strict 不再使用它；
+# 統計只採用官方文字中明確出現的「第N款」。
 KEYWORD_MAP = {
     "起迄兩個營業日": 11, "當日沖銷": 13, "借券賣出": 12, "累積週轉率": 10, "週轉率": 4,
     "成交量": 9, "本益比": 6, "股價淨值比": 6, "溢折價": 8, "收盤價漲跌百分比": 1,
@@ -146,29 +157,47 @@ def normalize_clause_text(s: str) -> str:
     if not s: return ""
     s = str(s)
     s = s.replace("第ㄧ款", "第一款")
+    # 全形數字轉半形
+    s = s.translate(str.maketrans("１２３４５６７８９０", "1234567890"))
     for cn, dg in CN_NUM.items():
         s = s.replace(f"第{cn}款", f"第{dg}款")
-    s = s.translate(str.maketrans("１2３４５６７８９０", "1234567890"))
     return s
 
-def parse_clause_ids_strict(clause_text):
+def parse_clause_ids_explicit(clause_text):
+    """只解析官方文字中明確出現的「第N款」。
+
+    不再用關鍵字猜款別，避免把非累積條款或說明文字誤算進近30日注意次數。
+    """
     if not isinstance(clause_text, str): return set()
     clause_text = normalize_clause_text(clause_text)
     ids = set()
     matches = re.findall(r'第\s*(\d+)\s*款', clause_text)
-    for m in matches: ids.add(int(m))
-    if not ids:
-        for keyword, code in KEYWORD_MAP.items():
-            if keyword in clause_text: ids.add(code)
+    for m in matches:
+        try:
+            ids.add(int(m))
+        except:
+            pass
     return ids
+
+def parse_clause_ids_strict(clause_text):
+    # 嚴格模式：只信任明確款別，不使用 KEYWORD_MAP 模糊推論。
+    return parse_clause_ids_explicit(clause_text)
+
+def format_clause_text_from_raw(raw):
+    """每日紀錄寫入用：有明確款別就標準化，沒有則保留官方原始文字。"""
+    raw = "" if raw is None else str(raw).strip()
+    ids = parse_clause_ids_explicit(raw)
+    if ids:
+        return "、".join([f"第{x}款" for x in sorted(ids)])
+    return raw
 
 def merge_clause_text(a, b):
     ids = set()
-    ids |= parse_clause_ids_strict(a) if a else set()
-    ids |= parse_clause_ids_strict(b) if b else set()
+    ids |= parse_clause_ids_explicit(a) if a else set()
+    ids |= parse_clause_ids_explicit(b) if b else set()
     if ids: return "、".join([f"第{x}款" for x in sorted(ids)])
     a = a or ""; b = b or ""
-    return a if len(a) >= len(b) else b
+    return a if len(str(a)) >= len(str(b)) else b
 
 def is_valid_accumulation_day(ids):
     if not ids: return False
@@ -225,6 +254,24 @@ def load_log_index(ws_log):
                     date_counts[d] = date_counts.get(d, 0) + 1
     except: pass
     return existing_keys, date_counts
+
+def load_log_row_index_and_clause(ws_log):
+    """回傳每日紀錄既有列位置與條款，供重新抓官方公告後修正錯誤款別。"""
+    row_map = {}
+    try:
+        vals = ws_log.get_all_values()
+        if not vals or len(vals) <= 1: return row_map
+        for r_idx, r in enumerate(vals[1:], start=2):
+            if len(r) >= 5 and str(r[0]).strip():
+                d = str(r[0]).strip()
+                code = str(r[2]).strip().replace("'", "")
+                if code:
+                    row_map[d + "_" + code] = {
+                        "row": r_idx,
+                        "clause": str(r[4]).strip()
+                    }
+    except: pass
+    return row_map
 
 def load_status_index(ws_status):
     key_to_row = {}
@@ -600,8 +647,7 @@ def fetch_twse_attention_rows(date_obj, date_str):
             name = str(i[2]).strip()
             if len(code) == 4 and code.isdigit():
                 raw = " ".join([str(x) for x in i])
-                ids = parse_clause_ids_strict(raw)
-                c_str = "、".join([f"第{k}款" for k in sorted(ids)]) or raw
+                c_str = format_clause_text_from_raw(raw)
                 rows.append({"日期": date_str, "市場": "TWSE", "代號": code, "名稱": name, "觸犯條款": c_str})
     except Exception as e:
         print(f"TWSE 抓取例外：{type(e).__name__}: {e}")
@@ -674,8 +720,7 @@ def fetch_tpex_attention_rows(date_obj, date_str):
                     continue
 
                 raw = " ".join([str(x) for x in i])
-                ids = parse_clause_ids_strict(raw)
-                c_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else raw
+                c_str = format_clause_text_from_raw(raw)
 
                 rows.append({"日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": c_str})
 
@@ -719,18 +764,21 @@ def get_daily_data(date_obj):
 def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
     now_str = TARGET_DATE.strftime("%Y-%m-%d %H:%M:%S")
     existing_keys, date_counts = load_log_index(ws_log)
+    existing_row_map = load_log_row_index_and_clause(ws_log)
     ws_status = get_or_create_ws(sh, "爬取狀態", headers=["日期", "抓到檔數", "最後更新時間"], cols=5)
     key_to_row, status_cnt = load_status_index(ws_status)
 
     key_to_row, status_cnt = load_status_index(ws_status)
     window_dates = cal_dates[-MAX_BACKFILL_TRADING_DAYS:] if len(cal_dates) > MAX_BACKFILL_TRADING_DAYS else cal_dates[:]
     recent_dates = cal_dates[-VERIFY_RECENT_DAYS:] if len(cal_dates) >= VERIFY_RECENT_DAYS else cal_dates[:]
-    dates_to_check = sorted(set(window_dates + recent_dates))
+    refresh_dates = cal_dates[-REFRESH_DAILY_LOG_CLAUSES_DAYS:] if len(cal_dates) >= REFRESH_DAILY_LOG_CLAUSES_DAYS else cal_dates[:]
+    dates_to_check = sorted(set(window_dates + recent_dates + refresh_dates))
 
     rows_to_append = []
     status_updates = []
+    clause_updates = []
 
-    print(f"回補檢查：共 {len(dates_to_check)} 個交易日（含最近 {VERIFY_RECENT_DAYS} 日強制驗證）")
+    print(f"回補檢查：共 {len(dates_to_check)} 個交易日（含最近 {VERIFY_RECENT_DAYS} 日強制驗證、最近 {REFRESH_DAILY_LOG_CLAUSES_DAYS} 日條款修正）")
 
     for d in dates_to_check:
         d_str = d.strftime("%Y-%m-%d")
@@ -742,6 +790,7 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
         need_fetch = False
 
         if d in recent_dates: need_fetch = True
+        if d in refresh_dates: need_fetch = True  # 重新抓官方公告，用嚴格款別解析修正舊資料
         if (st_cnt is not None) and (log_cnt < int(st_cnt)): need_fetch = True
         if (st_cnt is None) and (log_cnt == 0): need_fetch = True
         if (st_cnt is None) and (d in window_dates): need_fetch = True
@@ -764,10 +813,19 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
 
         for s in data:
             k = f"{s['日期']}_{s['代號']}"
+            new_clause = str(s.get('觸犯條款', '')).strip()
             if k not in existing_keys:
-                rows_to_append.append([s['日期'], s['市場'], f"'{s['代號']}", s['名稱'], s['觸犯條款']])
+                rows_to_append.append([s['日期'], s['市場'], f"'{s['代號']}", s['名稱'], new_clause])
                 existing_keys.add(k)
                 date_counts[s['日期']] = date_counts.get(s['日期'], 0) + 1
+            else:
+                old_info = existing_row_map.get(k)
+                if old_info and str(old_info.get('clause', '')).strip() != new_clause:
+                    clause_updates.append({
+                        "range": f"E{old_info['row']}",
+                        "values": [[new_clause]],
+                    })
+                    old_info['clause'] = new_clause
 
         status_updates.append((d_str, official_cnt, st_cnt))
 
@@ -776,6 +834,13 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
         ws_log.append_rows(rows_to_append, value_input_option="USER_ENTERED")
     else:
         print("每日紀錄無需回補寫入")
+
+    if clause_updates:
+        print(f"修正「每日紀錄」既有觸犯條款：{len(clause_updates)} 筆")
+        for start_idx in range(0, len(clause_updates), 80):
+            ws_log.batch_update(clause_updates[start_idx:start_idx + 80], value_input_option="USER_ENTERED")
+            if start_idx + 80 < len(clause_updates):
+                time.sleep(0.8)
 
     key_to_row, status_cnt = load_status_index(ws_status)
     for d_str, official_cnt, old_st_cnt in status_updates:
