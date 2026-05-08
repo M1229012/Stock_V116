@@ -679,86 +679,313 @@ def fetch_twse_attention_rows(date_obj, date_str):
         return None
     return rows
 
+def _tpex_clean_text(s):
+    if s is None:
+        return ""
+    s = str(s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = s.replace("&nbsp;", " ")
+    s = s.replace("\u3000", " ")
+    s = s.replace("\xa0", " ")
+    s = s.replace("\r", " ")
+    s = s.replace("\n", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _tpex_to_roc_slash(d):
+    return f"{d.year - 1911}/{d.month:02d}/{d.day:02d}"
+
+
+def _tpex_to_yyyymmdd(d):
+    return d.strftime("%Y%m%d")
+
+
+def _tpex_parse_any_date_to_ad_date(s):
+    """將 TPEx 可能出現的公告日期格式轉成西元 date。"""
+    if s is None:
+        return None
+
+    raw = _tpex_clean_text(s)
+    if not raw:
+        return None
+
+    raw = raw.replace("年", "/").replace("月", "/").replace("日", "")
+    raw = raw.replace("-", "/").strip()
+
+    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", raw)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+
+    m = re.search(r"(\d{2,4})/(\d{1,2})/(\d{1,2})", raw)
+    if m:
+        try:
+            y = int(m.group(1))
+            mo = int(m.group(2))
+            da = int(m.group(3))
+            if y < 1911:
+                y += 1911
+            return date(y, mo, da)
+        except Exception:
+            return None
+
+    return None
+
+
+def _tpex_get_field_index(fields, keyword_list):
+    if not fields:
+        return None
+
+    for idx, f in enumerate(fields):
+        f_clean = _tpex_clean_text(f)
+        for keyword in keyword_list:
+            if keyword in f_clean:
+                return idx
+
+    return None
+
+
+def _tpex_find_stock_code_index(cells):
+    """從整列欄位中找出 4 碼股票代號；排除權證、可轉債等非 4 碼標的。"""
+    for idx, cell in enumerate(cells):
+        s = _tpex_clean_text(cell)
+        if re.fullmatch(r"\d{4}", s):
+            return idx
+    return None
+
+
+def _tpex_find_date_index(cells):
+    for idx, cell in enumerate(cells):
+        d = _tpex_parse_any_date_to_ad_date(cell)
+        if d is not None:
+            return idx, d
+    return None, None
+
+
+def _tpex_safe_get_cell(cells, idx):
+    if idx is None:
+        return ""
+    try:
+        idx = int(idx)
+        if 0 <= idx < len(cells):
+            return _tpex_clean_text(cells[idx])
+    except Exception:
+        pass
+    return ""
+
+
+def _tpex_extract_raw_items_from_json(data):
+    raw_items = []
+
+    if not isinstance(data, dict):
+        return raw_items
+
+    if "tables" in data:
+        for table_idx, table in enumerate(data.get("tables", []) or []):
+            fields = table.get("fields", []) or []
+            table_data = table.get("data", []) or []
+            for row_idx, row in enumerate(table_data):
+                raw_items.append({
+                    "table_idx": table_idx,
+                    "row_idx": row_idx,
+                    "fields": fields,
+                    "row": row,
+                })
+    elif "data" in data:
+        fields = data.get("fields", []) or []
+        for row_idx, row in enumerate(data.get("data", []) or []):
+            raw_items.append({
+                "table_idx": 0,
+                "row_idx": row_idx,
+                "fields": fields,
+                "row": row,
+            })
+
+    return raw_items
+
+
+def _tpex_parse_rows_from_json(data, query_date_obj, date_str):
+    """解析 TPEx JSON，並強制使用官方公告日期過濾。"""
+    raw_items = _tpex_extract_raw_items_from_json(data)
+    rows = []
+
+    skipped_other_date = 0
+    skipped_no_date = 0
+    skipped_no_code = 0
+    skipped_non_4_digit = 0
+
+    for obj in raw_items:
+        raw_row = obj.get("row", [])
+        if not isinstance(raw_row, list):
+            continue
+
+        fields = [_tpex_clean_text(x) for x in obj.get("fields", []) or []]
+        cells = [_tpex_clean_text(x) for x in raw_row]
+        raw = " ".join(cells)
+
+        code_idx = _tpex_get_field_index(fields, ["證券代號", "代號"])
+        name_idx = _tpex_get_field_index(fields, ["證券名稱", "名稱"])
+        clause_idx = _tpex_get_field_index(fields, ["注意交易資訊", "交易資訊"])
+        date_idx = _tpex_get_field_index(fields, ["公告日期", "日期"])
+
+        if code_idx is None:
+            code_idx = _tpex_find_stock_code_index(cells)
+
+        if name_idx is None and code_idx is not None:
+            name_idx = code_idx + 1
+
+        if date_idx is not None:
+            official_date_raw = _tpex_safe_get_cell(cells, date_idx)
+            official_date = _tpex_parse_any_date_to_ad_date(official_date_raw)
+        else:
+            found_date_idx, official_date = _tpex_find_date_index(cells)
+            date_idx = found_date_idx
+
+        if official_date is None:
+            skipped_no_date += 1
+            continue
+
+        if official_date != query_date_obj:
+            skipped_other_date += 1
+            continue
+
+        if code_idx is None:
+            skipped_no_code += 1
+            continue
+
+        code = _tpex_safe_get_cell(cells, code_idx)
+        name = _tpex_safe_get_cell(cells, name_idx)
+
+        if not (code.isdigit() and len(code) == 4):
+            skipped_non_4_digit += 1
+            continue
+
+        clause_source_text = _tpex_safe_get_cell(cells, clause_idx) if clause_idx is not None else raw
+        ids = parse_clause_ids_strict(clause_source_text)
+        c_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else ""
+
+        rows.append({
+            "日期": date_str,
+            "市場": "TPEx",
+            "代號": code,
+            "名稱": name,
+            "觸犯條款": c_str,
+        })
+
+    debug = {
+        "raw_items": len(raw_items),
+        "保留筆數": len(rows),
+        "略過_非查詢日期": skipped_other_date,
+        "略過_無日期": skipped_no_date,
+        "略過_無代號": skipped_no_code,
+        "略過_非4碼": skipped_non_4_digit,
+    }
+    return rows, debug
+
+
+def _tpex_dedupe_attention_rows(rows):
+    seen = set()
+    out = []
+
+    for r in rows:
+        key = (
+            str(r.get("日期", "")).strip(),
+            str(r.get("市場", "")).strip(),
+            str(r.get("代號", "")).strip(),
+            str(r.get("觸犯條款", "")).strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+
+    return out
+
+
 def fetch_tpex_attention_rows(date_obj, date_str):
-    roc_date = f"{date_obj.year - 1911}/{date_obj.month:02d}/{date_obj.day:02d}"
+    """抓取 TPEx 上櫃注意股公告。
+
+    修正重點：
+    1. 不再使用舊版 date 參數。
+    2. 改用 startDate / endDate 查詢單日資料。
+    3. 不再固定假設代號、名稱、日期欄位位置。
+    4. 以官方回傳的公告日期過濾，避免同一批資料被套到不同日期。
+    """
+    roc_date = _tpex_to_roc_slash(date_obj)
+    yyyymmdd = _tpex_to_yyyymmdd(date_obj)
     url = "https://www.tpex.org.tw/www/zh-tw/bulletin/attention"
 
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.tpex.org.tw/",
+        "Referer": "https://www.tpex.org.tw/www/zh-tw/bulletin/attention",
         "Origin": "https://www.tpex.org.tw",
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest",
     }
-    payload = {"date": roc_date, "response": "json"}
+
+    payloads = [
+        {"startDate": roc_date, "endDate": roc_date, "response": "json"},
+        {"startDate": yyyymmdd, "endDate": yyyymmdd, "response": "json"},
+        {"startDate": roc_date, "endDate": roc_date, "type": "all", "response": "json"},
+        {"startDate": yyyymmdd, "endDate": yyyymmdd, "type": "all", "response": "json"},
+    ]
 
     s = requests.Session()
 
     try:
-        s.get("https://www.tpex.org.tw/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        s.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     except Exception as e:
         print(f"TPEx 初始化 Cookie 失敗：{type(e).__name__}: {e}")
 
-    last_error = None
-    for attempt in range(1, 4):
-        try:
-            r = s.post(url, data=payload, headers=headers, timeout=12)
-            if r.status_code != 200:
-                last_error = f"HTTP {r.status_code}"
-                print(f"TPEx 第 {attempt} 次抓取失敗：HTTP {r.status_code}，URL={r.url}")
-                print(f"   payload={payload}")
-                print(f"   回應內容前300字：{r.text[:300]}")
-                time.sleep(0.8)
-                continue
+    errors = []
+    got_valid_json_response = False
 
-            try:
-                res = r.json()
-            except Exception as e:
-                last_error = f"JSON 解析失敗 {type(e).__name__}: {e}"
-                print(f"TPEx 第 {attempt} 次 JSON 解析失敗：{type(e).__name__}: {e}")
-                print(f"   URL={r.url}")
-                print(f"   payload={payload}")
-                print(f"   回應內容前300字：{r.text[:300]}")
-                time.sleep(0.8)
-                continue
+    for payload in payloads:
+        for method in ["POST", "GET"]:
+            for attempt in range(1, 4):
+                try:
+                    if method == "POST":
+                        r = s.post(url, data=payload, headers=headers, timeout=12)
+                    else:
+                        r = s.get(url, params=payload, headers=headers, timeout=12)
 
-            target = []
-            if "tables" in res:
-                for t in res["tables"]:
-                    target.extend(t.get("data", []) or [])
-            else:
-                target = res.get("data", []) or []
+                    if r.status_code != 200:
+                        errors.append(f"{method} HTTP {r.status_code}, payload={payload}")
+                        time.sleep(0.8)
+                        continue
 
-            rows = []
-            for i in target:
-                if len(i) <= 5:
-                    continue
-                row_date = str(i[5]).strip()
-                if row_date not in (roc_date, date_str):
-                    continue
+                    try:
+                        res = r.json()
+                    except Exception as e:
+                        errors.append(f"{method} JSON 解析失敗 {type(e).__name__}: {e}, payload={payload}")
+                        time.sleep(0.8)
+                        continue
 
-                code = str(i[1]).strip()
-                name = str(i[2]).strip()
-                if not (code.isdigit() and len(code) == 4):
-                    continue
+                    got_valid_json_response = True
+                    rows, debug = _tpex_parse_rows_from_json(res, date_obj, date_str)
 
-                raw = " ".join([str(x) for x in i])
-                ids = parse_clause_ids_strict(raw)
-                c_str = "、".join([f"第{k}款" for k in sorted(ids)]) if ids else ""
+                    if rows:
+                        rows = _tpex_dedupe_attention_rows(rows)
+                        print(f"TPEx {date_str} 抓取成功：{len(rows)} 筆，debug={debug}")
+                        return rows
 
-                rows.append({"日期": date_str, "市場": "TPEx", "代號": code, "名稱": name, "觸犯條款": c_str})
+                    errors.append(f"{method} 無查詢日資料，debug={debug}, payload={payload}")
+                    time.sleep(0.5)
 
-            return rows
-        except Exception as e:
-            last_error = f"{type(e).__name__}: {e}"
-            print(f"TPEx 第 {attempt} 次抓取例外：{type(e).__name__}: {e}")
-            print(f"   日期={date_str}，ROC日期={roc_date}，payload={payload}")
-            time.sleep(0.8)
+                except Exception as e:
+                    errors.append(f"{method} 例外 {type(e).__name__}: {e}, payload={payload}")
+                    time.sleep(0.8)
 
-    print(f"TPEx 三次重試皆失敗，最後錯誤：{last_error}")
+    if got_valid_json_response:
+        print(f"TPEx {date_str} 查無 4 碼上櫃注意股資料；最後狀態：" + "；".join(errors[-3:]))
+        return []
+
+    print("TPEx 三次重試皆失敗，最後錯誤：" + "；".join(errors[-6:]))
     return None
-
 def get_daily_data(date_obj):
     date_str = date_obj.strftime("%Y-%m-%d")
     print(f"爬取公告 {date_str}...")
