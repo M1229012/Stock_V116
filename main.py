@@ -134,7 +134,7 @@ FORCE_REFRESH_30D_STATS = False
 #           避免每次執行都重新抓取大量歷史公告。
 # 注意：若某天 TPEx / TWSE 官方網站暫時 520 或抓取失敗，該日會被跳過，
 #       不會用空白資料覆蓋既有正確條款。
-REFRESH_DAILY_LOG_CLAUSES_DAYS = 60
+REFRESH_DAILY_LOG_CLAUSES_DAYS = 10
 
 # ==========================================
 # FinMind 金鑰設定
