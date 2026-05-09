@@ -899,7 +899,7 @@ def split_streak_label(name):
 
 
 def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
-              ha='left', va='center', bold=False, alpha=1.0):
+              ha='left', va='center', bold=False, alpha=1.0, zorder=5):
     ax.text(
         x, y, clean_cell(text),
         transform=ax.transAxes,
@@ -909,7 +909,7 @@ def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
         fontproperties=FONT_BOLD if bold else FONT_PROP,
         color=color,
         alpha=alpha,
-        zorder=5
+        zorder=zorder
     )
 
 
@@ -1099,7 +1099,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                     transform=ax.transAxes, zorder=6
                 ))
                 draw_text(ax, badge_x + badge_w / 2, y - row_h / 2, streak_label,
-                          size=7.6, color="#A06E00", weight='bold', ha='center', bold=True)
+                          size=7.6, color="#A06E00", weight='bold', ha='center', bold=True, zorder=7)
                 continue
 
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
