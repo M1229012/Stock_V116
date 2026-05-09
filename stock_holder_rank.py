@@ -890,16 +890,8 @@ def split_code_name(raw):
     return code, name
 
 
-def split_streak_label(name):
-    name = clean_cell(name)
-    match = re.search(r'\s+(連\d+)$', name)
-    if match:
-        return clean_cell(name[:match.start()]), clean_cell(match.group(1))
-    return name, ""
-
-
 def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
-              ha='left', va='center', bold=False, alpha=1.0, zorder=5):
+              ha='left', va='center', bold=False, alpha=1.0):
     ax.text(
         x, y, clean_cell(text),
         transform=ax.transAxes,
@@ -909,7 +901,7 @@ def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
         fontproperties=FONT_BOLD if bold else FONT_PROP,
         color=color,
         alpha=alpha,
-        zorder=zorder
+        zorder=5
     )
 
 
@@ -918,6 +910,16 @@ def _shorten_text(text, max_chars):
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 1] + "…"
+
+
+def _split_streak_badge(text):
+    text = clean_cell(text)
+    match = re.search(r"\s*(連\d+)$", text)
+    if match:
+        badge = match.group(1)
+        base_text = clean_cell(text[:match.start()].strip())
+        return base_text, badge
+    return text, ""
 
 
 def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20):
@@ -995,7 +997,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if i < len(df):
             row = df.iloc[i]
             code, name = split_code_name(row['股票代號/名稱'])
-            name, streak_label = split_streak_label(name)
+            name, streak_badge = _split_streak_badge(name)
             category = clean_cell(row.get('類別', '-'))
             price = clean_cell(row.get('現價', '-'))
             week_chg = clean_cell(row.get('週漲跌', '-'))
@@ -1005,7 +1007,8 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             except:
                 change_val = 0.0
         else:
-            code, name, streak_label, category, price, week_chg, change_val = "", "", "", "", "", "", 0.0
+            code, name, category, price, week_chg, change_val = "", "", "", "", "", 0.0
+            streak_badge = ""
 
         if i == 0:
             bg, edge, lw = TOP1_BG, TOP1_BORDER, 1.1
@@ -1078,30 +1081,31 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             else:
                 # 統一靠左對齊間距
                 tx, ha = cell_x + 0.010, "left"
-                
-            if j == 2 and streak_label:
+
+            if j == 2 and streak_badge:
                 display_name = _shorten_text(value, 5)
                 draw_text(ax, tx, y - row_h / 2, display_name, size=sizes[j],
                           color=colors[j], weight=weights[j], ha=ha,
                           bold=(weights[j] == 'bold'))
-
-                badge_w = 0.030
-                badge_h = row_h * 0.50
-                badge_x = min(
-                    tx + 0.0055 * visual_len(display_name) + 0.008,
-                    cell_x + cell_w - badge_w - 0.006
+                badge_x = cell_x + cell_w - 0.008
+                ax.text(
+                    badge_x, y - row_h / 2, clean_cell(streak_badge),
+                    transform=ax.transAxes,
+                    ha='right', va='center',
+                    fontsize=sizes[j] + 2,
+                    fontweight='bold',
+                    fontproperties=FONT_BOLD,
+                    color="#A06A00",
+                    zorder=8,
+                    bbox=dict(
+                        boxstyle="round,pad=0.13",
+                        facecolor="#FFF3C4",
+                        edgecolor="#D8B83F",
+                        linewidth=0.9,
+                    )
                 )
-                badge_y = y - row_h / 2 - badge_h / 2
-                ax.add_patch(patches.FancyBboxPatch(
-                    (badge_x, badge_y), badge_w, badge_h,
-                    boxstyle="round,pad=0.002,rounding_size=0.004",
-                    linewidth=1.0, edgecolor="#E5C04B", facecolor="#FFF7D6",
-                    transform=ax.transAxes, zorder=6
-                ))
-                draw_text(ax, badge_x + badge_w / 2, y - row_h / 2, streak_label,
-                          size=7.6, color="#A06E00", weight='bold', ha='center', bold=True, zorder=7)
                 continue
-
+                
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                       color=colors[j], weight=weights[j], ha=ha,
                       bold=(weights[j] == 'bold'))
