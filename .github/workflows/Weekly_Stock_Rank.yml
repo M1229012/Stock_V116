@@ -4,26 +4,52 @@ on:
     # UTC 03:00 = 台灣時間 11:00 (週六)
     - cron: '0 3 * * 6'
   workflow_dispatch: # 允許手動按按鈕測試
+
+permissions:
+  contents: read
+
 jobs:
   run_rank_script:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
+
       - name: Install Chinese fonts
         run: |
           sudo apt-get install -y fonts-noto-cjk
+
       - name: Install dependencies
         run: |
-          pip install pandas requests selenium webdriver-manager lxml wcwidth matplotlib yfinance
+          pip install pandas requests selenium webdriver-manager lxml wcwidth matplotlib yfinance gspread
+
+      - name: Create Service Key
+        env:
+          GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          with open("service_key.json", "w", encoding="utf-8") as f:
+              f.write(os.environ["GCP_SERVICE_KEY"])
+          PY
+
       - name: Clear matplotlib font cache
         run: |
           python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)"
+
       - name: Run Stock Holder Rank Script
         env:
           DISCORD_WEBHOOK_URL_TEST: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
+          GOOGLE_APPLICATION_CREDENTIALS: service_key.json
+          TZ: Asia/Taipei
         run: python stock_holder_rank.py
+
+      - name: Cleanup Service Key
+        if: always()
+        run: rm -f service_key.json
