@@ -1095,7 +1095,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                           color=colors[j], weight=weights[j], ha=ha,
                           bold=(weights[j] == 'bold'))
                 badge_font_size = 9.0
-                badge_w = 0.022
+                badge_w = 0.015
                 badge_h = row_h * 0.42
                 badge_x = col_x[3] + 0.010
                 badge_y = y - row_h / 2 - badge_h / 2
