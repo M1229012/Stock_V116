@@ -470,38 +470,42 @@ HOLDER_HISTORY_HEADERS = [
 
 
 def connect_holder_history_sheet():
+    print(f"準備連線 Google Sheet：{SHEET_NAME}")
     if gspread is None:
-        print("⚠️ gspread 未安裝，略過每週大戶排行紀錄寫入。")
-        return None
+        raise RuntimeError("gspread 未安裝，無法建立或寫入『每週大戶排行紀錄』工作表。")
     if not os.path.exists(SERVICE_KEY_FILE):
-        print(f"⚠️ 找不到 {SERVICE_KEY_FILE}，略過每週大戶排行紀錄寫入。")
-        return None
+        raise FileNotFoundError(f"找不到 {SERVICE_KEY_FILE}，無法建立或寫入『每週大戶排行紀錄』工作表。")
     try:
         gc = gspread.service_account(filename=SERVICE_KEY_FILE)
-        return gc.open(SHEET_NAME)
+        sh = gc.open(SHEET_NAME)
+        print(f"Google Sheet 連線成功：{SHEET_NAME}")
+        return sh
     except Exception as e:
-        print(f"⚠️ 連線 Google Sheet 失敗，略過每週大戶排行紀錄寫入：{e}")
-        return None
+        raise RuntimeError(f"連線 Google Sheet 失敗，無法建立或寫入『每週大戶排行紀錄』工作表：{e}")
 
 
 def get_or_create_holder_history_ws(sh):
     if sh is None:
-        return None, False
+        raise RuntimeError("Google Sheet 連線物件為空，無法建立或讀取『每週大戶排行紀錄』工作表。")
     created = False
     try:
         ws = sh.worksheet(HOLDER_HISTORY_SHEET_NAME)
+        print(f"已找到工作表：{HOLDER_HISTORY_SHEET_NAME}")
     except Exception:
         ws = sh.add_worksheet(title=HOLDER_HISTORY_SHEET_NAME, rows=2000, cols=len(HOLDER_HISTORY_HEADERS))
         created = True
+        print(f"已建立新工作表：{HOLDER_HISTORY_SHEET_NAME}")
 
     try:
         values = ws.get_all_values()
         if not values:
             ws.update("A1", [HOLDER_HISTORY_HEADERS])
+            print(f"已初始化『{HOLDER_HISTORY_SHEET_NAME}』欄位。")
         elif values[0] != HOLDER_HISTORY_HEADERS:
             ws.update("A1", [HOLDER_HISTORY_HEADERS])
+            print(f"已修正『{HOLDER_HISTORY_SHEET_NAME}』欄位標題。")
     except Exception as e:
-        print(f"⚠️ 初始化每週大戶排行紀錄欄位失敗：{e}")
+        raise RuntimeError(f"初始化『{HOLDER_HISTORY_SHEET_NAME}』欄位失敗：{e}")
 
     return ws, created
 
@@ -629,7 +633,9 @@ def rows_to_append_values(rows):
 
 
 def append_history_rows(ws, rows):
-    if ws is None or not rows:
+    if ws is None:
+        raise RuntimeError("工作表物件為空，無法寫入每週大戶排行紀錄。")
+    if not rows:
         return 0
     try:
         existing_records = ws.get_all_records()
@@ -656,8 +662,7 @@ def append_history_rows(ws, rows):
             ws.append_rows(rows_to_append_values(new_rows), value_input_option="USER_ENTERED")
         return len(new_rows)
     except Exception as e:
-        print(f"⚠️ 寫入每週大戶排行紀錄失敗：{e}")
-        return 0
+        raise RuntimeError(f"寫入『{HOLDER_HISTORY_SHEET_NAME}』失敗：{e}")
 
 
 def backfill_holder_history(ws, weeks):
@@ -680,13 +685,15 @@ def backfill_holder_history(ws, weeks):
 
 def initialize_holder_history(ws, created=False):
     if ws is None:
-        return
+        raise RuntimeError("工作表物件為空，無法初始化每週大戶排行紀錄。")
     try:
         records = ws.get_all_records()
         if created or not records:
             backfill_holder_history(ws, HISTORY_INITIAL_WEEKS)
+        else:
+            print(f"『{HOLDER_HISTORY_SHEET_NAME}』已有 {len(records)} 筆紀錄，略過首次 5 週回補。")
     except Exception as e:
-        print(f"⚠️ 檢查每週大戶排行紀錄失敗：{e}")
+        raise RuntimeError(f"檢查或初始化『{HOLDER_HISTORY_SHEET_NAME}』失敗：{e}")
 
 
 def build_current_history_rows(df, display_date, rank_type, market):
@@ -1271,9 +1278,10 @@ def build_decrease_rank_image(listed_df, otc_df, display_date):
 
 
 def push_rank_to_dc():
-    if not DISCORD_WEBHOOK_URL:
-        print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
-        return
+    print("啟動 stock_holder_rank.py：每週大戶增加 / 減少排行與歷史紀錄")
+    can_send_discord = bool(DISCORD_WEBHOOK_URL)
+    if not can_send_discord:
+        print("⚠️ 找不到 DISCORD_WEBHOOK_URL_TEST，將只建立 / 更新 Google Sheet 歷史紀錄，不進行 Discord 推播。")
 
     print("正在處理上市排行...")
     listed_df, listed_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
@@ -1296,16 +1304,14 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
-    holder_history_ws = None
     holder_history_sh = connect_holder_history_sheet()
-    if holder_history_sh is not None:
-        holder_history_ws, holder_history_created = get_or_create_holder_history_ws(holder_history_sh)
-        initialize_holder_history(holder_history_ws, created=holder_history_created)
-        append_current_rank_history(holder_history_ws, listed_df, otc_df, display_date, "增加")
-        streak_map = compute_streak_map(holder_history_ws)
-        streak_map = maybe_extend_history_for_long_streak(holder_history_ws, streak_map)
-        listed_df = apply_streak_labels(listed_df, "上市", "增加", streak_map)
-        otc_df = apply_streak_labels(otc_df, "上櫃", "增加", streak_map)
+    holder_history_ws, holder_history_created = get_or_create_holder_history_ws(holder_history_sh)
+    initialize_holder_history(holder_history_ws, created=holder_history_created)
+    append_current_rank_history(holder_history_ws, listed_df, otc_df, display_date, "增加")
+    streak_map = compute_streak_map(holder_history_ws)
+    streak_map = maybe_extend_history_for_long_streak(holder_history_ws, streak_map)
+    listed_df = apply_streak_labels(listed_df, "上市", "增加", streak_map)
+    otc_df = apply_streak_labels(otc_df, "上櫃", "增加", streak_map)
 
     content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
@@ -1394,36 +1400,39 @@ def push_rank_to_dc():
     content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
 
     # 發送
-    try:
-        image_buf = build_rank_image(
-            listed_df.reset_index(drop=True) if listed_df is not None else None,
-            otc_df.reset_index(drop=True) if otc_df is not None else None,
-            display_date
-        )
-        files = {"file": ("weekly_holder_rank.png", image_buf, "image/png")}
-        data = {
-            "content": f"📊 **每週大股東籌碼強勢榜 Top 20**\n> 📅 **資料統計日期：{display_date}**"
-        }
-        response = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files)
-        if response.status_code in (200, 204):
-            print("✅ 推播完成！")
-        else:
-            print(f"❌ 圖片推播失敗: {response.status_code}，改用文字推播")
-            fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-            if fallback.status_code == 204:
-                print("✅ 文字備援推播完成！")
-            else:
-                print(f"❌ 文字備援推播失敗: {fallback.status_code}")
-    except Exception as e:
-        print(f"❌ 圖片發送錯誤: {e}，改用文字推播")
+    if can_send_discord:
         try:
-            response = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-            if response.status_code == 204:
-                print("✅ 文字備援推播完成！")
+            image_buf = build_rank_image(
+                listed_df.reset_index(drop=True) if listed_df is not None else None,
+                otc_df.reset_index(drop=True) if otc_df is not None else None,
+                display_date
+            )
+            files = {"file": ("weekly_holder_rank.png", image_buf, "image/png")}
+            data = {
+                "content": f"📊 **每週大股東籌碼強勢榜 Top 20**\n> 📅 **資料統計日期：{display_date}**"
+            }
+            response = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files)
+            if response.status_code in (200, 204):
+                print("✅ 推播完成！")
             else:
-                print(f"❌ 文字備援推播失敗: {response.status_code}")
-        except Exception as inner_e:
-            print(f"❌ 發送錯誤: {inner_e}")
+                print(f"❌ 圖片推播失敗: {response.status_code}，改用文字推播")
+                fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+                if fallback.status_code == 204:
+                    print("✅ 文字備援推播完成！")
+                else:
+                    print(f"❌ 文字備援推播失敗: {fallback.status_code}")
+        except Exception as e:
+            print(f"❌ 圖片發送錯誤: {e}，改用文字推播")
+            try:
+                response = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+                if response.status_code == 204:
+                    print("✅ 文字備援推播完成！")
+                else:
+                    print(f"❌ 文字備援推播失敗: {response.status_code}")
+            except Exception as inner_e:
+                print(f"❌ 發送錯誤: {inner_e}")
+    else:
+        print("已略過每週大股東籌碼強勢榜 Discord 推播。")
 
     print("正在處理上市大戶減少排行...")
     decrease_listed_df, decrease_listed_date = get_norway_decrease_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
@@ -1460,36 +1469,39 @@ def push_rank_to_dc():
     decrease_content += format_rank_block(decrease_otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
 
     # 發送
-    try:
-        decrease_image_buf = build_decrease_rank_image(
-            decrease_listed_df.reset_index(drop=True) if decrease_listed_df is not None else None,
-            decrease_otc_df.reset_index(drop=True) if decrease_otc_df is not None else None,
-            decrease_display_date
-        )
-        decrease_files = {"file": ("weekly_holder_decrease_watchlist.png", decrease_image_buf, "image/png")}
-        decrease_data = {
-            "content": f"📉 **本週大戶持股減少觀察名單 Top 15**\n> 📅 **資料統計日期：{decrease_display_date}**"
-        }
-        decrease_response = requests.post(DISCORD_WEBHOOK_URL, data=decrease_data, files=decrease_files)
-        if decrease_response.status_code in (200, 204):
-            print("✅ 大戶減少觀察名單推播完成！")
-        else:
-            print(f"❌ 大戶減少觀察名單圖片推播失敗: {decrease_response.status_code}，改用文字推播")
-            decrease_fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": decrease_content})
-            if decrease_fallback.status_code == 204:
-                print("✅ 大戶減少觀察名單文字備援推播完成！")
-            else:
-                print(f"❌ 大戶減少觀察名單文字備援推播失敗: {decrease_fallback.status_code}")
-    except Exception as e:
-        print(f"❌ 大戶減少觀察名單圖片發送錯誤: {e}，改用文字推播")
+    if can_send_discord:
         try:
-            decrease_response = requests.post(DISCORD_WEBHOOK_URL, json={"content": decrease_content})
-            if decrease_response.status_code == 204:
-                print("✅ 大戶減少觀察名單文字備援推播完成！")
+            decrease_image_buf = build_decrease_rank_image(
+                decrease_listed_df.reset_index(drop=True) if decrease_listed_df is not None else None,
+                decrease_otc_df.reset_index(drop=True) if decrease_otc_df is not None else None,
+                decrease_display_date
+            )
+            decrease_files = {"file": ("weekly_holder_decrease_watchlist.png", decrease_image_buf, "image/png")}
+            decrease_data = {
+                "content": f"📉 **本週大戶持股減少觀察名單 Top 15**\n> 📅 **資料統計日期：{decrease_display_date}**"
+            }
+            decrease_response = requests.post(DISCORD_WEBHOOK_URL, data=decrease_data, files=decrease_files)
+            if decrease_response.status_code in (200, 204):
+                print("✅ 大戶減少觀察名單推播完成！")
             else:
-                print(f"❌ 大戶減少觀察名單文字備援推播失敗: {decrease_response.status_code}")
-        except Exception as inner_e:
-            print(f"❌ 大戶減少觀察名單發送錯誤: {inner_e}")
+                print(f"❌ 大戶減少觀察名單圖片推播失敗: {decrease_response.status_code}，改用文字推播")
+                decrease_fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": decrease_content})
+                if decrease_fallback.status_code == 204:
+                    print("✅ 大戶減少觀察名單文字備援推播完成！")
+                else:
+                    print(f"❌ 大戶減少觀察名單文字備援推播失敗: {decrease_fallback.status_code}")
+        except Exception as e:
+            print(f"❌ 大戶減少觀察名單圖片發送錯誤: {e}，改用文字推播")
+            try:
+                decrease_response = requests.post(DISCORD_WEBHOOK_URL, json={"content": decrease_content})
+                if decrease_response.status_code == 204:
+                    print("✅ 大戶減少觀察名單文字備援推播完成！")
+                else:
+                    print(f"❌ 大戶減少觀察名單文字備援推播失敗: {decrease_response.status_code}")
+            except Exception as inner_e:
+                print(f"❌ 大戶減少觀察名單發送錯誤: {inner_e}")
+    else:
+        print("已略過本週大戶持股減少觀察名單 Discord 推播。")
 
 if __name__ == "__main__":
     push_rank_to_dc()
