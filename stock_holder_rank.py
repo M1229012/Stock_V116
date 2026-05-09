@@ -955,7 +955,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
     aligns = ["center", "center", "left", "left", "left", "left", "right"]
     shift_cols = {3, 4, 5}
-    col_shift = 0.030
+    col_shift = 0.038
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -1094,22 +1094,26 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                 draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                           color=colors[j], weight=weights[j], ha=ha,
                           bold=(weights[j] == 'bold'))
+                badge_font_size = 9.0
+                badge_w = 0.030
+                badge_h = row_h * 0.56
                 badge_x = col_x[3] + 0.010
+                badge_y = y - row_h / 2 - badge_h / 2
+                ax.add_patch(patches.FancyBboxPatch(
+                    (badge_x, badge_y), badge_w, badge_h,
+                    boxstyle="round,pad=0.001,rounding_size=0.003",
+                    linewidth=0.9, edgecolor="#D8B83F", facecolor="#FFF3C4",
+                    transform=ax.transAxes, zorder=7
+                ))
                 ax.text(
-                    badge_x, y - row_h / 2, clean_cell(streak_badge),
+                    badge_x + badge_w / 2, y - row_h / 2, clean_cell(streak_badge),
                     transform=ax.transAxes,
-                    ha='left', va='center',
-                    fontsize=sizes[j],
+                    ha='center', va='center',
+                    fontsize=badge_font_size,
                     fontweight='bold',
                     fontproperties=FONT_BOLD,
                     color="#A06A00",
-                    zorder=8,
-                    bbox=dict(
-                        boxstyle="round,pad=0.08",
-                        facecolor="#FFF3C4",
-                        edgecolor="#D8B83F",
-                        linewidth=0.9,
-                    )
+                    zorder=8
                 )
                 continue
                 
