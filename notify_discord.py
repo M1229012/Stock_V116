@@ -340,6 +340,7 @@ def get_merged_jail_period_details(sh):
     jail_map = {}
     tw_now = datetime.utcnow() + timedelta(hours=8)
     today = datetime(tw_now.year, tw_now.month, tw_now.day)
+    keep_from = today - timedelta(days=7)
     try:
         ws = sh.worksheet("處置股90日明細")
         for row in ws.get_all_records():
@@ -348,7 +349,7 @@ def get_merged_jail_period_details(sh):
             if not code or not period: continue
             detail = build_period_detail(period)
             s_date, e_date = detail.get('sort_start'), detail.get('sort_end')
-            if s_date and e_date and e_date >= today:
+            if s_date and e_date and e_date >= keep_from:
                 if code not in jail_map:
                     jail_map[code] = {'start': s_date, 'end': e_date}
                 else:
