@@ -340,7 +340,6 @@ def get_merged_jail_period_details(sh):
     jail_map = {}
     tw_now = datetime.utcnow() + timedelta(hours=8)
     today = datetime(tw_now.year, tw_now.month, tw_now.day)
-    keep_from = today - timedelta(days=7)
     try:
         ws = sh.worksheet("處置股90日明細")
         for row in ws.get_all_records():
@@ -349,7 +348,7 @@ def get_merged_jail_period_details(sh):
             if not code or not period: continue
             detail = build_period_detail(period)
             s_date, e_date = detail.get('sort_start'), detail.get('sort_end')
-            if s_date and e_date and e_date >= keep_from:
+            if s_date and e_date and e_date >= today:
                 if code not in jail_map:
                     jail_map[code] = {'start': s_date, 'end': e_date}
                 else:
@@ -445,7 +444,9 @@ def check_status_split(sh, releasing_codes, price_map=None):
         if code in releasing_codes or code in seen: continue
         name, days_str, reason = clean_display_text(row.get('名稱', '')), str(row.get('最快處置天數', '99')), clean_display_text(row.get('處置觸發原因', ''))
         if "處置中" in reason:
-            detail = jail_detail_map.get(code, {'period': '日期未知', 'sort_end': None})
+            detail = jail_detail_map.get(code)
+            if not detail:
+                continue
             inj.append({
                 "code": code,
                 "name": name,
@@ -464,33 +465,40 @@ def check_status_split(sh, releasing_codes, price_map=None):
     return {'entering': ent, 'in_jail': inj}
 
 
-def get_releasing_monitor_codes(sh):
-    codes = set()
-    try:
-        records = sh.worksheet("即將出關監控").get_all_records()
-    except:
-        return codes
-    for row in records:
-        code = str(row.get('代號', '')).replace("'", "").strip()
-        if code:
-            codes.add(code)
-    return codes
-
-
 def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
     try: records = sh.worksheet("即將出關監控").get_all_records()
     except: return []
     res, seen = [], set()
     for row in records:
-        code = str(row.get('代號', '')).replace("'", "").strip()
+        code = str(row.get('代號', '')).strip()
         if code in seen: continue
-        days_str = str(row.get('剩餘天數', '99')).strip()
+        days_str = str(row.get('剩餘天數', '99'))
         if not days_str.isdigit(): continue
-        display_days = int(days_str)
-        actual_release_dt = parse_roc_date(row.get('出關日期', ''))
-        if 0 <= display_days <= JAIL_EXIT_THRESHOLD:
+        d = int(days_str) + 1
+        last_day_dt = parse_roc_date(row.get('出關日期', ''))
+        actual_release_dt = None
+        if last_day_dt:
+            actual_release_dt = last_day_dt + timedelta(days=1)
+            if actual_release_dt.weekday() == 5: actual_release_dt += timedelta(days=2)
+            elif actual_release_dt.weekday() == 6: actual_release_dt += timedelta(days=1)
+        tw_now = datetime.utcnow() + timedelta(hours=8)
+        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6:
+            display_days = d + 1
+        else:
+            display_days = d
+        if display_days <= 5:
             icon, status_text, pre_pct, in_pct = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_pct, "in_pct": in_pct})
+            seen.add(code)
+        elif overflow_injail is not None:
+            detail = build_period_detail(row.get('處置期間', ''))
+            overflow_injail.append({
+                "code": code,
+                "name": clean_display_text(row.get('名稱', '')),
+                "price": format_display_price((price_map or {}).get(code, "--")),
+                "period": detail.get('period', '日期未知'),
+                "sort_end": detail.get('sort_end'),
+            })
             seen.add(code)
     res.sort(key=lambda x: (x['days'], code_sort_key(x['code'])))
     return res
@@ -1039,9 +1047,8 @@ def main():
     price_map = load_current_price_map(sh)
 
     releasing_over5_injail = []
-    rel = check_releasing_stocks(sh, price_map=price_map, overflow_injail=None)
+    rel = check_releasing_stocks(sh, price_map=price_map, overflow_injail=releasing_over5_injail)
     rel_codes = {x['code'] for x in rel}
-    rel_codes.update(get_releasing_monitor_codes(sh))
 
     stats = check_status_split(sh, rel_codes, price_map=price_map)
     if releasing_over5_injail:
