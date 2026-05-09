@@ -954,6 +954,8 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     col_rel = [0.060, 0.080, 0.210, 0.150, 0.130, 0.150, 0.220]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
     aligns = ["center", "center", "left", "left", "left", "left", "right"]
+    shift_cols = {3, 4, 5}
+    col_shift = 0.030
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -982,6 +984,9 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         else:
             # 統一所有靠左對齊欄位的間距，確保整齊度
             tx, ha = cell_x + 0.010, "left"
+
+        if i in shift_cols:
+            tx += col_shift
             
         draw_text(ax, tx, header_top - header_h / 2, label, size=12,
                   color=TEXT_MUTED, weight='bold', ha=ha, bold=True)
@@ -1082,23 +1087,25 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                 # 統一靠左對齊間距
                 tx, ha = cell_x + 0.010, "left"
 
+            if j in shift_cols:
+                tx += col_shift
+
             if j == 2 and streak_badge:
-                display_name = _shorten_text(value, 5)
-                draw_text(ax, tx, y - row_h / 2, display_name, size=sizes[j],
+                draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                           color=colors[j], weight=weights[j], ha=ha,
                           bold=(weights[j] == 'bold'))
-                badge_x = cell_x + cell_w - 0.008
+                badge_x = col_x[3] + 0.010
                 ax.text(
                     badge_x, y - row_h / 2, clean_cell(streak_badge),
                     transform=ax.transAxes,
-                    ha='right', va='center',
-                    fontsize=sizes[j] + 2,
+                    ha='left', va='center',
+                    fontsize=sizes[j],
                     fontweight='bold',
                     fontproperties=FONT_BOLD,
                     color="#A06A00",
                     zorder=8,
                     bbox=dict(
-                        boxstyle="round,pad=0.13",
+                        boxstyle="round,pad=0.08",
                         facecolor="#FFF3C4",
                         edgecolor="#D8B83F",
                         linewidth=0.9,
