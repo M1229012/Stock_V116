@@ -2463,9 +2463,14 @@ def main():
         #   - 有該股票，且條款屬於可累積處置的第1~8款 → 狀態碼記 1
         #   - 沒有該股票，或條款不是第1~8款 → 狀態碼記 0
         #
-        # 這裡不再依照個股處置期間重建 stock_calendar，也不再使用重新爬取資料；
-        # 目的就是讓 30/10/5 日注意次數完全對齊 Google Sheet「每日紀錄」。
+        # 但若該股票已有「過去完成的處置區間」，代表處置結束日以前的注意紀錄
+        # 已經被前一次處置消耗，不能再拿來累積下一次處置，避免重複處罰。
+        # 因此：
+        #   - 每日紀錄仍完整保留，不刪除歷史資料。
+        #   - 只有在計算 30/10/5 日狀態碼與處置倒數時，將最近一次已完成
+        #     處置結束日含以前的可累積注意紀錄歸零。
         stock_calendar = recent_30_trade_dates
+        latest_consumed_jail_end = get_last_jail_end(code, target_trade_date_obj, jail_map)
 
         bits = []
         clauses = []
@@ -2475,15 +2480,21 @@ def main():
             c = clause_map.get((code, d_str), "")
             ids = parse_clause_ids_strict(c)
             is_valid_attention = bool(c) and is_valid_accumulation_day(ids)
+            is_consumed_by_past_jail = bool(latest_consumed_jail_end and d <= latest_consumed_jail_end)
 
-            bits.append(1 if is_valid_attention else 0)
-            valid_bits.append(1 if is_valid_attention else 0)
-            clauses.append(c if c else "")
+            if is_consumed_by_past_jail:
+                bits.append(0)
+                valid_bits.append(0)
+                clauses.append("")
+            else:
+                bits.append(1 if is_valid_attention else 0)
+                valid_bits.append(1 if is_valid_attention else 0)
+                clauses.append(c if c else "")
 
         # ===========================================================
-        # 處置倒數直接使用最近30個交易日的每日紀錄狀態。
-        # 不再將處置結束日前資料整段歸零，避免出關後
-        # 可累積的注意紀錄被過度清空，導致該預測到的股票漏判。
+        # 處置倒數使用「排除已完成處置消耗紀錄後」的最近30個交易日狀態。
+        # 這可以避免同一批注意紀錄先觸發前一次處置，出關後又被拿來湊
+        # 30日12次、10日6次或連續3次第一款，造成重複處罰。
         # ===========================================================
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses,
