@@ -890,6 +890,14 @@ def split_code_name(raw):
     return code, name
 
 
+def split_streak_label(name):
+    name = clean_cell(name)
+    match = re.search(r'\s+(連\d+)$', name)
+    if match:
+        return clean_cell(name[:match.start()]), clean_cell(match.group(1))
+    return name, ""
+
+
 def draw_text(ax, x, y, text, size=13, color=TEXT_MAIN, weight='normal',
               ha='left', va='center', bold=False, alpha=1.0):
     ax.text(
@@ -987,6 +995,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if i < len(df):
             row = df.iloc[i]
             code, name = split_code_name(row['股票代號/名稱'])
+            name, streak_label = split_streak_label(name)
             category = clean_cell(row.get('類別', '-'))
             price = clean_cell(row.get('現價', '-'))
             week_chg = clean_cell(row.get('週漲跌', '-'))
@@ -996,7 +1005,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             except:
                 change_val = 0.0
         else:
-            code, name, category, price, week_chg, change_val = "", "", "", "", "", 0.0
+            code, name, streak_label, category, price, week_chg, change_val = "", "", "", "", "", "", 0.0
 
         if i == 0:
             bg, edge, lw = TOP1_BG, TOP1_BORDER, 1.1
@@ -1070,6 +1079,29 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                 # 統一靠左對齊間距
                 tx, ha = cell_x + 0.010, "left"
                 
+            if j == 2 and streak_label:
+                display_name = _shorten_text(value, 5)
+                draw_text(ax, tx, y - row_h / 2, display_name, size=sizes[j],
+                          color=colors[j], weight=weights[j], ha=ha,
+                          bold=(weights[j] == 'bold'))
+
+                badge_w = 0.030
+                badge_h = row_h * 0.50
+                badge_x = min(
+                    tx + 0.0055 * visual_len(display_name) + 0.008,
+                    cell_x + cell_w - badge_w - 0.006
+                )
+                badge_y = y - row_h / 2 - badge_h / 2
+                ax.add_patch(patches.FancyBboxPatch(
+                    (badge_x, badge_y), badge_w, badge_h,
+                    boxstyle="round,pad=0.002,rounding_size=0.004",
+                    linewidth=1.0, edgecolor="#E5C04B", facecolor="#FFF7D6",
+                    transform=ax.transAxes, zorder=6
+                ))
+                draw_text(ax, badge_x + badge_w / 2, y - row_h / 2, streak_label,
+                          size=7.6, color="#A06E00", weight='bold', ha='center', bold=True)
+                continue
+
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                       color=colors[j], weight=weights[j], ha=ha,
                       bold=(weights[j] == 'bold'))
