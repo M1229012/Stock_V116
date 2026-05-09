@@ -1095,14 +1095,14 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                           color=colors[j], weight=weights[j], ha=ha,
                           bold=(weights[j] == 'bold'))
                 badge_font_size = 9.0
-                badge_w = 0.030
-                badge_h = row_h * 0.56
+                badge_w = 0.022
+                badge_h = row_h * 0.42
                 badge_x = col_x[3] + 0.010
                 badge_y = y - row_h / 2 - badge_h / 2
                 ax.add_patch(patches.FancyBboxPatch(
                     (badge_x, badge_y), badge_w, badge_h,
-                    boxstyle="round,pad=0.001,rounding_size=0.003",
-                    linewidth=0.9, edgecolor="#D8B83F", facecolor="#FFF3C4",
+                    boxstyle="round,pad=0.0005,rounding_size=0.0025",
+                    linewidth=0.8, edgecolor="#D8B83F", facecolor="#FFF3C4",
                     transform=ax.transAxes, zorder=7
                 ))
                 ax.text(
