@@ -1,4 +1,5 @@
 import requests
+import gspread
 import pandas as pd
 import yfinance as yf
 from io import StringIO, BytesIO
@@ -24,6 +25,15 @@ from matplotlib import font_manager
 
 # ================= 設定區 =================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST")
+SHEET_NAME = "台股注意股資料庫_V33"
+SERVICE_KEY_FILE = "service_key.json"
+HOLDER_HISTORY_SHEET_NAME = "每週大戶排行紀錄"
+HOLDER_HISTORY_HEADERS = [
+    "資料統計日期", "榜單類型", "市場", "排名", "代號", "名稱",
+    "股票代號/名稱", "類別", "現價", "週漲跌", "總增減%", "更新時間"
+]
+HOLDER_HISTORY_INITIAL_WEEKS = 5
+HOLDER_HISTORY_EXTEND_WEEKS = 8
 
 # ================= 圖片樣式設定 =================
 WATERMARK_TEXT = "股市艾斯\n台股DC討論群"
@@ -450,6 +460,393 @@ def get_norway_decrease_rank_logic(url):
     finally:
         driver.quit()
 
+
+# ================= 大戶排行歷史紀錄工具區 =================
+
+def format_history_date(raw_date):
+    """將 Norway 表頭日期統一轉成 yyyy-mm-dd，作為歷史紀錄週別 key。"""
+    try:
+        return parse_latest_trade_date(raw_date).strftime("%Y-%m-%d")
+    except Exception:
+        s = "" if raw_date is None else str(raw_date).strip()
+        digits = re.sub(r"\D", "", s)
+        if len(digits) == 4:
+            return f"{datetime.now().year}-{digits[:2]}-{digits[2:]}"
+        if len(digits) == 8:
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+        return s if s else "未知日期"
+
+
+def connect_holder_history_sheet():
+    """連線台股注意股資料庫，取得或建立每週大戶排行紀錄工作表。"""
+    try:
+        if not os.path.exists(SERVICE_KEY_FILE):
+            print(f"⚠️ 找不到 {SERVICE_KEY_FILE}，略過大戶排行歷史紀錄與連榜標記。")
+            return None, None
+
+        gc = gspread.service_account(filename=SERVICE_KEY_FILE)
+        sh = gc.open(SHEET_NAME)
+
+        try:
+            ws = sh.worksheet(HOLDER_HISTORY_SHEET_NAME)
+        except Exception:
+            print(f"工作表 '{HOLDER_HISTORY_SHEET_NAME}' 不存在，正在建立...")
+            ws = sh.add_worksheet(
+                title=HOLDER_HISTORY_SHEET_NAME,
+                rows="3000",
+                cols=str(len(HOLDER_HISTORY_HEADERS))
+            )
+            ws.append_row(HOLDER_HISTORY_HEADERS, value_input_option="USER_ENTERED")
+
+        values = ws.get_all_values()
+        if not values:
+            ws.append_row(HOLDER_HISTORY_HEADERS, value_input_option="USER_ENTERED")
+        elif values[0] != HOLDER_HISTORY_HEADERS:
+            print(f"⚠️ {HOLDER_HISTORY_SHEET_NAME} 表頭與預期不同，保留既有資料但不覆蓋。")
+
+        return sh, ws
+    except Exception as e:
+        print(f"⚠️ 大戶排行歷史工作表連線失敗：{e}")
+        return None, None
+
+
+def get_norway_weekly_history_logic(url, market_name, rank_type="強勢榜", top_n=20, week_count=5):
+    """複製 Norway 大股東排行抓取邏輯，建立最近 N 週 Top 名單作為歷史資料。"""
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    try:
+        driver.get(url)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.XPATH, "//table[contains(., '大股東持有張數增減')]"))
+        )
+
+        html = driver.page_source
+        dfs = pd.read_html(StringIO(html), header=None)
+
+        target_df = None
+        for df in dfs:
+            if len(df.columns) > 10 and len(df) > 20:
+                if df.astype(str).apply(lambda x: x.str.contains('大股東持有').any()).any():
+                    target_df = df
+                    break
+
+        if target_df is None and len(dfs) > 0:
+            target_df = max(dfs, key=len)
+
+        if target_df is None:
+            return pd.DataFrame()
+
+        header_idx = -1
+        data_start_idx = -1
+
+        for idx, row in target_df.iterrows():
+            if re.search(r'\d{4}', str(row.iloc[3])):
+                data_start_idx = idx
+                break
+
+        if data_start_idx == -1:
+            return pd.DataFrame()
+
+        for idx in range(max(0, data_start_idx - 5), data_start_idx):
+            row = target_df.iloc[idx]
+            if re.match(r'^\d{4,}$', str(row.iloc[5])):
+                header_idx = idx
+                break
+
+        max_col_index = target_df.shape[1] - 1
+        start_search = min(10, max_col_index)
+
+        date_cols = []
+        if header_idx != -1:
+            for col_i in range(start_search, 4, -1):
+                try:
+                    val = str(target_df.iloc[header_idx, col_i]).strip()
+                    if re.search(r'\d+', val):
+                        date_cols.append((col_i, val))
+                except Exception:
+                    continue
+
+        if not date_cols:
+            date_cols = [(5, "未知日期")]
+
+        date_cols = date_cols[:week_count]
+        raw_data = target_df.iloc[data_start_idx:].copy()
+
+        def parse_pct(x):
+            try:
+                return float(str(x).replace('%', '').replace(',', ''))
+            except Exception:
+                return -999999.0
+
+        history_rows = []
+        market_suffix = ".TWO" if "CID=100" in url else ".TW"
+        update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        for col_idx, raw_week_date in date_cols:
+            week_df = raw_data.copy()
+            week_df['_sort_val'] = week_df.iloc[:, col_idx].apply(parse_pct)
+            top_df = week_df.sort_values(by='_sort_val', ascending=False).head(top_n)
+            week_date = format_history_date(raw_week_date)
+
+            for rank_idx, row in enumerate(top_df.itertuples(index=False), start=1):
+                row_values = list(row)
+                raw_code_name = row_values[3] if len(row_values) > 3 else ""
+                code, name = split_code_name(raw_code_name)
+                category = clean_cell(row_values[4]) if len(row_values) > 4 else "-"
+                price, week_chg = get_week_price_info(code, market_suffix, raw_week_date)
+                change_str = fmt_change(row_values[col_idx]) if len(row_values) > col_idx else "-"
+
+                if not code:
+                    continue
+
+                history_rows.append({
+                    "資料統計日期": week_date,
+                    "榜單類型": rank_type,
+                    "市場": market_name,
+                    "排名": rank_idx,
+                    "代號": code,
+                    "名稱": name,
+                    "股票代號/名稱": clean_cell(raw_code_name),
+                    "類別": category,
+                    "現價": price,
+                    "週漲跌": week_chg,
+                    "總增減%": change_str,
+                    "更新時間": update_time,
+                })
+
+        return pd.DataFrame(history_rows)
+    except Exception as e:
+        print(f"⚠️ 大戶排行歷史資料抓取失敗 ({market_name}): {e}")
+        return pd.DataFrame()
+    finally:
+        driver.quit()
+
+
+def rank_df_to_history_rows(df, display_date, market_name, rank_type="強勢榜", top_n=20):
+    """將本次已產出的排行 DataFrame 轉成歷史紀錄列。"""
+    rows = []
+    if df is None or df.empty:
+        return rows
+
+    update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for i, row in df.head(top_n).reset_index(drop=True).iterrows():
+        code, name = split_code_name(row.get('股票代號/名稱', ''))
+        if not code:
+            continue
+        rows.append({
+            "資料統計日期": display_date,
+            "榜單類型": rank_type,
+            "市場": market_name,
+            "排名": i + 1,
+            "代號": code,
+            "名稱": name,
+            "股票代號/名稱": clean_cell(row.get('股票代號/名稱', '')),
+            "類別": clean_cell(row.get('類別', '-')),
+            "現價": clean_cell(row.get('現價', '-')),
+            "週漲跌": clean_cell(row.get('週漲跌', '-')),
+            "總增減%": fmt_change(row.get('總增減', '-')),
+            "更新時間": update_time,
+        })
+    return rows
+
+
+def append_holder_history_rows(ws, rows):
+    """新增歷史紀錄；同一週、同一榜單、同一市場、同一代號不重複寫入。"""
+    if ws is None or not rows:
+        return 0
+
+    try:
+        values = ws.get_all_values()
+        existing_keys = set()
+        if len(values) > 1:
+            for r in values[1:]:
+                if len(r) >= 5:
+                    key = (
+                        clean_cell(r[0]),
+                        clean_cell(r[1]),
+                        clean_cell(r[2]),
+                        clean_cell(r[4]).replace("'", ""),
+                    )
+                    existing_keys.add(key)
+
+        rows_to_append = []
+        for item in rows:
+            key = (
+                clean_cell(item.get("資料統計日期", "")),
+                clean_cell(item.get("榜單類型", "")),
+                clean_cell(item.get("市場", "")),
+                clean_cell(item.get("代號", "")).replace("'", ""),
+            )
+            if key in existing_keys:
+                continue
+            rows_to_append.append([item.get(h, "") for h in HOLDER_HISTORY_HEADERS])
+            existing_keys.add(key)
+
+        if rows_to_append:
+            ws.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+        return len(rows_to_append)
+    except Exception as e:
+        print(f"⚠️ 大戶排行歷史紀錄寫入失敗：{e}")
+        return 0
+
+
+def initialize_holder_history_if_needed(ws):
+    """第一次建立資料庫時，先補最近 5 週歷史資料。"""
+    if ws is None:
+        return
+
+    try:
+        values = ws.get_all_values()
+        if len(values) > 1:
+            return
+
+        print(f"{HOLDER_HISTORY_SHEET_NAME} 尚無歷史資料，開始建立最近 {HOLDER_HISTORY_INITIAL_WEEKS} 週紀錄...")
+        hist_rows = []
+        listed_hist = get_norway_weekly_history_logic(
+            "https://norway.twsthr.info/StockHoldersTopWeek.aspx",
+            "上市",
+            rank_type="強勢榜",
+            top_n=20,
+            week_count=HOLDER_HISTORY_INITIAL_WEEKS,
+        )
+        otc_hist = get_norway_weekly_history_logic(
+            "https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1",
+            "上櫃",
+            rank_type="強勢榜",
+            top_n=20,
+            week_count=HOLDER_HISTORY_INITIAL_WEEKS,
+        )
+        if listed_hist is not None and not listed_hist.empty:
+            hist_rows.extend(listed_hist.to_dict("records"))
+        if otc_hist is not None and not otc_hist.empty:
+            hist_rows.extend(otc_hist.to_dict("records"))
+
+        added = append_holder_history_rows(ws, hist_rows)
+        print(f"{HOLDER_HISTORY_SHEET_NAME} 初始歷史紀錄建立完成，新增 {added} 筆。")
+    except Exception as e:
+        print(f"⚠️ 初始大戶排行歷史紀錄建立失敗：{e}")
+
+
+def load_holder_history_df(ws):
+    if ws is None:
+        return pd.DataFrame()
+    try:
+        records = ws.get_all_records()
+        df = pd.DataFrame(records)
+        if df.empty:
+            return df
+        for col in HOLDER_HISTORY_HEADERS:
+            if col not in df.columns:
+                df[col] = ""
+        df["資料統計日期"] = df["資料統計日期"].astype(str).str.strip()
+        df["榜單類型"] = df["榜單類型"].astype(str).str.strip()
+        df["市場"] = df["市場"].astype(str).str.strip()
+        df["代號"] = df["代號"].astype(str).str.replace("'", "", regex=False).str.strip()
+        return df
+    except Exception as e:
+        print(f"⚠️ 大戶排行歷史紀錄讀取失敗：{e}")
+        return pd.DataFrame()
+
+
+def calc_consecutive_rank_streak_map(history_df, current_df, current_date, market_name, rank_type="強勢榜"):
+    """計算目前榜單股票連續幾週進榜；只回傳連續 2 週以上。"""
+    streak_map = {}
+    if history_df is None or history_df.empty or current_df is None or current_df.empty:
+        return streak_map
+
+    current_codes = []
+    for raw_name in current_df.get('股票代號/名稱', []):
+        code, _ = split_code_name(raw_name)
+        if code:
+            current_codes.append(code)
+
+    if not current_codes:
+        return streak_map
+
+    sub = history_df[
+        (history_df["榜單類型"] == rank_type)
+        & (history_df["市場"] == market_name)
+    ].copy()
+
+    if sub.empty:
+        return streak_map
+
+    dates = sorted(set(sub["資料統計日期"].astype(str).tolist()), reverse=True)
+    current_date = str(current_date).strip()
+    if current_date in dates:
+        start_idx = dates.index(current_date)
+        dates = dates[start_idx:]
+
+    date_to_codes = {
+        d: set(sub[sub["資料統計日期"] == d]["代號"].astype(str).str.replace("'", "", regex=False).str.strip().tolist())
+        for d in dates
+    }
+
+    for code in current_codes:
+        streak = 0
+        for d in dates:
+            if code in date_to_codes.get(d, set()):
+                streak += 1
+            else:
+                break
+        if streak >= 2:
+            streak_map[code] = streak
+
+    return streak_map
+
+
+def extend_holder_history_if_needed(ws, listed_streak_map, otc_streak_map):
+    """若出現連5，補抓更多週數，讓連6以上可被辨識。"""
+    if ws is None:
+        return False
+
+    max_streak = 0
+    if listed_streak_map:
+        max_streak = max(max_streak, max(listed_streak_map.values()))
+    if otc_streak_map:
+        max_streak = max(max_streak, max(otc_streak_map.values()))
+
+    if max_streak < 5:
+        return False
+
+    try:
+        print(f"偵測到連{max_streak}上榜股票，補抓最近 {HOLDER_HISTORY_EXTEND_WEEKS} 週歷史紀錄...")
+        hist_rows = []
+        listed_hist = get_norway_weekly_history_logic(
+            "https://norway.twsthr.info/StockHoldersTopWeek.aspx",
+            "上市",
+            rank_type="強勢榜",
+            top_n=20,
+            week_count=HOLDER_HISTORY_EXTEND_WEEKS,
+        )
+        otc_hist = get_norway_weekly_history_logic(
+            "https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1",
+            "上櫃",
+            rank_type="強勢榜",
+            top_n=20,
+            week_count=HOLDER_HISTORY_EXTEND_WEEKS,
+        )
+        if listed_hist is not None and not listed_hist.empty:
+            hist_rows.extend(listed_hist.to_dict("records"))
+        if otc_hist is not None and not otc_hist.empty:
+            hist_rows.extend(otc_hist.to_dict("records"))
+
+        added = append_holder_history_rows(ws, hist_rows)
+        print(f"延伸歷史紀錄完成，新增 {added} 筆。")
+        return added > 0
+    except Exception as e:
+        print(f"⚠️ 延伸大戶排行歷史紀錄失敗：{e}")
+        return False
+
+
 # ================= 排版工具區 (終極修正版) =================
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
@@ -561,7 +958,7 @@ def _shorten_text(text, max_chars):
     return text[:max_chars - 1] + "…"
 
 
-def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20):
+def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20, streak_map=None):
     """白色版並列表格：上市 / 上櫃各一張卡片，每張保留 7 欄資訊。"""
     title_h = 0.062
     header_h = 0.046
@@ -636,6 +1033,13 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if i < len(df):
             row = df.iloc[i]
             code, name = split_code_name(row['股票代號/名稱'])
+            if streak_map:
+                try:
+                    streak_count = int(streak_map.get(code, 0) or 0)
+                except Exception:
+                    streak_count = 0
+                if streak_count >= 2:
+                    name = f"{name}  連{streak_count}"
             category = clean_cell(row.get('類別', '-'))
             price = clean_cell(row.get('現價', '-'))
             week_chg = clean_cell(row.get('週漲跌', '-'))
@@ -724,7 +1128,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                       bold=(weights[j] == 'bold'))
 
 
-def build_rank_image(listed_df, otc_df, display_date):
+def build_rank_image(listed_df, otc_df, display_date, listed_streak_map=None, otc_streak_map=None):
     """白色風格 + 原版雙欄樣式：上市、上櫃並排，各 20 名。"""
     top_n = 20
     fig_w = 18.0
@@ -766,6 +1170,7 @@ def build_rank_image(listed_df, otc_df, display_date):
         card_w,
         card_h,
         top_n=top_n,
+        streak_map=listed_streak_map,
     )
     draw_rank_table(
         ax,
@@ -777,7 +1182,19 @@ def build_rank_image(listed_df, otc_df, display_date):
         card_w,
         card_h,
         top_n=top_n,
+        streak_map=otc_streak_map,
     )
+
+    if listed_streak_map or otc_streak_map:
+        draw_text(
+            ax,
+            0.022,
+            0.018,
+            "標記：連2 / 連3 / 連4 代表連續 2 / 3 / 4 週進入大戶增加榜",
+            size=9,
+            color=TEXT_MUTED,
+            ha='left'
+        )
 
     # 中央大文字浮水印：置中、超大、半透明，但仍不影響表格文字辨識
     ax.text(
@@ -936,6 +1353,66 @@ def push_rank_to_dc():
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
 
+    listed_streak_map = {}
+    otc_streak_map = {}
+    try:
+        _, history_ws = connect_holder_history_sheet()
+        if history_ws is not None:
+            initialize_holder_history_if_needed(history_ws)
+            current_history_rows = []
+            current_history_rows.extend(rank_df_to_history_rows(
+                listed_df.reset_index(drop=True) if listed_df is not None else None,
+                display_date,
+                "上市",
+                rank_type="強勢榜",
+                top_n=20,
+            ))
+            current_history_rows.extend(rank_df_to_history_rows(
+                otc_df.reset_index(drop=True) if otc_df is not None else None,
+                display_date,
+                "上櫃",
+                rank_type="強勢榜",
+                top_n=20,
+            ))
+            added_history_count = append_holder_history_rows(history_ws, current_history_rows)
+            if added_history_count:
+                print(f"{HOLDER_HISTORY_SHEET_NAME} 本週新增 {added_history_count} 筆排行紀錄。")
+
+            history_df = load_holder_history_df(history_ws)
+            listed_streak_map = calc_consecutive_rank_streak_map(
+                history_df,
+                listed_df.reset_index(drop=True) if listed_df is not None else None,
+                display_date,
+                "上市",
+                rank_type="強勢榜",
+            )
+            otc_streak_map = calc_consecutive_rank_streak_map(
+                history_df,
+                otc_df.reset_index(drop=True) if otc_df is not None else None,
+                display_date,
+                "上櫃",
+                rank_type="強勢榜",
+            )
+
+            if extend_holder_history_if_needed(history_ws, listed_streak_map, otc_streak_map):
+                history_df = load_holder_history_df(history_ws)
+                listed_streak_map = calc_consecutive_rank_streak_map(
+                    history_df,
+                    listed_df.reset_index(drop=True) if listed_df is not None else None,
+                    display_date,
+                    "上市",
+                    rank_type="強勢榜",
+                )
+                otc_streak_map = calc_consecutive_rank_streak_map(
+                    history_df,
+                    otc_df.reset_index(drop=True) if otc_df is not None else None,
+                    display_date,
+                    "上櫃",
+                    rank_type="強勢榜",
+                )
+    except Exception as e:
+        print(f"⚠️ 連續上榜標記計算失敗，將不影響原本排行推播：{e}")
+
     content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
@@ -1027,7 +1504,9 @@ def push_rank_to_dc():
         image_buf = build_rank_image(
             listed_df.reset_index(drop=True) if listed_df is not None else None,
             otc_df.reset_index(drop=True) if otc_df is not None else None,
-            display_date
+            display_date,
+            listed_streak_map=listed_streak_map,
+            otc_streak_map=otc_streak_map,
         )
         files = {"file": ("weekly_holder_rank.png", image_buf, "image/png")}
         data = {
