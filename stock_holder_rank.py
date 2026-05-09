@@ -130,7 +130,7 @@ def parse_latest_trade_date(raw_date):
             return datetime(year_now, int(digits[:2]), int(digits[2:]))
         if len(digits) == 8:
             return datetime(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
-    except:
+    except Exception:
         pass
 
     return datetime.now()
@@ -138,63 +138,60 @@ def parse_latest_trade_date(raw_date):
 
 def get_week_price_info(code, market_suffix, latest_date_str):
     """
-    計算股價與週漲跌 (標準跨週算法)：
-    抓取這週的最後收盤價，以及「上週」的最後收盤價來計算漲跌幅，
-    這樣計算出的數值才會與一般看盤軟體的周K漲跌幅完全一致。
+    計算股價與週漲跌：
+    以 latest_date_str 所在週為基準，抓該週第一個有效交易日的 Open，
+    以及該週最後一個有效交易日的 Close。
+    若週一或週五休市，會自動改用週二開盤或週四收盤等可取得的交易日。
     """
     try:
         ref_date = parse_latest_trade_date(latest_date_str)
-        # 本週一的日期
         week_start = ref_date - timedelta(days=ref_date.weekday())
-        
-        # 往前多抓一點時間 (抓15天)，確保一定能抓到上週與本週的日K資料
-        fetch_start = week_start - timedelta(days=15)
-        fetch_end = week_start + timedelta(days=7)
+        week_end = week_start + timedelta(days=7)
 
         ticker = f"{code}{market_suffix}"
         df = yf.Ticker(ticker).history(
-            start=fetch_start.strftime("%Y-%m-%d"),
-            end=fetch_end.strftime("%Y-%m-%d"),
+            start=week_start.strftime("%Y-%m-%d"),
+            end=week_end.strftime("%Y-%m-%d"),
             auto_adjust=True
         )
 
-        if df.empty or "Close" not in df.columns:
+        # 若資料來源當週尚未更新，往前補抓一段時間，仍取最新可用週資料。
+        if df.empty:
+            fallback_start = ref_date - timedelta(days=14)
+            fallback_end = ref_date + timedelta(days=2)
+            df = yf.Ticker(ticker).history(
+                start=fallback_start.strftime("%Y-%m-%d"),
+                end=fallback_end.strftime("%Y-%m-%d"),
+                auto_adjust=True
+            )
+
+        if df.empty or "Open" not in df.columns or "Close" not in df.columns:
             return "-", "-"
 
-        df = df.dropna(subset=["Close"])
-        
-        # 移除 index 的時區資訊，方便與 week_start (datetime) 做比對
-        df.index = df.index.tz_localize(None)
-
-        # 1. 篩選出「本週一之前」的所有交易日，取最後一筆作為「上週收盤價」
-        past_df = df[df.index < week_start]
-        # 2. 篩選出「本週一(含)之後」的所有交易日，取最後一筆作為「本週最新收盤價」
-        current_week_df = df[df.index >= week_start]
-
-        if past_df.empty or current_week_df.empty:
+        df = df.dropna(subset=["Open", "Close"])
+        if df.empty:
             return "-", "-"
 
-        prev_close = float(past_df["Close"].iloc[-1])
-        current_close = float(current_week_df["Close"].iloc[-1])
+        first_open = float(df["Open"].iloc[0])
+        last_close = float(df["Close"].iloc[-1])
 
-        if prev_close <= 0:
-            return f"{current_close:.1f}", "-"
+        if first_open <= 0:
+            return f"{last_close:.1f}", "-"
 
-        # 用上週收盤價來計算標準週漲跌幅
-        week_pct = ((current_close - prev_close) / prev_close) * 100
+        week_pct = ((last_close - first_open) / first_open) * 100
         arrow = "▲" if week_pct > 0 else "▼" if week_pct < 0 else "—"
-        
-        return f"{current_close:.1f}", f"{arrow}{abs(week_pct):.1f}%"
-        
+        return f"{last_close:.1f}", f"{arrow}{abs(week_pct):.1f}%"
     except Exception as e:
         print(f"⚠️ 股價資料取得失敗 ({code}{market_suffix}): {e}")
         return "-", "-"
 
 
-def get_norway_rank_logic(url):
+def get_norway_rank_logic(url, rank_mode="increase", top_n=20):
     """
-    依照APP邏輯爬取，並加入「依最新週漲幅排序」功能
-    修正: 使用 iloc 避免 FutureWarning 及索引錯誤
+    依照APP邏輯爬取大股東持有張數增減資料。
+
+    rank_mode="increase"：依最新週總增減由大到小，抓大戶增加排行。
+    rank_mode="decrease"：依最新週總增減由小到大，抓大戶減少排行。
     """
     options = Options()
     options.add_argument('--headless=new')
@@ -203,20 +200,20 @@ def get_norway_rank_logic(url):
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
+
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
+
     try:
         driver.get(url)
-        
+
         # 1. 依照原程式碼邏輯：等待特定 XPath 出現
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.XPATH, "//table[contains(., '大股東持有張數增減')]"))
         )
-        
+
         html = driver.page_source
         dfs = pd.read_html(StringIO(html), header=None)
-        
+
         target_df = None
         # 2. 依照原程式碼邏輯：尋找包含關鍵字的表格
         for df in dfs:
@@ -224,9 +221,9 @@ def get_norway_rank_logic(url):
                 if df.astype(str).apply(lambda x: x.str.contains('大股東持有').any()).any():
                     target_df = df
                     break
-        
+
         if target_df is None and len(dfs) > 0:
-             target_df = max(dfs, key=len)
+            target_df = max(dfs, key=len)
 
         if target_df is None:
             return None, None
@@ -234,68 +231,73 @@ def get_norway_rank_logic(url):
         # 3. 依照原程式碼邏輯：定位 Header 與 Data Start Index
         header_idx = -1
         data_start_idx = -1
-        
+
         for idx, row in target_df.iterrows():
             # 找股票代號 (4碼數字)
             if re.search(r'\d{4}', str(row.iloc[3])):
                 data_start_idx = idx
                 break
-        
-        if data_start_idx == -1: 
+
+        if data_start_idx == -1:
             return None, None
-        
+
         # 往回找日期 Header
         for idx in range(max(0, data_start_idx - 5), data_start_idx):
             row = target_df.iloc[idx]
             if re.match(r'^\d{4,}$', str(row.iloc[5])): # 判斷日期格式
                 header_idx = idx
                 break
-        
+
         # 4. 抓取所有資料並依照「最新週」排序
-        
+
         # 4.1 找出「最新日期」對應的欄位索引
         max_col_index = target_df.shape[1] - 1
         start_search = min(10, max_col_index)
-        
+
         latest_date_col_idx = 5 # 預設值
         latest_date_str = "未知日期"
-        
+
         if header_idx != -1:
             # 倒序檢查，確保抓到最右邊(最新)的日期
-            for col_i in range(start_search, 4, -1): 
+            for col_i in range(start_search, 4, -1):
                 try:
                     val = str(target_df.iloc[header_idx, col_i]).strip()
                     if re.search(r'\d+', val):
                         latest_date_col_idx = col_i
                         latest_date_str = val
                         break
-                except:
+                except Exception:
                     continue
-        
+
         # 4.2 抓取所有資料列
         raw_data = target_df.iloc[data_start_idx:].copy()
-        
+
         # 4.3 定義排序用的數值轉換函數
         def parse_pct(x):
             try:
                 # 移除 % 和逗號，轉為 float
                 return float(str(x).replace('%', '').replace(',', ''))
-            except:
-                return -999999.0 # 無法解析的排到最後
-        
+            except Exception:
+                return float('nan') # 無法解析的排到最後
+
         # 4.4 建立排序依據欄位
         raw_data['_sort_val'] = raw_data.iloc[:, latest_date_col_idx].apply(parse_pct)
-        
-        # 4.5 依照最新週漲幅由大到小排序，並取出前 20 名
-        top20_data = raw_data.sort_values(by='_sort_val', ascending=False).head(20)
-        
+
+        # 4.5 依照最新週大戶增減排序
+        sort_ascending = True if str(rank_mode).lower() == "decrease" else False
+        top_data = raw_data.sort_values(
+            by='_sort_val',
+            ascending=sort_ascending,
+            na_position='last'
+        ).head(top_n)
+
         # 4.6 構建回傳 DataFrame
         result_df = pd.DataFrame()
-        result_df['股票代號/名稱'] = top20_data.iloc[:, 3]
+        result_df['股票代號/名稱'] = top_data.iloc[:, 3]
 
         # 類別欄位參考網頁表格第 5 欄，也就是 XPath 的 td[5]/a
         if target_df.shape[1] > 4:
-            result_df['類別'] = top20_data.iloc[:, 4]
+            result_df['類別'] = top_data.iloc[:, 4]
         else:
             result_df['類別'] = "-"
 
@@ -310,7 +312,7 @@ def get_norway_rank_logic(url):
 
         result_df['現價'] = price_list
         result_df['週漲跌'] = week_chg_list
-        result_df['總增減'] = top20_data.iloc[:, latest_date_col_idx] 
+        result_df['總增減'] = top_data.iloc[:, latest_date_col_idx]
 
         return result_df, latest_date_str
 
@@ -342,8 +344,8 @@ def to_fullwidth(s):
 def clean_cell(s) -> str:
     s = "" if s is None else str(s)
     # [關鍵修正] 移除 NFKC 正規化，避免全形字又被轉回半形 (導致 KY 歪掉)
-    # s = unicodedata.normalize("NFKC", s) 
-    
+    # s = unicodedata.normalize("NFKC", s)
+
     s = s.replace("\xa0", " ")               # NBSP
     s = _ZERO_WIDTH_RE.sub("", s)            # zero-width
     s = re.sub(r"\s+", " ", s).strip()       # 多空白統一
@@ -375,14 +377,14 @@ def truncate_to_width(s, max_w: int) -> str:
 def pad_visual(s, target_w: int, align="left") -> str:
     s = truncate_to_width(s, target_w)
     vis_len = visual_len(s)
-    
+
     diff = max(0, target_w - vis_len)
-    
+
     full_spaces = diff // 2
     half_spaces = diff % 2
-    
+
     padding = "\u3000" * full_spaces + " " * half_spaces
-    
+
     if align == "right":
         return padding + s
     return s + padding
@@ -459,10 +461,10 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
               size=12, color="#FFFFFF", weight='bold', bold=True, ha='right')
 
     # 欄位設定：排名｜代號｜股名｜類別｜現價｜週漲跌｜總增減%
-    # 【關鍵修正】：重新分配欄寬比例，並將靠左對齊的欄位統一 padding 間距
-    col_rel = [0.060, 0.080, 0.210, 0.150, 0.130, 0.150, 0.220]
+    # 重新分配右半部欄位寬度，讓「類別 / 現價 / 週漲跌 / 總增減%」之間的間距更平均。
+    col_rel = [0.060, 0.080, 0.180, 0.160, 0.135, 0.155, 0.230]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
-    aligns = ["center", "center", "left", "left", "left", "left", "right"]
+    aligns = ["center", "center", "left", "left", "right", "left", "right"]
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -486,12 +488,15 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if aligns[i] == "center":
             tx, ha = cell_x + cell_w / 2, "center"
         elif aligns[i] == "right":
-            pad = 0.012
+            pad = 0.010 if i == 4 else 0.012 if i == 6 else 0.006
             tx, ha = cell_x + cell_w - pad, "right"
         else:
-            # 統一所有靠左對齊欄位的間距，確保整齊度
-            tx, ha = cell_x + 0.010, "left"
-            
+            if i == 3:      # 類別
+                tx, ha = cell_x + 0.014, "left"
+            elif i == 5:    # 週漲跌
+                tx, ha = cell_x + 0.022, "left"
+            else:
+                tx, ha = cell_x + 0.006, "left"
         draw_text(ax, tx, header_top - header_h / 2, label, size=12,
                   color=TEXT_MUTED, weight='bold', ha=ha, bold=True)
 
@@ -512,7 +517,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             change_str = fmt_change(row['總增減'])
             try:
                 change_val = float(change_str)
-            except:
+            except Exception:
                 change_val = 0.0
         else:
             code, name, category, price, week_chg, change_val = "", "", "", "", "", 0.0
@@ -544,10 +549,11 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         chg_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
         chg_display = "-" if fmt_change(change_val) == "-" else f"{change_val:+.2f}%"
 
+        # 資料太多時，控制文字長度，避免壓到隔壁欄位
         values = [
             f"{i+1:02d}",
             code,
-            name,
+            _shorten_text(name, 6),
             _shorten_text(category, 7),
             price,
             week_chg,
@@ -556,7 +562,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         name_weight = 'bold' if i < 3 else 'normal'
         colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
         weights = ['bold', 'bold', name_weight, 'normal', 'bold', 'bold', 'bold']
-        sizes = [9.2, 12, 14 if i < 3 else 12, 10, 10, 12, 12]
+        sizes = [9.2, 12, 14 if i < 3 else 12, 10, 10, 12]
 
         # 前三名排名徽章
         rank_cell_x = col_x[0]
@@ -583,20 +589,32 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             if aligns[j] == "center":
                 tx, ha = cell_x + cell_w / 2, "center"
             elif aligns[j] == "right":
-                pad = 0.012
+                pad = 0.010 if j == 4 else 0.012 if j == 6 else 0.006
                 tx, ha = cell_x + cell_w - pad, "right"
             else:
-                # 統一靠左對齊間距
-                tx, ha = cell_x + 0.010, "left"
-                
+                if j == 3:      # 類別
+                    tx, ha = cell_x + 0.014, "left"
+                elif j == 5:    # 週漲跌
+                    tx, ha = cell_x + 0.022, "left"
+                else:
+                    tx, ha = cell_x + 0.006, "left"
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                       color=colors[j], weight=weights[j], ha=ha,
                       bold=(weights[j] == 'bold'))
 
 
-def build_rank_image(listed_df, otc_df, display_date):
-    """白色風格 + 原版雙欄樣式：上市、上櫃並排，各 20 名。"""
-    top_n = 20
+def build_rank_image(
+    listed_df,
+    otc_df,
+    display_date,
+    main_title="每週大股東籌碼強勢榜  Top 20",
+    top_n=20,
+    listed_title="上市排行",
+    otc_title="上櫃排行",
+    listed_accent=ACCENT_LISTED,
+    otc_accent=ACCENT_OTC,
+):
+    """白色風格 + 原版雙欄樣式：上市、上櫃並排。"""
     fig_w = 18.0
     fig_h = 10.6
 
@@ -613,7 +631,7 @@ def build_rank_image(listed_df, otc_df, display_date):
         linewidth=0, facecolor="#FFFFFF",
         transform=ax.transAxes, zorder=1
     ))
-    draw_text(ax, 0.5, 0.945, "每週大股東籌碼強勢榜  Top 20",
+    draw_text(ax, 0.5, 0.945, main_title,
               size=22, color=TEXT_MAIN, weight='bold', ha='center', bold=True)
     draw_text(ax, 0.5, 0.915, f"資料統計日期：{display_date}",
               size=11, color=TEXT_MUTED, ha='center')
@@ -629,8 +647,8 @@ def build_rank_image(listed_df, otc_df, display_date):
     draw_rank_table(
         ax,
         listed_df.reset_index(drop=True) if listed_df is not None else None,
-        "上市排行",
-        ACCENT_LISTED,
+        listed_title,
+        listed_accent,
         left_x,
         card_y_top,
         card_w,
@@ -640,8 +658,8 @@ def build_rank_image(listed_df, otc_df, display_date):
     draw_rank_table(
         ax,
         otc_df.reset_index(drop=True) if otc_df is not None else None,
-        "上櫃排行",
-        ACCENT_OTC,
+        otc_title,
+        otc_accent,
         right_x,
         card_y_top,
         card_w,
@@ -687,42 +705,28 @@ def build_rank_image(listed_df, otc_df, display_date):
     return buf
 
 
-def push_rank_to_dc():
-    if not DISCORD_WEBHOOK_URL:
-        print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
-        return
-
-    print("正在處理上市排行...")
-    listed_df, listed_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
-    
-    print("正在處理上櫃排行...")
-    otc_df, otc_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1")
-
-    if listed_df is None and otc_df is None:
-        print("抓取失敗，無資料")
-        return
-
-    # 顯示日期優先順序
-    raw_date = listed_date if listed_date != "未知日期" else otc_date
-    
-    # 日期格式化
+def format_display_date(raw_date):
     display_date = raw_date
-    if raw_date and raw_date.isdigit():
+    if raw_date and str(raw_date).isdigit():
+        raw_date = str(raw_date)
         if len(raw_date) == 4:
             display_date = f"2026-{raw_date[:2]}-{raw_date[2:]}"
         elif len(raw_date) == 8:
             display_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+    return display_date
 
-    content = "📊 **每週大股東籌碼強勢榜 Top 20**\n"
+
+def build_text_content(listed_df, otc_df, display_date, title_text, listed_title, otc_title):
+    content = f"{title_text}\n"
     content += f"> 📅 **資料統計日期：{display_date}**\n\n"
 
     def format_rank_block(df, title):
         if df is None or df.empty:
             return f"{title} ❌ **無資料**\n\n"
-        
+
         msg = f"{title}\n"
         msg += "```text\n"
-        
+
         # 定義視覺寬度
         W_RANK   = 4
         W_CODE   = 6
@@ -740,8 +744,8 @@ def push_rank_to_dc():
         h_code = pad_visual("代號", W_CODE)
         h_name = pad_visual("股名", W_NAME)
         h_cat  = pad_visual("類別", W_CAT)
-        h_price = pad_visual("現價", W_PRICE, align='left')
-        h_week = pad_visual("週漲跌", W_WEEK, align='left')
+        h_price = pad_visual("現價", W_PRICE, align='right')
+        h_week = pad_visual("週漲跌", W_WEEK, align='right')
         h_chg  = pad_visual("總增減%", W_CHANGE, align='left')
 
         msg += f"{h_rank}{GAP}{h_code}{GAP}{h_name}{GAP}{h_cat}{GAP}{h_price}{GAP}{h_week}{GAP}{h_chg}\n"
@@ -752,7 +756,7 @@ def push_rank_to_dc():
         for i, row in df.iterrows():
             # 清洗
             raw_str = clean_cell(row['股票代號/名稱'])
-            
+
             match = re.match(r'(\d{4})\s*(.*)', raw_str)
             if match:
                 code = match.group(1)
@@ -760,13 +764,13 @@ def push_rank_to_dc():
             else:
                 code = raw_str[:4]
                 name = raw_str[4:].strip()
-            
+
             code = clean_cell(code)
             name = clean_cell(name)
-            
+
             # [新增] 修正亂碼：將 "卅卅" 替換為 "碁" (要在轉全形之前做)
             name = name.replace("卅卅", "碁")
-            
+
             category = clean_cell(row.get('類別', '-'))
             price = clean_cell(row.get('現價', '-'))
             week_chg = clean_cell(row.get('週漲跌', '-'))
@@ -774,7 +778,7 @@ def push_rank_to_dc():
             if change_str != "-":
                 try:
                     change_str = f"{float(change_str):+.2f}%"
-                except:
+                except Exception:
                     pass
 
             # 轉為全形字元 (解決 KY 混排問題)
@@ -784,52 +788,153 @@ def push_rank_to_dc():
             s_name = pad_visual(full_name, W_NAME, align='left')
 
             # 其他欄位
-            s_rank = pad_visual(f"{i+1:02d}", W_RANK) 
+            s_rank = pad_visual(f"{i+1:02d}", W_RANK)
             s_code = pad_visual(code, W_CODE)
             s_cat = pad_visual(category, W_CAT, align='left')
-            s_price = pad_visual(price, W_PRICE, align='left')
-            s_week = pad_visual(week_chg, W_WEEK, align='left')
+            s_price = pad_visual(price, W_PRICE, align='right')
+            s_week = pad_visual(week_chg, W_WEEK, align='right')
             s_chg  = pad_visual(change_str, W_CHANGE, align='left')
 
             msg += f"{s_rank}{GAP}{s_code}{GAP}{s_name}{GAP}{s_cat}{GAP}{s_price}{GAP}{s_week}{GAP}{s_chg}\n"
-            
+
         msg += "```\n"
         return msg
 
-    content += format_rank_block(listed_df.reset_index(drop=True), "🟦 **【上市排行】**")
-    content += format_rank_block(otc_df.reset_index(drop=True), "🟩 **【上櫃排行】**")
+    content += format_rank_block(listed_df.reset_index(drop=True) if listed_df is not None else listed_df, listed_title)
+    content += format_rank_block(otc_df.reset_index(drop=True) if otc_df is not None else otc_df, otc_title)
+    return content
 
-    # 發送
-    try:
-        image_buf = build_rank_image(
-            listed_df.reset_index(drop=True) if listed_df is not None else None,
-            otc_df.reset_index(drop=True) if otc_df is not None else None,
-            display_date
-        )
-        files = {"file": ("weekly_holder_rank.png", image_buf, "image/png")}
-        data = {
-            "content": f"📊 **每週大股東籌碼強勢榜 Top 20**\n> 📅 **資料統計日期：{display_date}**"
-        }
-        response = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files)
-        if response.status_code in (200, 204):
-            print("✅ 推播完成！")
+
+def send_image_with_fallback(image_buf, filename, image_content, fallback_content, success_label):
+    files = {"file": (filename, image_buf, "image/png")}
+    data = {"content": image_content}
+    response = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files)
+    if response.status_code in (200, 204):
+        print(f"✅ {success_label}推播完成！")
+    else:
+        print(f"❌ {success_label}圖片推播失敗: {response.status_code}，改用文字推播")
+        fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": fallback_content})
+        if fallback.status_code in (200, 204):
+            print(f"✅ {success_label}文字備援推播完成！")
         else:
-            print(f"❌ 圖片推播失敗: {response.status_code}，改用文字推播")
-            fallback = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-            if fallback.status_code == 204:
-                print("✅ 文字備援推播完成！")
-            else:
-                print(f"❌ 文字備援推播失敗: {fallback.status_code}")
-    except Exception as e:
-        print(f"❌ 圖片發送錯誤: {e}，改用文字推播")
+            print(f"❌ {success_label}文字備援推播失敗: {fallback.status_code}")
+
+
+def push_rank_to_dc():
+    if not DISCORD_WEBHOOK_URL:
+        print("錯誤：找不到 DISCORD_WEBHOOK_URL_TEST 環境變數")
+        return
+
+    print("正在處理上市排行...")
+    listed_df, listed_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx")
+
+    print("正在處理上櫃排行...")
+    otc_df, otc_date = get_norway_rank_logic("https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1")
+
+    print("正在處理上市大戶減少排行...")
+    listed_decrease_df, listed_decrease_date = get_norway_rank_logic(
+        "https://norway.twsthr.info/StockHoldersTopWeek.aspx",
+        rank_mode="decrease",
+        top_n=15
+    )
+
+    print("正在處理上櫃大戶減少排行...")
+    otc_decrease_df, otc_decrease_date = get_norway_rank_logic(
+        "https://norway.twsthr.info/StockHoldersTopWeek.aspx?CID=100&Show=1",
+        rank_mode="decrease",
+        top_n=15
+    )
+
+    if listed_df is None and otc_df is None and listed_decrease_df is None and otc_decrease_df is None:
+        print("抓取失敗，無資料")
+        return
+
+    # 顯示日期優先順序
+    raw_date = listed_date if listed_date != "未知日期" else otc_date
+    display_date = format_display_date(raw_date)
+
+    raw_decrease_date = listed_decrease_date if listed_decrease_date != "未知日期" else otc_decrease_date
+    decrease_display_date = format_display_date(raw_decrease_date)
+
+    content = build_text_content(
+        listed_df.reset_index(drop=True) if listed_df is not None else listed_df,
+        otc_df.reset_index(drop=True) if otc_df is not None else otc_df,
+        display_date,
+        "📊 **每週大股東籌碼強勢榜 Top 20**",
+        "🟦 **【上市排行】**",
+        "🟩 **【上櫃排行】**"
+    )
+
+    decrease_content = build_text_content(
+        listed_decrease_df.reset_index(drop=True) if listed_decrease_df is not None else listed_decrease_df,
+        otc_decrease_df.reset_index(drop=True) if otc_decrease_df is not None else otc_decrease_df,
+        decrease_display_date,
+        "📉 **本週大戶持股減少觀察名單 Top 15**",
+        "🟦 **【上市大戶減少排行】**",
+        "🟩 **【上櫃大戶減少排行】**"
+    )
+
+    # 發送第一張圖：大戶增加榜
+    if listed_df is not None or otc_df is not None:
         try:
-            response = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-            if response.status_code == 204:
-                print("✅ 文字備援推播完成！")
-            else:
-                print(f"❌ 文字備援推播失敗: {response.status_code}")
-        except Exception as inner_e:
-            print(f"❌ 發送錯誤: {inner_e}")
+            image_buf = build_rank_image(
+                listed_df.reset_index(drop=True) if listed_df is not None else None,
+                otc_df.reset_index(drop=True) if otc_df is not None else None,
+                display_date
+            )
+            send_image_with_fallback(
+                image_buf,
+                "weekly_holder_rank.png",
+                f"📊 **每週大股東籌碼強勢榜 Top 20**\n> 📅 **資料統計日期：{display_date}**",
+                content,
+                "大戶增加榜"
+            )
+        except Exception as e:
+            print(f"❌ 大戶增加榜圖片發送錯誤: {e}，改用文字推播")
+            try:
+                response = requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+                if response.status_code in (200, 204):
+                    print("✅ 大戶增加榜文字備援推播完成！")
+                else:
+                    print(f"❌ 大戶增加榜文字備援推播失敗: {response.status_code}")
+            except Exception as inner_e:
+                print(f"❌ 大戶增加榜發送錯誤: {inner_e}")
+    else:
+        print("⚠️ 大戶增加榜無資料，略過第一張圖。")
+
+    time.sleep(1)
+
+    # 發送第二張圖：大戶減少觀察名單
+    if listed_decrease_df is not None or otc_decrease_df is not None:
+        try:
+            decrease_image_buf = build_rank_image(
+                listed_decrease_df.reset_index(drop=True) if listed_decrease_df is not None else None,
+                otc_decrease_df.reset_index(drop=True) if otc_decrease_df is not None else None,
+                decrease_display_date,
+                main_title="本週大戶持股減少觀察名單  Top 15",
+                top_n=15,
+                listed_title="上市大戶減少排行",
+                otc_title="上櫃大戶減少排行",
+            )
+            send_image_with_fallback(
+                decrease_image_buf,
+                "weekly_holder_decrease_rank.png",
+                f"📉 **本週大戶持股減少觀察名單 Top 15**\n> 📅 **資料統計日期：{decrease_display_date}**",
+                decrease_content,
+                "大戶減少觀察名單"
+            )
+        except Exception as e:
+            print(f"❌ 大戶減少觀察名單圖片發送錯誤: {e}，改用文字推播")
+            try:
+                response = requests.post(DISCORD_WEBHOOK_URL, json={"content": decrease_content})
+                if response.status_code in (200, 204):
+                    print("✅ 大戶減少觀察名單文字備援推播完成！")
+                else:
+                    print(f"❌ 大戶減少觀察名單文字備援推播失敗: {response.status_code}")
+            except Exception as inner_e:
+                print(f"❌ 大戶減少觀察名單發送錯誤: {inner_e}")
+    else:
+        print("⚠️ 大戶減少觀察名單無資料，略過第二張圖。")
 
 if __name__ == "__main__":
     push_rank_to_dc()
