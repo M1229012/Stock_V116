@@ -513,6 +513,12 @@ MARGIN_X = 0.4
 WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明\n資訊分享非投資建議 投資請自行評估風險"
 WATERMARK_ALPHA = 0.80
 
+# 中央淡色浮水印：參考每週大股東籌碼強勢榜圖片樣式，但透明度調淡，避免影響表格閱讀
+CENTER_WATERMARK_TEXT = "股市艾斯\n台股DC討論群"
+CENTER_WATERMARK_ALPHA = 0.06
+CENTER_WATERMARK_FONT_SIZE = 72
+CENTER_WATERMARK_ROTATION = 18
+
 
 def parse_pct(s):
     try: return float(str(s).replace('%', '').replace('+', ''))
@@ -614,7 +620,35 @@ def draw_bottom_info(ax, fig_w, has_legend=False):
         add_text(x_inch, "回測20MA後再轉強", 14, FONT_PROP, '#5B6678')
 
 
+def draw_center_watermark(fig):
+    """在所有輸出圖片中央加上淡色浮水印。
+
+    使用 ax.transAxes 讓浮水印自動置中，不受不同圖片寬高、單欄/雙欄/分頁影響。
+    zorder 設在表格背景之上、文字之下，讓浮水印可見但不干擾閱讀。
+    """
+    try:
+        if not getattr(fig, "axes", None):
+            return
+        ax = fig.axes[0]
+        ax.text(
+            0.5, 0.50, CENTER_WATERMARK_TEXT,
+            transform=ax.transAxes,
+            ha='center', va='center',
+            fontsize=CENTER_WATERMARK_FONT_SIZE,
+            fontweight='bold',
+            fontproperties=FONT_BOLD,
+            color='#2C3440',
+            alpha=CENTER_WATERMARK_ALPHA,
+            rotation=CENTER_WATERMARK_ROTATION,
+            linespacing=1.18,
+            zorder=2.5
+        )
+    except Exception:
+        pass
+
+
 def save_figure_to_buffer(fig):
+    draw_center_watermark(fig)
     buf = BytesIO()
     plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor(), pad_inches=0)
     plt.close(fig)
