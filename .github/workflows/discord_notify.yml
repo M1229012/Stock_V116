@@ -26,7 +26,7 @@ jobs:
     # 產生金鑰
     - name: Create Service Key
       env:
-        GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY_TEST }}
+        GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY }}
       run: |
         python - <<'PY'
         import os
@@ -36,7 +36,7 @@ jobs:
     # 執行推播
     - name: Run Discord Notification
       env:
-        DISCORD_WEBHOOK_URL_TEST: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
         python notify_discord.py
