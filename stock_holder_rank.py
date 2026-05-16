@@ -93,6 +93,10 @@ DISCOVER_TIMEOUT_SEC = int(os.getenv("DISCOVER_TIMEOUT_SEC", "22"))
 # 若 Google Sheet 尚無 API 快取，是否用 Selenium headless 補快取。
 DISCOVER_MISSING_API = os.getenv("DISCOVER_MISSING_API", "1") != "0"
 
+# GitHub Actions 偶發 DNS 解析失敗時使用，避免 isin.twse.com.tw 短暫失敗直接中斷。
+STOCK_LIST_RETRY_TIMES = int(os.getenv("STOCK_LIST_RETRY_TIMES", "5"))
+STOCK_LIST_RETRY_SLEEP = float(os.getenv("STOCK_LIST_RETRY_SLEEP", "8"))
+
 # 本機備援快取；GitHub 上主要會以 Google Sheet 的 PSCNet_API快取為準。
 LOCAL_API_CACHE_FILE = Path(os.getenv("LOCAL_API_CACHE_FILE", "pscnet_chip0007_api_cache.json"))
 
@@ -357,12 +361,12 @@ def get_or_create_ws(sh, title, headers, rows=2000, cols=None):
 
     values = ws.get_all_values()
     if not values:
-        ws.update("A1", [headers])
+        ws.update(values=[headers], range_name="A1")
         log(f"已初始化欄位：{title}")
     elif headers and values[0][:len(headers)] != headers:
         # 只強制修正固定欄位的工作表；比例歷史表會自己整張覆蓋。
         if title in [HOLDER_HISTORY_SHEET_NAME, API_CACHE_SHEET_NAME]:
-            ws.update("A1", [headers])
+            ws.update(values=[headers], range_name="A1")
             log(f"已修正欄位：{title}")
 
     return ws
@@ -372,7 +376,7 @@ def overwrite_ws(ws, headers, rows):
     values = [headers] + rows
     ws.clear()
     if values:
-        ws.update("A1", values, value_input_option="USER_ENTERED")
+        ws.update(values=values, range_name="A1", value_input_option="USER_ENTERED")
 
 
 def read_records(ws):
@@ -382,14 +386,139 @@ def read_records(ws):
         return []
 
 
+
+def requests_get_with_retry(url, headers=None, timeout=30, retries=5, sleep_sec=5, label="request"):
+    last_err = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, headers=headers or {}, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            last_err = e
+            log(f"⚠️ {label} 失敗 {attempt}/{retries}：{repr(e)}")
+            if attempt < retries:
+                time.sleep(sleep_sec * attempt)
+
+    raise last_err
+
+
+def stock_list_from_ratio_sheet(ws, market):
+    """
+    當 ISIN 網站 DNS 暫時失敗時，優先從 Google Sheet 既有的
+    上市/上櫃400張比例歷史表還原股票清單。
+    """
+    try:
+        values = ws.get_all_values()
+    except Exception:
+        return pd.DataFrame()
+
+    if not values or len(values) < 2:
+        return pd.DataFrame()
+
+    headers = [clean_text(x) for x in values[0]]
+    need = ["代號", "股名"]
+    if not all(c in headers for c in need):
+        return pd.DataFrame()
+
+    idx_code = headers.index("代號")
+    idx_name = headers.index("股名")
+    idx_cat = headers.index("類別") if "類別" in headers else None
+
+    rows = []
+    for row in values[1:]:
+        code = clean_text(row[idx_code] if idx_code < len(row) else "").replace("'", "")
+        name = clean_text(row[idx_name] if idx_name < len(row) else "")
+        category = clean_text(row[idx_cat] if idx_cat is not None and idx_cat < len(row) else "-")
+
+        if not (len(code) == 4 and code.isdigit()):
+            continue
+        if not name:
+            name = code
+
+        rows.append({
+            "代號": code,
+            "股名": name.replace("卅卅", "碁"),
+            "市場": market,
+            "suffix": "TW" if market == "上市" else "TWO",
+            "類別": category if category and category != "nan" else "-",
+        })
+
+    out = pd.DataFrame(rows).drop_duplicates(subset=["代號", "市場"]) if rows else pd.DataFrame()
+    if not out.empty:
+        log(f"✅ 從 {market}400張比例歷史 還原股票清單：{len(out)} 檔")
+    return out
+
+
+def stock_list_from_api_cache(cache, market):
+    """
+    第二層 fallback：從 PSCNet_API快取還原代號清單。
+    這種方式沒有股名/類別，只能先讓程式不中斷；後續 ISIN 恢復後會補回名稱。
+    """
+    suffix = "TW" if market == "上市" else "TWO"
+    rows = []
+
+    for key in cache.keys():
+        if "." not in key:
+            continue
+        code, key_suffix = key.split(".", 1)
+        code = clean_text(code)
+        key_suffix = clean_text(key_suffix)
+
+        if key_suffix != suffix:
+            continue
+        if not (len(code) == 4 and code.isdigit()):
+            continue
+
+        rows.append({
+            "代號": code,
+            "股名": code,
+            "市場": market,
+            "suffix": suffix,
+            "類別": "-",
+        })
+
+    out = pd.DataFrame(rows).drop_duplicates(subset=["代號", "市場"]) if rows else pd.DataFrame()
+    if not out.empty:
+        log(f"✅ 從 PSCNet_API快取 還原 {market} 股票清單：{len(out)} 檔")
+    return out
+
+
+def fetch_stock_list_one_market_with_fallback(market, ratio_ws, api_cache):
+    try:
+        return fetch_isin_stock_list(market)
+    except Exception as e:
+        log(f"⚠️ {market} ISIN 股票清單抓取失敗，啟用 Google Sheet fallback：{repr(e)}")
+
+        fallback = stock_list_from_ratio_sheet(ratio_ws, market)
+        if fallback is not None and not fallback.empty:
+            return fallback
+
+        fallback = stock_list_from_api_cache(api_cache, market)
+        if fallback is not None and not fallback.empty:
+            return fallback
+
+        raise RuntimeError(
+            f"{market} 股票清單抓取失敗，且 Google Sheet 沒有可用 fallback。"
+            f" 原始錯誤：{repr(e)}"
+        )
+
+
 # ================= 股票清單 =================
 
 def fetch_isin_stock_list(market):
     url = ISIN_URLS[market]
     log(f"抓取 {market} 股票清單...")
 
-    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    resp.raise_for_status()
+    resp = requests_get_with_retry(
+        url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=30,
+        retries=STOCK_LIST_RETRY_TIMES,
+        sleep_sec=STOCK_LIST_RETRY_SLEEP,
+        label=f"{market} ISIN股票清單"
+    )
     resp.encoding = "cp950"
 
     tables = pd.read_html(StringIO(resp.text))
@@ -435,10 +564,20 @@ def fetch_isin_stock_list(market):
     return out
 
 
-def fetch_all_stock_list():
-    listed = fetch_isin_stock_list("上市")
-    otc = fetch_isin_stock_list("上櫃")
-    return pd.concat([listed, otc], ignore_index=True)
+def fetch_all_stock_list(listed_ratio_ws=None, otc_ratio_ws=None, api_cache=None):
+    api_cache = api_cache or {}
+
+    if listed_ratio_ws is None or otc_ratio_ws is None:
+        listed = fetch_isin_stock_list("上市")
+        otc = fetch_isin_stock_list("上櫃")
+    else:
+        listed = fetch_stock_list_one_market_with_fallback("上市", listed_ratio_ws, api_cache)
+        otc = fetch_stock_list_one_market_with_fallback("上櫃", otc_ratio_ws, api_cache)
+
+    out = pd.concat([listed, otc], ignore_index=True)
+    out = out.drop_duplicates(subset=["代號", "市場"]).reset_index(drop=True)
+    log(f"股票清單合計：{len(out)} 檔")
+    return out
 
 
 # ================= PSCNet / MoneyDJ API 快取 =================
@@ -1785,9 +1924,11 @@ def push_rank_to_dc():
     otc_ratio_ws = get_or_create_ws(sh, OTC_RATIO_SHEET_NAME, [], rows=2500, cols=80)
     api_ws = get_or_create_ws(sh, API_CACHE_SHEET_NAME, API_CACHE_HEADERS, rows=2500, cols=4)
 
-    stock_df = fetch_all_stock_list()
-
+    # 先讀 API 快取，再抓股票清單。
+    # 若 ISIN 網站在 GitHub Actions 偶發 DNS 失敗，可用 Google Sheet 既有資料 fallback。
     cache = load_api_cache_from_sheet(api_ws)
+    stock_df = fetch_all_stock_list(listed_ratio_ws, otc_ratio_ws, cache)
+
     cache, cache_errors = ensure_api_cache_threaded(stock_df, cache, api_ws)
 
     history_long, pscnet_errors = fetch_pscnet_history_all(stock_df, cache)
