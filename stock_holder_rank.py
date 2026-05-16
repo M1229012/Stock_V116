@@ -87,8 +87,19 @@ HISTORY_EXTEND_WEEKS = int(os.getenv("HISTORY_EXTEND_WEEKS", "12"))
 
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "36"))
 PRICE_WORKERS = int(os.getenv("PRICE_WORKERS", "18"))
-MAX_DISCOVER_WORKERS = int(os.getenv("MAX_DISCOVER_WORKERS", "4"))
+# Selenium 在 GitHub runner 上太多執行緒容易只有部分 worker 成功。
+# 預設改成 2 個 worker，穩定性優先；要加速可在 GitHub env 調高。
+MAX_DISCOVER_WORKERS = int(os.getenv("MAX_DISCOVER_WORKERS", "2"))
 DISCOVER_TIMEOUT_SEC = int(os.getenv("DISCOVER_TIMEOUT_SEC", "22"))
+
+# 快取補齊最多重跑幾輪。第一輪若只補到一半，第二輪會自動補剩下的。
+DISCOVER_MAX_ROUNDS = int(os.getenv("DISCOVER_MAX_ROUNDS", "3"))
+
+# API 快取允許缺漏檔數。超過就直接停止，不推播不完整圖片。
+MAX_ALLOWED_MISSING_API = int(os.getenv("MAX_ALLOWED_MISSING_API", "30"))
+
+# requests 抓資料允許錯誤檔數。超過就停止，避免漏太多股票仍推播。
+MAX_ALLOWED_REQUEST_ERRORS = int(os.getenv("MAX_ALLOWED_REQUEST_ERRORS", "80"))
 
 # 若 Google Sheet 尚無 API 快取，是否用 Selenium headless 補快取。
 DISCOVER_MISSING_API = os.getenv("DISCOVER_MISSING_API", "1") != "0"
@@ -786,7 +797,7 @@ def discover_cache_worker(worker_id, metas):
     return found, errors
 
 
-def ensure_api_cache_threaded(stock_df, cache, api_ws):
+def get_missing_api_metas(stock_df, cache):
     metas = [r.to_dict() for _, r in stock_df.iterrows()]
     missing = []
 
@@ -798,41 +809,111 @@ def ensure_api_cache_threaded(stock_df, cache, api_ws):
         if not url or not is_correct_stock_chip0007_url(url, code):
             missing.append(meta)
 
-    if not missing:
+    return missing
+
+
+def ensure_api_cache_threaded(stock_df, cache, api_ws):
+    """
+    補 Stock-Chip0007 API 快取。
+
+    修正版重點：
+    1. 不再只跑一輪。
+    2. 每一輪都重新計算缺少哪些股票。
+    3. 若 GitHub runner 某些 Chrome worker 不穩，只要下一輪還能補，就會繼續補。
+    4. 若最後仍缺太多，直接 raise，避免漏抓太多股票還推播。
+    """
+    all_errors = []
+
+    if not DISCOVER_MISSING_API:
+        missing = get_missing_api_metas(stock_df, cache)
+        if missing:
+            log(f"API 快取缺 {len(missing)} 檔，但 DISCOVER_MISSING_API=0，略過補快取。")
+            if len(missing) > MAX_ALLOWED_MISSING_API:
+                raise RuntimeError(
+                    f"API 快取缺 {len(missing)} 檔，超過允許上限 {MAX_ALLOWED_MISSING_API}，停止推播。"
+                )
+            return cache, [{"錯誤": f"API快取缺 {len(missing)} 檔"}]
         log(f"API 快取完整可用：{len(cache)} 筆")
         return cache, []
 
-    if not DISCOVER_MISSING_API:
-        log(f"API 快取缺 {len(missing)} 檔，但 DISCOVER_MISSING_API=0，略過補快取。")
-        return cache, [{"錯誤": f"API快取缺 {len(missing)} 檔"}]
+    total_stocks = len(stock_df)
 
-    log(f"API 快取不足：缺 {len(missing)} 檔，開始用 {MAX_DISCOVER_WORKERS} 個執行緒補快取")
-    chunks = chunk_list(missing, MAX_DISCOVER_WORKERS)
+    for round_idx in range(1, DISCOVER_MAX_ROUNDS + 1):
+        missing = get_missing_api_metas(stock_df, cache)
+        missing_count = len(missing)
 
-    all_errors = []
-    total_found = 0
+        if missing_count == 0:
+            log(f"API 快取完整可用：{len(cache)} / {total_stocks} 筆")
+            return cache, all_errors
 
-    with ThreadPoolExecutor(max_workers=len(chunks)) as ex:
-        futures = {
-            ex.submit(discover_cache_worker, i + 1, chunk): i + 1
-            for i, chunk in enumerate(chunks)
-            if chunk
-        }
+        if missing_count <= MAX_ALLOWED_MISSING_API:
+            log(
+                f"API 快取仍缺 {missing_count} 檔，但低於允許上限 "
+                f"{MAX_ALLOWED_MISSING_API}，繼續後續抓取。"
+            )
+            return cache, all_errors
 
-        for fut in as_completed(futures):
-            worker_id = futures[fut]
-            try:
-                found, errors = fut.result()
-                cache.update(found)
-                total_found += len(found)
-                all_errors.extend(errors)
-                save_api_cache_to_sheet(api_ws, cache)
-                log(f"[API快取Worker {worker_id}] 完成：新增 {len(found)}，錯誤 {len(errors)}")
-            except Exception as e:
-                all_errors.append({"錯誤": f"API快取Worker {worker_id} 失敗：{repr(e)}"})
+        workers = max(1, min(MAX_DISCOVER_WORKERS, missing_count))
+        log(
+            f"API 快取不足：缺 {missing_count}/{total_stocks} 檔，"
+            f"第 {round_idx}/{DISCOVER_MAX_ROUNDS} 輪用 {workers} 個執行緒補快取"
+        )
 
-    save_api_cache_to_sheet(api_ws, cache)
-    log(f"API 快取補完：本次新增 {total_found}，目前快取 {len(cache)}，錯誤 {len(all_errors)}")
+        chunks = chunk_list(missing, workers)
+        round_found = 0
+        round_errors = []
+
+        with ThreadPoolExecutor(max_workers=len(chunks)) as ex:
+            futures = {
+                ex.submit(discover_cache_worker, i + 1, chunk): i + 1
+                for i, chunk in enumerate(chunks)
+                if chunk
+            }
+
+            for fut in as_completed(futures):
+                worker_id = futures[fut]
+                try:
+                    found, errors = fut.result()
+                    cache.update(found)
+                    round_found += len(found)
+                    round_errors.extend(errors)
+                    all_errors.extend(errors)
+                    save_api_cache_to_sheet(api_ws, cache)
+                    log(f"[API快取Worker {worker_id}] 完成：新增 {len(found)}，錯誤 {len(errors)}")
+                except Exception as e:
+                    err = {"錯誤": f"API快取Worker {worker_id} 失敗：{repr(e)}"}
+                    round_errors.append(err)
+                    all_errors.append(err)
+                    log(f"⚠️ [API快取Worker {worker_id}] 失敗：{repr(e)}")
+
+        save_api_cache_to_sheet(api_ws, cache)
+
+        after_missing = len(get_missing_api_metas(stock_df, cache))
+        coverage = (total_stocks - after_missing) / total_stocks * 100 if total_stocks else 0
+
+        log(
+            f"第 {round_idx} 輪 API 快取補完：新增 {round_found}，"
+            f"目前快取 {len(cache)}，仍缺 {after_missing}，覆蓋率 {coverage:.2f}%"
+        )
+
+        # 這一輪完全沒有新增，表示繼續重試也可能卡住，直接跳出檢查門檻。
+        if round_found == 0:
+            log("⚠️ 本輪沒有新增任何 API 快取，停止重試並進行完整度檢查。")
+            break
+
+    final_missing = get_missing_api_metas(stock_df, cache)
+    final_missing_count = len(final_missing)
+
+    if final_missing_count > MAX_ALLOWED_MISSING_API:
+        sample = ", ".join(
+            f"{m.get('代號','')} {m.get('股名','')}" for m in final_missing[:20]
+        )
+        raise RuntimeError(
+            f"API 快取仍缺 {final_missing_count} 檔，超過允許上限 {MAX_ALLOWED_MISSING_API}，"
+            f"為避免漏抓太多股票，停止推播。缺漏範例：{sample}"
+        )
+
+    log(f"API 快取補齊完成，目前快取 {len(cache)}，仍缺 {final_missing_count} 檔。")
     return cache, all_errors
 
 
@@ -1010,6 +1091,17 @@ def fetch_pscnet_history_all(stock_df, cache):
     df = pd.DataFrame(out_rows)
     if df.empty:
         raise RuntimeError("PSCNet 沒有抓到任何 60 週歷史資料，請檢查 API 快取或網站連線。")
+
+    if len(errors) > MAX_ALLOWED_REQUEST_ERRORS:
+        missing_api_errors = [e for e in errors if e.get("錯誤") == "沒有 PSCNet API 快取"]
+        sample = ", ".join(
+            f"{e.get('代號','')} {e.get('股名','')}" for e in errors[:20]
+        )
+        raise RuntimeError(
+            f"PSCNet requests 錯誤 {len(errors)} 檔，超過允許上限 {MAX_ALLOWED_REQUEST_ERRORS}。"
+            f"其中沒有API快取 {len(missing_api_errors)} 檔。"
+            f"為避免漏抓太多股票，停止推播。錯誤範例：{sample}"
+        )
 
     return df, pd.DataFrame(errors)
 
