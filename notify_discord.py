@@ -67,16 +67,10 @@ def get_ma20_distance_color(pct):
     try:
         if pct is None or pd.isna(pct):
             return TEXT_MUTED
-        pct = float(pct)
-        if 0 <= pct <= 3:
-            return '#F97316'   # 月線上方 0~3%：接近月線，橘色提示
-        if 3 < pct <= 7:
-            return TEXT_POS    # 月線上方 3~7%：一般紅色
-        if pct > 7:
-            return '#B91C1C'   # 月線上方 >7%：偏離較遠，深紅色
-        if -3 <= pct < 0:
-            return TEXT_NEG    # 月線下方 0~3%：跌破不遠，綠色
-        return '#14532D'       # 月線下方 >3%：明顯跌破，深綠色
+
+        # 離月線百分比不管正負、不管幾%，一律黑色
+        return TEXT_MAIN
+
     except Exception:
         return TEXT_MUTED
 
