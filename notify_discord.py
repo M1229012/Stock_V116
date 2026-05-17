@@ -51,6 +51,81 @@ def format_display_price(value):
         return s if s else "--"
 
 
+MA20_DISTANCE_CACHE = {}
+
+
+def format_ma20_distance_pct(pct):
+    try:
+        if pct is None or pd.isna(pct):
+            return "--"
+        return f"{float(pct):+.1f}%"
+    except Exception:
+        return "--"
+
+
+def get_ma20_distance_color(pct):
+    try:
+        if pct is None or pd.isna(pct):
+            return TEXT_MUTED
+        pct = float(pct)
+        if 0 <= pct <= 3:
+            return '#F97316'   # 月線上方 0~3%：接近月線，橘色提示
+        if 3 < pct <= 7:
+            return TEXT_POS    # 月線上方 3~7%：一般紅色
+        if pct > 7:
+            return '#B91C1C'   # 月線上方 >7%：偏離較遠，深紅色
+        if -3 <= pct < 0:
+            return TEXT_NEG    # 月線下方 0~3%：跌破不遠，綠色
+        return '#14532D'       # 月線下方 >3%：明顯跌破，深綠色
+    except Exception:
+        return TEXT_MUTED
+
+
+def _get_yahoo_suffix_candidates(market):
+    market_text = str(market)
+    if any(x in market_text for x in ["上櫃", "TPEx", "TWO", "OTC"]):
+        return [".TWO", ".TW"]
+    return [".TW", ".TWO"]
+
+
+def get_ma20_distance_info(code, market="上市"):
+    """計算目前收盤價相對 20MA（月線）的乖離百分比。
+
+    顯示邏輯：
+        +2.3% 代表目前收盤價在 20MA 上方 2.3%
+        -1.4% 代表目前收盤價在 20MA 下方 1.4%
+    """
+    code = str(code).replace("'", "").strip()
+    cache_key = (code, str(market))
+    if cache_key in MA20_DISTANCE_CACHE:
+        return MA20_DISTANCE_CACHE[cache_key]
+    if not code:
+        MA20_DISTANCE_CACHE[cache_key] = ("--", None)
+        return MA20_DISTANCE_CACHE[cache_key]
+
+    for suffix in _get_yahoo_suffix_candidates(market):
+        try:
+            df = yf.Ticker(f"{code}{suffix}").history(period="3mo", auto_adjust=True)
+            if df is None or df.empty or 'Close' not in df.columns:
+                continue
+            closes = df['Close'].dropna()
+            if len(closes) < 20:
+                continue
+            latest_close = float(closes.iloc[-1])
+            ma20 = float(closes.tail(20).mean())
+            if latest_close <= 0 or ma20 <= 0:
+                continue
+            pct = ((latest_close - ma20) / ma20) * 100
+            result = (format_ma20_distance_pct(pct), pct)
+            MA20_DISTANCE_CACHE[cache_key] = result
+            return result
+        except Exception:
+            continue
+
+    MA20_DISTANCE_CACHE[cache_key] = ("--", None)
+    return MA20_DISTANCE_CACHE[cache_key]
+
+
 # ============================
 # 🎨 圖片風格與字型設定
 # ============================
@@ -447,10 +522,13 @@ def check_status_split(sh, releasing_codes, price_map=None):
             detail = jail_detail_map.get(code)
             if not detail:
                 continue
+            ma20_text, ma20_pct = get_ma20_distance_info(code, row.get('市場', '上市'))
             inj.append({
                 "code": code,
                 "name": name,
-                "price": format_display_price((price_map or {}).get(code, "--")),
+                "price": ma20_text,
+                "ma20_text": ma20_text,
+                "ma20_pct": ma20_pct,
                 "period": detail.get('period', '日期未知'),
                 "sort_end": detail.get('sort_end'),
             })
@@ -488,14 +566,18 @@ def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
             display_days = d
         if display_days <= 5:
             icon, status_text, pre_pct, in_pct = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
-            res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": format_display_price((price_map or {}).get(code, "--")), "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_pct, "in_pct": in_pct})
+            ma20_text, ma20_pct = get_ma20_distance_info(code, row.get('市場', '上市'))
+            res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": ma20_text, "ma20_text": ma20_text, "ma20_pct": ma20_pct, "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_pct, "in_pct": in_pct})
             seen.add(code)
         elif overflow_injail is not None:
             detail = build_period_detail(row.get('處置期間', ''))
+            ma20_text, ma20_pct = get_ma20_distance_info(code, row.get('市場', '上市'))
             overflow_injail.append({
                 "code": code,
                 "name": clean_display_text(row.get('名稱', '')),
-                "price": format_display_price((price_map or {}).get(code, "--")),
+                "price": ma20_text,
+                "ma20_text": ma20_text,
+                "ma20_pct": ma20_pct,
                 "period": detail.get('period', '日期未知'),
                 "sort_end": detail.get('sort_end'),
             })
@@ -751,7 +833,7 @@ def draw_releasing_image(data, signal_map=None):
     DATE_W        = 0.74
     STATUS_SHIFT  = 0.10   # 狀態整組往右微調
 
-    right_col_labels  = ["現價", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
+    right_col_labels  = ["離月線", "倒數交易日", "狀態", "處置前", "處置中", "出關日"]
     right_col_aligns  = ['right', 'center', 'center', 'right', 'right', 'center']
     right_col_content = [PRICE_W, DAYS_W, STATUS_W, PRE_PCT_W, IN_PCT_W, DATE_W]
 
@@ -840,10 +922,10 @@ def draw_releasing_image(data, signal_map=None):
         draw_col_text(ax, left_x_starts[1], left_x_widths[1], y_center, code, 'center', 17, FONT_BOLD, name_color)
         draw_col_text(ax, left_x_starts[2], left_x_widths[2], y_center, name, 'left', 16, FONT_PROP, name_color)
 
-        # [0] 現價 - 靠右
+        # [0] 離月線 - 靠右
         ax.text(col_right_inner_x(0), y_center, price,
                 ha='right', va='center',
-                fontsize=15, fontproperties=FONT_BOLD, color=TEXT_PRICE, zorder=3)
+                fontsize=15, fontproperties=FONT_BOLD, color=get_ma20_distance_color(row.get('ma20_pct')), zorder=3)
 
         # [1] 倒數交易日 - 置中（膠囊）
         bg_clr, fg_clr = get_days_style(days)
@@ -926,7 +1008,7 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
     y_header_bottom = draw_topbar_and_frame(ax, theme, total_count, fig_w, fig_h, n, row_h, header_h, top_offset)
 
     col_widths_ratio = [0.10, 0.18, 0.24, 0.16, 0.32]
-    col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
+    col_labels = ["#", "代號", "股票名稱", "離月線", "處置期間"]
     col_aligns = ['center', 'center', 'left', 'right', 'center']
 
     table_w = fig_w - 2 * MARGIN_X
@@ -964,7 +1046,7 @@ def _draw_injail_single_column(data, total_count, signal_map=None, page_no=None,
         draw_col_text(ax, x_starts[0], x_widths[0], y_center, f"{rank_num:02d}", 'center', 16, rank_fw, rank_color)
         draw_col_text(ax, x_starts[1], x_widths[1], y_center, code, col_aligns[1], 18, FONT_BOLD, name_color)
         draw_col_text(ax, x_starts[2], x_widths[2], y_center, name, col_aligns[2], 17, FONT_PROP, name_color)
-        draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, TEXT_PRICE)
+        draw_col_text(ax, x_starts[3], x_widths[3], y_center, price, col_aligns[3], 16, FONT_BOLD, get_ma20_distance_color(row.get('ma20_pct')))
         draw_col_text(ax, x_starts[4], x_widths[4], y_center, period, col_aligns[4], 16, FONT_PROP, TEXT_MAIN)
 
     draw_bottom_info(ax, fig_w, has_legend=True)
@@ -990,7 +1072,7 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
     ax.plot([divider_x, divider_x], [y_table_bottom, y_table_top], color=BORDER_MID, linewidth=1.0, zorder=2)
 
     col_widths_ratio = [0.09, 0.16, 0.31, 0.16, 0.28]
-    col_labels = ["#", "代號", "股票名稱", "現價", "處置期間"]
+    col_labels = ["#", "代號", "股票名稱", "離月線", "處置期間"]
     col_aligns = ['center', 'center', 'left', 'right', 'center']
 
     def draw_half(half_idx, rows):
@@ -1029,7 +1111,7 @@ def _draw_injail_two_column(page_data, total_count, signal_map=None, page_no=Non
             draw_col_text(ax, starts[0], widths[0], y_center, f"{rank_num:02d}", 'center', 15, rank_fw, rank_color)
             draw_col_text(ax, starts[1], widths[1], y_center, code, col_aligns[1], 17, FONT_BOLD, name_color)
             draw_col_text(ax, starts[2], widths[2], y_center, name, col_aligns[2], 16, FONT_PROP, name_color)
-            draw_col_text(ax, starts[3], widths[3], y_center, price, col_aligns[3], 15, FONT_BOLD, TEXT_PRICE)
+            draw_col_text(ax, starts[3], widths[3], y_center, price, col_aligns[3], 15, FONT_BOLD, get_ma20_distance_color(row.get('ma20_pct')))
             draw_col_text(ax, starts[4], widths[4], y_center, period, col_aligns[4], 15, FONT_PROP, TEXT_MAIN)
 
     left_rows = page_data[:rows_per_col]
