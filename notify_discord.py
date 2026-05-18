@@ -83,16 +83,11 @@ def _get_yahoo_suffix_candidates(market):
 
 
 def get_ma20_distance_info(code, market="上市"):
-    """計算目前價格相對 20MA（月線）的乖離百分比。
+    """計算目前收盤價相對 20MA（月線）的乖離百分比。
 
     顯示邏輯：
-        1. 同時計算最新收盤價 Close 與盤中最低價 Low 相對 20MA 的距離。
-        2. Low 或 Close 任一進入 20MA ±5% 都視為接近月線的有效觀察價格。
-        3. 圖片顯示時，以 Low / Close 兩者中「距離 20MA 較近」的百分比為主。
-
-    例如：
-        Close 距離 MA20 = -3.0%，Low 距離 MA20 = -6.0%
-        → 顯示 -3.0%
+        +2.3% 代表目前收盤價在 20MA 上方 2.3%
+        -1.4% 代表目前收盤價在 20MA 下方 1.4%
     """
     code = str(code).replace("'", "").strip()
     cache_key = (code, str(market))
@@ -105,25 +100,16 @@ def get_ma20_distance_info(code, market="上市"):
     for suffix in _get_yahoo_suffix_candidates(market):
         try:
             df = yf.Ticker(f"{code}{suffix}").history(period="3mo", auto_adjust=True)
-            if df is None or df.empty or 'Close' not in df.columns or 'Low' not in df.columns:
+            if df is None or df.empty or 'Close' not in df.columns:
                 continue
-
-            df = df.dropna(subset=['Close', 'Low']).sort_index()
-            if len(df) < 20:
+            closes = df['Close'].dropna()
+            if len(closes) < 20:
                 continue
-
-            closes = df['Close']
-            latest_close = float(df['Close'].iloc[-1])
-            latest_low = float(df['Low'].iloc[-1])
+            latest_close = float(closes.iloc[-1])
             ma20 = float(closes.tail(20).mean())
-
-            if latest_close <= 0 or latest_low <= 0 or ma20 <= 0:
+            if latest_close <= 0 or ma20 <= 0:
                 continue
-
-            close_pct = ((latest_close - ma20) / ma20) * 100
-            low_pct = ((latest_low - ma20) / ma20) * 100
-
-            pct = close_pct if abs(close_pct) <= abs(low_pct) else low_pct
+            pct = ((latest_close - ma20) / ma20) * 100
             result = (format_ma20_distance_pct(pct), pct)
             MA20_DISTANCE_CACHE[cache_key] = result
             return result
