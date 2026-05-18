@@ -84,7 +84,7 @@ TECH_TRACK_HEADERS = [
 ]
 
 TECH_PRE_10D_RISE_THRESHOLD = 20.0
-TECH_MA20_GAP_THRESHOLD = 6.2
+TECH_MA20_GAP_THRESHOLD = 5.0
 TECH_BREAKOUT_MA20_GAP_THRESHOLD = 10.0
 
 TECH_TRACK_TRUE_BG = {"red": 1.0, "green": 0.93, "blue": 0.82}
@@ -1494,7 +1494,7 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
 
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA20_GAP_PCT'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
-    df['LOW_MA20_GAP_PCT'] = ((df['Low'] - df['MA20']) / df['Low']) * 100
+    df['LOW_MA20_GAP_PCT'] = ((df['Low'] - df['MA20']) / df['MA20']) * 100
 
     pre_10_open = float(pre_df.tail(10)['Open'].iloc[0])
     pre_last_close = float(pre_df['Close'].iloc[-1])
@@ -1504,14 +1504,19 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     current_low = float(df['Low'].iloc[-1])
     ma20 = float(df['MA20'].iloc[-1]) if not pd.isna(df['MA20'].iloc[-1]) else 0.0
     ma20_gap_pct = ((current_price - ma20) / ma20) * 100 if ma20 > 0 else 0.0
-    current_low_ma20_gap_pct = ((current_low - ma20) / current_low) * 100 if current_low > 0 else 0.0
+    current_low_ma20_gap_pct = ((current_low - ma20) / ma20) * 100 if ma20 > 0 else 0.0
 
     pre_rise_ok = pre_10d_pct >= TECH_PRE_10D_RISE_THRESHOLD
-    current_retest_ok = pre_rise_ok and (abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD)
+    current_close_retest_ok = abs(ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD
+    current_low_retest_ok = abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD
+    current_retest_ok = pre_rise_ok and (current_low_retest_ok or current_close_retest_ok)
 
     jail_df = df[(df.index.date >= sd) & (df.index.date <= ed)].copy()
     jail_df = jail_df.dropna(subset=['MA20', 'MA20_GAP_PCT', 'LOW_MA20_GAP_PCT'])
-    retest_df = jail_df[jail_df['LOW_MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD]
+    retest_df = jail_df[
+        (jail_df['LOW_MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD) |
+        (jail_df['MA20_GAP_PCT'].abs() <= TECH_MA20_GAP_THRESHOLD)
+    ]
     has_retested_ma20 = not retest_df.empty
 
     retest_date_str = ""
@@ -1534,7 +1539,7 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
         reason_text = (
             f"已達成「回測後轉強」｜"
             f"處置前10日漲幅 {pre_10d_pct:+.2f}% (>={TECH_PRE_10D_RISE_THRESHOLD:.0f}%)；"
-            f"於 {retest_date_str} 處置期間內盤中低點回測 MA20；"
+            f"於 {retest_date_str} 處置期間內盤中低點或收盤價回測 MA20；"
             f"目前收盤距離 MA20 {ma20_gap_pct:+.2f}% (>=+{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
         )
     elif current_retest_ok:
@@ -1542,7 +1547,8 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
         reason_text = (
             f"已達成「目前回測月線」｜"
             f"處置前10日漲幅 {pre_10d_pct:+.2f}% (>={TECH_PRE_10D_RISE_THRESHOLD:.0f}%)；"
-            f"今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}% (在 +/-{TECH_MA20_GAP_THRESHOLD:.0f}% 內)"
+            f"今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}%；"
+            f"今日收盤距離 MA20 {ma20_gap_pct:+.2f}% (任一在 +/-{TECH_MA20_GAP_THRESHOLD:.0f}% 內)"
         )
     else:
         signal_status = "未符合"
@@ -1554,21 +1560,24 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
             parts = [
                 f"處置前10日漲幅 {pre_10d_pct:+.2f}% 已達標 (>={TECH_PRE_10D_RISE_THRESHOLD:.0f}%)，但兩訊號皆未成立："
             ]
-            if abs(current_low_ma20_gap_pct) <= TECH_MA20_GAP_THRESHOLD:
-                parts.append(f"O「目前回測月線」成立 (今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}%)")
+            if current_low_retest_ok or current_close_retest_ok:
+                parts.append(
+                    f"O「目前回測月線」成立 (今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}%，"
+                    f"今日收盤距離 MA20 {ma20_gap_pct:+.2f}%)"
+                )
             else:
                 parts.append(
                     f"X「目前回測月線」不成立 (今日低點距離 MA20 {current_low_ma20_gap_pct:+.2f}%，"
-                    f"超出 +/-{TECH_MA20_GAP_THRESHOLD:.0f}% 範圍)"
+                    f"今日收盤距離 MA20 {ma20_gap_pct:+.2f}%，皆超出 +/-{TECH_MA20_GAP_THRESHOLD:.0f}% 範圍)"
                 )
             if not has_retested_ma20:
                 parts.append(
-                    f"X「回測後轉強」不成立 (處置期間內尚未出現盤中低點回測 MA20，"
-                    f"今日低點距離 {current_low_ma20_gap_pct:+.2f}%)"
+                    f"X「回測後轉強」不成立 (處置期間內尚未出現盤中低點或收盤價回測 MA20，"
+                    f"今日低點距離 {current_low_ma20_gap_pct:+.2f}%，今日收盤距離 {ma20_gap_pct:+.2f}%)"
                 )
             elif ma20_gap_pct < TECH_BREAKOUT_MA20_GAP_THRESHOLD:
                 parts.append(
-                    f"X「回測後轉強」不成立 ({retest_date_str} 已於處置期間內由盤中低點回測 MA20，"
+                    f"X「回測後轉強」不成立 ({retest_date_str} 已於處置期間內由盤中低點或收盤價回測 MA20，"
                     f"但目前收盤距離 MA20 僅 {ma20_gap_pct:+.2f}%，未達 +{TECH_BREAKOUT_MA20_GAP_THRESHOLD:.0f}%)"
                 )
             else:
