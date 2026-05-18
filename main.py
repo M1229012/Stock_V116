@@ -1496,9 +1496,12 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     df['MA20_GAP_PCT'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
     df['LOW_MA20_GAP_PCT'] = ((df['Low'] - df['MA20']) / df['MA20']) * 100
 
-    pre_10_open = float(pre_df.tail(10)['Open'].iloc[0])
+    pre_10_first = pre_df.tail(10).iloc[0]
+    pre_10_open = float(pre_10_first['Open'])
+    pre_10_close = float(pre_10_first['Close'])
+    pre_10_base = min(pre_10_open, pre_10_close)
     pre_last_close = float(pre_df['Close'].iloc[-1])
-    pre_10d_pct = ((pre_last_close - pre_10_open) / pre_10_open) * 100 if pre_10_open > 0 else 0.0
+    pre_10d_pct = ((pre_last_close - pre_10_base) / pre_10_base) * 100 if pre_10_base > 0 else 0.0
 
     current_price = float(df['Close'].iloc[-1])
     current_low = float(df['Low'].iloc[-1])
@@ -1595,7 +1598,7 @@ def calc_jail_technical_track_row(market, code, name, period, status_label):
     base_row[12] = "TRUE" if has_retested_ma20 else "FALSE"
     base_row[13] = retest_date_str
     base_row[14] = retest_close
-    base_row[15] = _safe_round(pre_10_open, 2)
+    base_row[15] = _safe_round(pre_10_base, 2)
     base_row[16] = _safe_round(pre_last_close, 2)
     return base_row
 
