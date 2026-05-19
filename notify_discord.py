@@ -67,16 +67,10 @@ def get_ma20_distance_color(pct):
     try:
         if pct is None or pd.isna(pct):
             return TEXT_MUTED
-        pct = float(pct)
-        if 0 <= pct <= 3:
-            return '#F97316'   # 月線上方 0~3%：接近月線，橘色提示
-        if 3 < pct <= 7:
-            return TEXT_POS    # 月線上方 3~7%：一般紅色
-        if pct > 7:
-            return '#B91C1C'   # 月線上方 >7%：偏離較遠，深紅色
-        if -3 <= pct < 0:
-            return TEXT_NEG    # 月線下方 0~3%：跌破不遠，綠色
-        return '#14532D'       # 月線下方 >3%：明顯跌破，深綠色
+
+        # 離月線百分比不管正負、不管幾%，一律黑色
+        return TEXT_MAIN
+
     except Exception:
         return TEXT_MUTED
 
@@ -89,11 +83,16 @@ def _get_yahoo_suffix_candidates(market):
 
 
 def get_ma20_distance_info(code, market="上市"):
-    """計算目前收盤價相對 20MA（月線）的乖離百分比。
+    """計算目前價格相對 20MA（月線）的乖離百分比。
 
     顯示邏輯：
-        +2.3% 代表目前收盤價在 20MA 上方 2.3%
-        -1.4% 代表目前收盤價在 20MA 下方 1.4%
+        1. 同時計算最新收盤價 Close 與盤中最低價 Low 相對 20MA 的距離。
+        2. Low 或 Close 任一進入 20MA ±5% 都視為接近月線的有效觀察價格。
+        3. 圖片顯示時，以 Low / Close 兩者中「距離 20MA 較近」的百分比為主。
+
+    例如：
+        Close 距離 MA20 = -3.0%，Low 距離 MA20 = -6.0%
+        → 顯示 -3.0%
     """
     code = str(code).replace("'", "").strip()
     cache_key = (code, str(market))
@@ -106,16 +105,25 @@ def get_ma20_distance_info(code, market="上市"):
     for suffix in _get_yahoo_suffix_candidates(market):
         try:
             df = yf.Ticker(f"{code}{suffix}").history(period="3mo", auto_adjust=True)
-            if df is None or df.empty or 'Close' not in df.columns:
+            if df is None or df.empty or 'Close' not in df.columns or 'Low' not in df.columns:
                 continue
-            closes = df['Close'].dropna()
-            if len(closes) < 20:
+
+            df = df.dropna(subset=['Close', 'Low']).sort_index()
+            if len(df) < 20:
                 continue
-            latest_close = float(closes.iloc[-1])
+
+            closes = df['Close']
+            latest_close = float(df['Close'].iloc[-1])
+            latest_low = float(df['Low'].iloc[-1])
             ma20 = float(closes.tail(20).mean())
-            if latest_close <= 0 or ma20 <= 0:
+
+            if latest_close <= 0 or latest_low <= 0 or ma20 <= 0:
                 continue
-            pct = ((latest_close - ma20) / ma20) * 100
+
+            close_pct = ((latest_close - ma20) / ma20) * 100
+            low_pct = ((latest_low - ma20) / ma20) * 100
+
+            pct = close_pct if abs(close_pct) <= abs(low_pct) else low_pct
             result = (format_ma20_distance_pct(pct), pct)
             MA20_DISTANCE_CACHE[cache_key] = result
             return result
@@ -766,7 +774,8 @@ def draw_entering_image(data, signal_map=None):
         y_center = y_top - row_h / 2
         bg_color = BG_ROW_ODD if i % 2 == 0 else BG_ROW_EVEN
         code, name, days = clean_display_text(row['code']), clean_display_text(row['name'], True), row['days']
-        name_color = get_signal_color(code, signal_map)
+        # 瀕臨處置圖片不顯示技術追蹤顏色，代號與股名固定使用一般文字色
+        name_color = TEXT_MAIN
         ax.add_patch(patches.Rectangle((MARGIN_X, y_top - row_h), table_w, row_h, linewidth=0, facecolor=bg_color, zorder=1))
         ax.add_patch(patches.Rectangle((x_starts[0], y_top - row_h), x_widths[0], row_h, linewidth=0, facecolor=BG_RANK, zorder=1))
         ax.plot([MARGIN_X + 0.1, fig_w - MARGIN_X - 0.1], [y_top - row_h, y_top - row_h], color=BORDER_DARK, linewidth=0.6, zorder=2)
