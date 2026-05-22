@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.31 台股注意股系統 (修正處置後注意次數重複計算邏輯 + Yahoo MA20)
+V116.32 台股注意股系統 (同步官方處置狀態至近30日熱門統計 + Yahoo MA20)
 
 本版相對於 V116.27 的修正重點：
 [修正] 「每日紀錄出現 3 次但近30日熱門統計只記 2 次」的 bug：
@@ -29,6 +29,13 @@ V116.31 中文標題：處置後注意次數重新累積修正
     - 不再把整段處置期間視為排除區。
     - 只要每日紀錄有注意股公告，即使公告日落在處置期間，也會納入新的累積循環。
     - 每一檔股票會以前一次處置開始日前一個交易日作為切分點；切分點以前的注意次數歸為舊處置，不再重複計算。
+
+V116.32 中文標題：官方處置狀態同步至近30日熱門統計
+  修正說明：
+    - 「處置股90日明細」若已出現官方處置區間，近30日熱門統計也會同步顯示。
+    - 若今日已落在官方處置期間，最快處置天數改為 0，原因顯示「官方處置中」。
+    - 若官方已公告未來處置，最快處置天數也改為 0，原因顯示「官方已公告處置」。
+    - 這樣其他程式讀取「近30日熱門統計」時，不會誤判已公告處置股仍未進處置。
 """
 
 import os
@@ -133,7 +140,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"啟動 V116.31 台股注意股系統 (修正處置後注意次數重複計算邏輯 + Yahoo MA20)")
+print(f"啟動 V116.32 台股注意股系統 (同步官方處置狀態至近30日熱門統計 + Yahoo MA20)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -655,6 +662,86 @@ def get_consumed_attention_cutoff_date(stock_id, target_trade_date, jail_map, ca
         return cutoff_date
 
     return latest_start - timedelta(days=1)
+
+
+def format_roc_date_for_display(d):
+    """將西元日期轉成民國日期字串，供官方處置狀態顯示用。"""
+    if not d:
+        return ""
+    try:
+        if not isinstance(d, date):
+            d = pd.to_datetime(d).date()
+        return f"{d.year - 1911}/{d.month:02d}/{d.day:02d}"
+    except:
+        return str(d)
+
+
+def format_disposal_period_for_display(start_date, end_date):
+    """將處置起訖日期轉成 Google Sheet 顯示用字串。"""
+    return f"{format_roc_date_for_display(start_date)}~{format_roc_date_for_display(end_date)}"
+
+
+def build_official_disposal_status_map(jail_map, today_date, cal_dates=None):
+    """中文標題：官方處置狀態同步表
+
+    說明：
+    「近30日熱門統計」原本主要依每日注意股公告推估是否會被處置，
+    但若「處置股90日明細」已經有官方公告的處置期間，代表交易所已正式公告處置，
+    統計表就不能只停留在注意次數與狀態碼，否則其他程式讀取時會誤判尚未進處置。
+
+    本函式會將官方處置資料轉成狀態 map：
+      - 今日落在處置期間內：官方處置中
+      - 今日尚未到開始日，但已公告未來處置：官方已公告處置
+
+    回傳後會覆蓋近30日熱門統計的「最快處置天數、處置觸發原因、風險等級」。
+    """
+    status_map = {}
+    if not jail_map:
+        return status_map
+
+    if not isinstance(today_date, date):
+        today_date = pd.to_datetime(today_date).date()
+
+    for raw_code, periods in jail_map.items():
+        code = str(raw_code).replace("'", "").strip()
+        if not code:
+            continue
+
+        candidates = []
+        for s, e in periods:
+            if not s or not e:
+                continue
+
+            period_text = format_disposal_period_for_display(s, e)
+
+            if s <= today_date <= e:
+                # 目前正在官方處置期間，優先權最高；若有多筆，取最新開始日。
+                candidates.append({
+                    "priority": 0,
+                    "sort_key": -s.toordinal(),
+                    "status": "官方處置中",
+                    "start": s,
+                    "end": e,
+                    "period": period_text,
+                    "reason": f"官方處置中：{period_text}",
+                })
+            elif today_date < s:
+                # 已公告未來處置，取最接近今日的那一筆。
+                candidates.append({
+                    "priority": 1,
+                    "sort_key": s.toordinal(),
+                    "status": "官方已公告處置",
+                    "start": s,
+                    "end": e,
+                    "period": period_text,
+                    "reason": f"官方已公告處置：{period_text}",
+                })
+
+        if candidates:
+            candidates.sort(key=lambda x: (x["priority"], x["sort_key"]))
+            status_map[code] = candidates[0]
+
+    return status_map
 
 # ============================
 # 每日公告爬蟲區 (TWSE / TPEx)
@@ -2054,12 +2141,22 @@ def main():
         clause_map[key] = merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
     jail_map = get_jail_map_from_sheet(sh)
+    official_disposal_status_map = build_official_disposal_status_map(jail_map, TARGET_DATE.date(), cal_dates)
 
     exclude_map = build_exclude_map(cal_dates, jail_map)
 
     start_dt_str = cal_dates[-90].strftime("%Y-%m-%d")
     df_recent = df_log[df_log['日期'] >= start_dt_str]
     target_stocks = df_recent['代號'].unique()
+
+    # [V116.32 修正] 近30日熱門統計也要納入官方已公告處置或處置中的股票。
+    # 有些股票的最新狀態來自「處置股90日明細」，不是來自「每日紀錄」，
+    # 若不加入 target_stocks，其他程式讀取近30日熱門統計時會誤判尚未進處置。
+    if official_disposal_status_map:
+        target_stocks = sorted(
+            set([str(x).replace("'", "").strip() for x in target_stocks if str(x).strip()])
+            | set(official_disposal_status_map.keys())
+        )
 
     precise_db = load_precise_db_from_sheet(sh)
     rows_stats = []
@@ -2075,6 +2172,7 @@ def main():
         m_type = str(db_info.get('market', '上市')).upper()
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
+        official_disposal_status = official_disposal_status_map.get(code)
 
         # ===========================================================
         # [V116.31 修正] 處置後注意次數重新累積邏輯
@@ -2167,6 +2265,14 @@ def main():
             if is_clause_13:
                 reason_display += " (若進處置將關12天)"
 
+        # [V116.32 修正] 若官方處置股清單已公告，近30日熱門統計必須同步官方狀態。
+        # 這裡不改動前面的注意次數/狀態碼計算，只覆蓋「是否已公告處置」的狀態欄位，
+        # 避免其他程式讀取本表時誤判該股尚未進處置。
+        if official_disposal_status:
+            est_days_int = 0
+            est_days_display = "0"
+            reason_display = official_disposal_status.get("reason", "官方已公告處置")
+
         hist = fetch_history_data(ticker_code)
         if hist.empty:
             alt_s = '.TWO' if suffix=='.TW' else '.TW'
@@ -2180,6 +2286,11 @@ def main():
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
         risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
+
+        if official_disposal_status:
+            risk['risk_level'] = '高'
+            if not str(risk.get('trigger_msg', '')).strip():
+                risk['trigger_msg'] = official_disposal_status.get("reason", "官方已公告處置")
 
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
