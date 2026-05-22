@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.30 台股注意股系統 (修正注意股條款嚴格解析 + Yahoo MA20)
+V116.31 台股注意股系統 (修正處置後注意次數重複計算邏輯 + Yahoo MA20)
 
 本版相對於 V116.27 的修正重點：
 [修正] 「每日紀錄出現 3 次但近30日熱門統計只記 2 次」的 bug：
@@ -12,9 +12,8 @@ V116.30 台股注意股系統 (修正注意股條款嚴格解析 + Yahoo MA20)
       歷史日子若有公告卻被 jail_map 區段或 cutoff 蓋到的，仍被切掉。
 
   關鍵原則：
-    若 clause_map[(code, d)] 該日有公告 → 表示該日股票不在處置中
-    (處置中的股票不會再被公告注意股)
-    → 該日應「無條件納入累積」，不該被 jail_map / cutoff / exclude_map 切掉
+    若 clause_map[(code, d)] 該日有公告 → 表示交易所當日確實公告注意
+    → 該日應「無條件納入累積」，不該因為落在處置期間就被 jail_map / cutoff / exclude_map 切掉
 
   修正內容：
     1. 新增 get_last_n_trade_dates_with_attention()：
@@ -23,6 +22,13 @@ V116.30 台股注意股系統 (修正注意股條款嚴格解析 + Yahoo MA20)
     2. main() 改用新函式取代舊的 get_last_n_non_jail_trade_dates()。
     3. bits 構造迴圈內，force_include 條件擴展到「該日有公告就 force」，
        不再只 force 最終運算日。
+
+V116.31 中文標題：處置後注意次數重新累積修正
+  修正說明：
+    - 真正要排除的是「已經被前一次處置消耗掉的注意次數」。
+    - 不再把整段處置期間視為排除區。
+    - 只要每日紀錄有注意股公告，即使公告日落在處置期間，也會納入新的累積循環。
+    - 每一檔股票會以前一次處置開始日前一個交易日作為切分點；切分點以前的注意次數歸為舊處置，不再重複計算。
 """
 
 import os
@@ -127,7 +133,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"啟動 V116.30 台股注意股系統 (修正注意股條款嚴格解析 + Yahoo MA20)")
+print(f"啟動 V116.31 台股注意股系統 (修正處置後注意次數重複計算邏輯 + Yahoo MA20)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -537,7 +543,7 @@ def get_last_n_non_jail_trade_dates(stock_id, cal_dates, jail_map, exclude_map=N
 # ===========================================================================
 # [V116.28 核心新增函式]
 # 取代 get_last_n_non_jail_trade_dates 用於 main 統計流程
-# 邏輯：「該日有公告紀錄 → 證明該日股票不在處置中 → 強制納入累積」
+# 邏輯：「該日有公告紀錄 → 不論是否落在處置期間，都視為新的注意股累積」
 #
 # 為何重要：
 #   舊版會用 cutoff_date / exclude_map 截斷歷史，導致明明在「每日紀錄」
@@ -592,12 +598,12 @@ def get_last_n_trade_dates_with_attention(
         has_attention = bool(clause_map_of_code.get(d_str, ""))
 
         if has_attention:
-            # 有公告 → 該日股票必然不在處置中（處置中不會公告）→ 強制納入
+            # 有公告 → 交易所當日確實公告注意，不論是否落在處置期間都要納入新的累積循環
             picked.append(d)
         else:
-            # 沒公告 → 走原本的處置區間判斷
+            # 沒公告 → 才用處置區間判斷是否跳過無效空白日
             if jail_map and is_in_jail(stock_id, d, jail_map):
-                # 處置中那天，視為「凍結期」，跳過 (但不 break，因為前面可能還有自由日)
+                # 處置中但沒有公告的日子，不視為注意次數
                 continue
             picked.append(d)
 
@@ -614,6 +620,41 @@ def get_last_jail_end(stock_id, target_date, jail_map):
         if e < target_date:
             last_end = e if (last_end is None or e > last_end) else last_end
     return last_end
+
+
+def get_consumed_attention_cutoff_date(stock_id, target_trade_date, jail_map, cal_dates):
+    """中文標題：已用處置次數切分點
+
+    說明：
+    真正不能重複計算的是「已經被前一次處置消耗掉的注意次數」，
+    不是整段處置期間內的所有注意股公告。
+
+    因此本函式會找出該股在 target_trade_date 以前已開始的最新一次處置，
+    並以前一次處置開始日前一個交易日作為切分點。
+
+    - 切分點以前（含切分點）的注意次數：視為已用於前一次處置，歸零不再重複計算。
+    - 切分點之後的注意次數：即使落在處置期間，只要每日紀錄有公告，就繼續納入新的累積。
+    """
+    if not stock_id or not target_trade_date or not jail_map or stock_id not in jail_map:
+        return None
+
+    if not isinstance(target_trade_date, date):
+        target_trade_date = pd.to_datetime(target_trade_date).date()
+
+    started_periods = []
+    for s, e in jail_map.get(stock_id, []):
+        if s and s <= target_trade_date:
+            started_periods.append((s, e))
+
+    if not started_periods:
+        return None
+
+    latest_start = max(s for s, _ in started_periods)
+    cutoff_date = prev_trade_date(latest_start, cal_dates)
+    if cutoff_date:
+        return cutoff_date
+
+    return latest_start - timedelta(days=1)
 
 # ============================
 # 每日公告爬蟲區 (TWSE / TPEx)
@@ -2036,26 +2077,43 @@ def main():
         ticker_code = f"{code}{suffix}"
 
         # ===========================================================
-        # [V116.29 修正] 熱門統計直接以「每日紀錄」為準
+        # [V116.31 修正] 處置後注意次數重新累積邏輯
         #
-        # 之前即使用 get_last_n_trade_dates_with_attention()，仍可能因為
-        # jail_map / 處置期間資料、舊處置區間或 stock_calendar 重建邏輯，
-        # 讓「每日紀錄明明有公告」的日期沒有正確反映到近30日注意次數。
+        # 正確原則：
+        #   1. 真正要排除的是「已經被前一次處置消耗掉的注意次數」。
+        #   2. 不可把整段處置期間的注意公告全部排除。
+        #   3. 只要「每日紀錄」有公告，且日期在前一次處置切分點之後，
+        #      不論公告日是否落在處置期間，都要納入新的累積循環。
         #
-        # 近30日熱門統計本質上應該回答：
-        #   最近30個交易日內，每日紀錄中這檔股票有效注意股出現幾次？
+        # 實作方式：
+        #   - 找出該股在 target_trade_date_obj 以前已開始的最新一次處置。
+        #   - 以前一次處置開始日前一個交易日作為 used_attention_cutoff_date。
+        #   - cutoff 含以前的注意次數視為已用於舊處置，歸零。
+        #   - cutoff 之後的注意公告照常計入。
         #
-        # 因此這裡不再讓 jail_map / exclude_map 介入注意次數計算；
-        # 只取 safe_cal_dates 最後30個交易日，逐日回查 clause_map。
-        # 這樣像 4/29、4/30、5/4 連續三個交易日皆為第1款時，
-        # 近30日注意次數會正確顯示為 3。
+        # 例如：8027 上次處置 5/6～5/19，
+        #       5/14、5/15、5/18 雖在處置期間，但屬於 5/6 之後的新公告，
+        #       因此仍應計入下一輪近10日/近30日注意次數。
         # ===========================================================
+        used_attention_cutoff_date = get_consumed_attention_cutoff_date(
+            code,
+            target_trade_date_obj,
+            jail_map,
+            safe_cal_dates
+        )
+
         stock_calendar = [d for d in safe_cal_dates if d <= target_trade_date_obj][-30:]
 
         bits = []
         clauses = []
         for d in stock_calendar:
             d_str = d.strftime("%Y-%m-%d")
+
+            if used_attention_cutoff_date and d <= used_attention_cutoff_date:
+                bits.append(0)
+                clauses.append("")
+                continue
+
             c = clause_map.get((code, d_str), "")
 
             if c:
@@ -2068,7 +2126,7 @@ def main():
         est_days, reason = simulate_days_to_jail_strict(
             bits, clauses,
             stock_id=code,
-            target_date=TARGET_DATE.date(),
+            target_date=target_trade_date_obj,
             jail_map=jail_map,
             enable_safe_filter=False
         )
