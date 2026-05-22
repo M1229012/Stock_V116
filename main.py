@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V116.32 台股注意股系統 (同步官方處置狀態至近30日熱門統計 + Yahoo MA20)
+V116.33 台股注意股系統 (強化官方處置狀態同步 + Yahoo MA20)
 
 本版相對於 V116.27 的修正重點：
 [修正] 「每日紀錄出現 3 次但近30日熱門統計只記 2 次」的 bug：
@@ -36,6 +36,16 @@ V116.32 中文標題：官方處置狀態同步至近30日熱門統計
     - 若今日已落在官方處置期間，最快處置天數改為 0，原因顯示「官方處置中」。
     - 若官方已公告未來處置，最快處置天數也改為 0，原因顯示「官方已公告處置」。
     - 這樣其他程式讀取「近30日熱門統計」時，不會誤判已公告處置股仍未進處置。
+
+V116.33 中文標題：強化官方處置狀態同步來源
+  修正說明：
+    - 問題原因：V116.32 雖然有 official_disposal_status_map，但主要從 jail_map 建立；
+      若「處置股90日明細」剛新增資料後，jail_map 解析或重讀沒有同步到最新列，
+      近30日熱門統計仍會保留「再N天處置」的推估結果。
+    - 本版新增直接從「處置股90日明細」工作表原始列資料建立官方處置狀態。
+    - 官方處置狀態會以工作表原始列資料作為優先補強來源，再覆蓋近30日熱門統計的
+      「最快處置天數、處置觸發原因、風險等級、觸發條件」。
+    - 強化處置期間解析，支援 ~、～、－、–、—、至、到 等格式，避免官方處置期間因分隔符號不同而漏判。
 """
 
 import os
@@ -140,7 +150,7 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
-print(f"啟動 V116.32 台股注意股系統 (同步官方處置狀態至近30日熱門統計 + Yahoo MA20)")
+print(f"啟動 V116.33 台股注意股系統 (強化官方處置狀態同步 + Yahoo MA20)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -439,10 +449,36 @@ def parse_jail_period(period_str):
         return None, None
 
     s = str(period_str).strip()
+    if not s:
+        return None, None
+
+    # [V116.33 修正] 強化處置期間解析：
+    # 官方或 Google Sheet 可能出現 ~、～、－、–、—、至、到、空白等不同分隔方式。
+    # 這裡改為直接擷取兩組日期，避免因分隔符號不同造成官方處置狀態漏判。
+    s = s.replace("－", "~").replace("–", "~").replace("—", "~")
+    s = s.replace("～", "~").replace("至", "~").replace("到", "~")
+
+    date_matches = re.findall(r'(\d{2,4})\s*[/-]\s*(\d{1,2})\s*[/-]\s*(\d{1,2})', s)
+    if len(date_matches) >= 2:
+        def _to_date(parts):
+            try:
+                y = int(parts[0])
+                m = int(parts[1])
+                d = int(parts[2])
+                # 民國年通常為 2~3 位數；若已是西元年則不再加 1911。
+                if y < 1000:
+                    y += 1911
+                return date(y, m, d)
+            except:
+                return None
+
+        sd = _to_date(date_matches[0])
+        ed = _to_date(date_matches[1])
+        if sd and ed:
+            return sd, ed
+
     dates = []
-    if "～" in s:
-        dates = s.split("～")
-    elif "~" in s:
+    if "~" in s:
         dates = s.split("~")
     elif "-" in s and "/" in s and s.count("-") == 1:
         dates = s.split("-")
@@ -742,6 +778,110 @@ def build_official_disposal_status_map(jail_map, today_date, cal_dates=None):
             status_map[code] = candidates[0]
 
     return status_map
+
+
+def _make_official_disposal_status(start_date, end_date, today_date):
+    """根據處置起訖日建立官方處置狀態資料。"""
+    if not start_date or not end_date or not today_date:
+        return None
+
+    period_text = format_disposal_period_for_display(start_date, end_date)
+
+    if start_date <= today_date <= end_date:
+        return {
+            "priority": 0,
+            "sort_key": -start_date.toordinal(),
+            "status": "官方處置中",
+            "start": start_date,
+            "end": end_date,
+            "period": period_text,
+            "reason": f"官方處置中：{period_text}",
+        }
+
+    if today_date < start_date:
+        return {
+            "priority": 1,
+            "sort_key": start_date.toordinal(),
+            "status": "官方已公告處置",
+            "start": start_date,
+            "end": end_date,
+            "period": period_text,
+            "reason": f"官方已公告處置：{period_text}",
+        }
+
+    return None
+
+
+def build_official_disposal_status_map_from_sheet_values(all_jail_data, today_date):
+    """中文標題：由工作表原始列建立官方處置狀態同步表
+
+    說明：
+    V116.32 主要透過 jail_map 建立官方處置狀態，但若 Google Sheet 剛新增處置資料後，
+    jail_map 重讀或欄位解析沒有即時同步，近30日熱門統計仍可能顯示推估結果。
+    本函式直接讀取「處置股90日明細」的原始列資料，作為官方處置狀態的補強來源。
+    """
+    status_map = {}
+    if not all_jail_data or len(all_jail_data) <= 1:
+        return status_map
+
+    if not isinstance(today_date, date):
+        today_date = pd.to_datetime(today_date).date()
+
+    headers = [str(x).strip() for x in all_jail_data[0]]
+
+    def _find_col(names, default_idx):
+        for name in names:
+            if name in headers:
+                return headers.index(name)
+        return default_idx
+
+    market_idx = _find_col(["市場", "Market"], 0)
+    code_idx = _find_col(["代號", "Code"], 1)
+    name_idx = _find_col(["名稱", "Name"], 2)
+    period_idx = _find_col(["處置期間", "Period"], 3)
+
+    candidates_by_code = {}
+
+    for row in all_jail_data[1:]:
+        if len(row) <= max(code_idx, period_idx):
+            continue
+
+        code = str(row[code_idx]).replace("'", "").strip()
+        if not code:
+            continue
+
+        period = str(row[period_idx]).strip()
+        sd, ed = parse_jail_period(period)
+        if not sd or not ed:
+            continue
+
+        status = _make_official_disposal_status(sd, ed, today_date)
+        if not status:
+            continue
+
+        if len(row) > market_idx:
+            status["market"] = str(row[market_idx]).strip()
+        if len(row) > name_idx:
+            status["name"] = str(row[name_idx]).strip()
+        status["raw_period"] = period
+
+        candidates_by_code.setdefault(code, []).append(status)
+
+    for code, candidates in candidates_by_code.items():
+        candidates.sort(key=lambda x: (x["priority"], x["sort_key"]))
+        status_map[code] = candidates[0]
+
+    return status_map
+
+
+def find_official_disposal_status_for_code(code, all_jail_data, today_date):
+    """直接從處置股90日明細原始列查詢單一股票官方處置狀態。"""
+    code = str(code).replace("'", "").strip()
+    if not code:
+        return None
+
+    status_map = build_official_disposal_status_map_from_sheet_values(all_jail_data, today_date)
+    return status_map.get(code)
 
 # ============================
 # 每日公告爬蟲區 (TWSE / TPEx)
@@ -1997,6 +2137,7 @@ def main():
     print("="*50)
 
     releasing_codes_map = {}
+    official_jail_sheet_values = []
 
     try:
         df_jail_90 = run_jail_crawler_pipeline_sync()
@@ -2040,6 +2181,7 @@ def main():
         print("重新讀取完整資料庫篩選即將出關股票 (5日內)...")
 
         all_jail_data = ws_jail.get_all_values()
+        official_jail_sheet_values = all_jail_data
 
         releasing_rows = []
         today_date = TARGET_DATE.date()
@@ -2141,7 +2283,24 @@ def main():
         clause_map[key] = merge_clause_text(clause_map.get(key,""), str(r['觸犯條款']))
 
     jail_map = get_jail_map_from_sheet(sh)
+
+    if not official_jail_sheet_values:
+        try:
+            official_jail_sheet_values = sh.worksheet("處置股90日明細").get_all_values()
+        except:
+            official_jail_sheet_values = []
+
     official_disposal_status_map = build_official_disposal_status_map(jail_map, TARGET_DATE.date(), cal_dates)
+
+    # [V116.33 修正] 使用「處置股90日明細」原始列資料補強官方處置狀態。
+    # 這可以避免 jail_map 尚未即時同步或處置期間格式解析失敗時，
+    # 近30日熱門統計仍顯示「再N天處置」的推估結果。
+    official_disposal_status_map_from_sheet = build_official_disposal_status_map_from_sheet_values(
+        official_jail_sheet_values,
+        TARGET_DATE.date()
+    )
+    if official_disposal_status_map_from_sheet:
+        official_disposal_status_map.update(official_disposal_status_map_from_sheet)
 
     exclude_map = build_exclude_map(cal_dates, jail_map)
 
@@ -2173,6 +2332,16 @@ def main():
         suffix = '.TWO' if any(k in m_type for k in ['上櫃', 'TWO', 'TPEX', 'OTC']) else '.TW'
         ticker_code = f"{code}{suffix}"
         official_disposal_status = official_disposal_status_map.get(code)
+
+        if not official_disposal_status:
+            official_disposal_status = find_official_disposal_status_for_code(
+                code,
+                official_jail_sheet_values,
+                TARGET_DATE.date()
+            )
+
+        if official_disposal_status and name == "未知" and official_disposal_status.get("name"):
+            name = official_disposal_status.get("name")
 
         # ===========================================================
         # [V116.31 修正] 處置後注意次數重新累積邏輯
@@ -2289,8 +2458,7 @@ def main():
 
         if official_disposal_status:
             risk['risk_level'] = '高'
-            if not str(risk.get('trigger_msg', '')).strip():
-                risk['trigger_msg'] = official_disposal_status.get("reason", "官方已公告處置")
+            risk['trigger_msg'] = official_disposal_status.get("reason", "官方已公告處置")
 
         valid_bits = [1 if b==1 and is_valid_accumulation_day(parse_clause_ids_strict(c)) else 0 for b,c in zip(bits, clauses)]
         streak = 0
