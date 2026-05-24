@@ -134,35 +134,39 @@ PSCNET_PAGE_URL = (
 )
 
 
-# ================= 圖片樣式設定：沿用原始程式 =================
+# ================= 圖片樣式設定：社群圖卡優化版 =================
 
 WATERMARK_TEXT = "股市艾斯\n台股DC討論群"
 TOPRIGHT_WATERMARK_TEXT = "By 股市艾斯出品-轉傳請註明"
 DISCLAIMER_TEXT = "資訊分享非投資建議 投資請自行評估風險"
-WATERMARK_ALPHA = 0.12
-WATERMARK_FONT_SIZE = 104
+WATERMARK_ALPHA = 0.065
+WATERMARK_FONT_SIZE = 124
 WATERMARK_ROTATION = 18
-TOPRIGHT_WATERMARK_ALPHA = 0.80
-TOPRIGHT_WATERMARK_FONT_SIZE = 10
-TOPRIGHT_DISCLAIMER_FONT_SIZE = 9
+TOPRIGHT_WATERMARK_ALPHA = 0.72
+TOPRIGHT_WATERMARK_FONT_SIZE = 11
+TOPRIGHT_DISCLAIMER_FONT_SIZE = 10
 STREAK_NOTE_TEXT = "標記：連2／連3／連4 代表連續 2／3／4 週進入該榜單"
 
-IMG_BG = "#F5F7FA"
+IMG_BG = "#F6F8FB"
 CARD_BG = "#FFFFFF"
-CARD_BORDER = "#DDE5EF"
-HEADER_BG = "#F1F5F9"
-TEXT_MAIN = "#243044"
-TEXT_MUTED = "#718096"
-TEXT_RED = "#E53E3E"
-TEXT_GREEN = "#16A34A"
-ACCENT_LISTED = "#3182CE"
-ACCENT_OTC = "#22A06B"
+CARD_BORDER = "#C9D5E3"
+HEADER_BG = "#F3F7FC"
+TEXT_MAIN = "#111827"
+TEXT_DARK = "#061D3D"
+TEXT_NAVY = "#0B2E5B"
+TEXT_MUTED = "#64748B"
+TEXT_RED = "#D92323"
+TEXT_GREEN = "#16803C"
+ACCENT_LISTED = "#2563EB"
+ACCENT_OTC = "#16803C"
+ACCENT_NAVY = "#061D3D"
+ROW_ALT = "#FAFCFF"
 TOP1_BG = "#FFF4D9"
 TOP2_BG = "#EEF4FF"
-TOP3_BG = "#FDF0E6"
-TOP1_BORDER = "#F2C56B"
-TOP2_BORDER = "#BFD0F3"
-TOP3_BORDER = "#E6B88A"
+TOP3_BG = "#FFF0E6"
+TOP1_BORDER = "#E7B84B"
+TOP2_BORDER = "#AFC4EA"
+TOP3_BORDER = "#E3A678"
 TOP1_BADGE = "#F4C95D"
 TOP2_BADGE = "#C9D2E3"
 TOP3_BADGE = "#E6BA8A"
@@ -1624,35 +1628,90 @@ def _split_streak_badge(text):
     return text, ""
 
 
+def _rank_summary(df):
+    if df is None or df.empty:
+        return "無資料", "-", TEXT_MUTED
+
+    row = df.reset_index(drop=True).iloc[0]
+    code, name = split_code_name(row.get("股票代號/名稱", ""))
+    name, _ = _split_streak_badge(name)
+    change_str = fmt_change(row.get("總增減", 0))
+
+    try:
+        change_val = float(change_str)
+        change_text = f"{change_val:+.2f}%"
+        change_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
+    except Exception:
+        change_text = "-"
+        change_color = TEXT_MUTED
+
+    label = f"{code} {name}".strip() if code or name else "無資料"
+    return label, change_text, change_color
+
+
+def _draw_kpi_card(ax, x, y, w, h, title, main_value, sub_value, accent, sub_color=None):
+    sub_color = sub_color or accent
+
+    ax.add_patch(patches.FancyBboxPatch(
+        (x, y), w, h,
+        boxstyle="round,pad=0.006,rounding_size=0.018",
+        linewidth=1.25, edgecolor=accent, facecolor=CARD_BG,
+        transform=ax.transAxes, zorder=2
+    ))
+    ax.add_patch(patches.FancyBboxPatch(
+        (x + 0.012, y + h - 0.028), 0.060, 0.010,
+        boxstyle="round,pad=0.001,rounding_size=0.006",
+        linewidth=0, facecolor=accent,
+        transform=ax.transAxes, zorder=3
+    ))
+    draw_text(ax, x + 0.022, y + h - 0.045, title,
+              size=13.5, color=TEXT_MUTED, weight="bold", bold=True)
+    draw_text(ax, x + 0.022, y + h * 0.48, _shorten_text(main_value, 16),
+              size=18.5, color=TEXT_DARK, weight="bold", bold=True)
+    draw_text(ax, x + 0.022, y + 0.026, sub_value,
+              size=15.0, color=sub_color, weight="bold", bold=True)
+
+
 def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20):
-    title_h = 0.062
-    header_h = 0.046
+    title_h = 0.068
+    header_h = 0.048
     inner_pad_x = 0.014
     inner_w = card_w - inner_pad_x * 2
-    row_h = (card_h - title_h - header_h - 0.024) / max(top_n, 1)
+    row_h = (card_h - title_h - header_h - 0.022) / max(top_n, 1)
 
     ax.add_patch(patches.FancyBboxPatch(
         (x_left, y_top - card_h), card_w, card_h,
-        boxstyle="round,pad=0.006,rounding_size=0.012",
-        linewidth=1.1, edgecolor=CARD_BORDER, facecolor=CARD_BG,
+        boxstyle="round,pad=0.006,rounding_size=0.018",
+        linewidth=1.25, edgecolor=CARD_BORDER, facecolor=CARD_BG,
         transform=ax.transAxes, zorder=1
     ))
 
-    ax.add_patch(patches.Rectangle(
+    ax.add_patch(patches.FancyBboxPatch(
         (x_left, y_top - title_h), card_w, title_h,
-        linewidth=0, facecolor=accent,
+        boxstyle="round,pad=0.006,rounding_size=0.018",
+        linewidth=0, facecolor=ACCENT_NAVY,
         transform=ax.transAxes, zorder=2
     ))
-    draw_text(ax, x_left + 0.018, y_top - title_h / 2, title,
-              size=16, color="#FFFFFF", weight="bold", bold=True)
-    draw_text(ax, x_left + card_w - 0.018, y_top - title_h / 2, f"TOP {top_n}",
-              size=12, color="#FFFFFF", weight="bold", bold=True, ha="right")
+    # 遮住標題列下緣圓角，讓表格標題上圓下直。
+    ax.add_patch(patches.Rectangle(
+        (x_left, y_top - title_h - 0.012), card_w, 0.020,
+        linewidth=0, facecolor=ACCENT_NAVY,
+        transform=ax.transAxes, zorder=2
+    ))
+    ax.add_patch(patches.Rectangle(
+        (x_left, y_top - title_h), 0.008, title_h,
+        linewidth=0, facecolor=accent,
+        transform=ax.transAxes, zorder=3
+    ))
 
-    col_rel = [0.060, 0.080, 0.210, 0.150, 0.130, 0.150, 0.220]
+    draw_text(ax, x_left + 0.024, y_top - title_h / 2, title,
+              size=18, color="#FFFFFF", weight="bold", bold=True)
+    draw_text(ax, x_left + card_w - 0.020, y_top - title_h / 2, f"TOP {top_n}",
+              size=13.5, color="#FFFFFF", weight="bold", bold=True, ha="right")
+
+    col_rel = [0.065, 0.090, 0.235, 0.130, 0.120, 0.145, 0.215]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
     aligns = ["center", "center", "left", "left", "left", "left", "right"]
-    shift_cols = {3, 4, 5}
-    col_shift = 0.038
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -1676,20 +1735,16 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if aligns[i] == "center":
             tx, ha = cell_x + cell_w / 2, "center"
         elif aligns[i] == "right":
-            pad = 0.012
-            tx, ha = cell_x + cell_w - pad, "right"
+            tx, ha = cell_x + cell_w - 0.012, "right"
         else:
-            tx, ha = cell_x + 0.010, "left"
+            tx, ha = cell_x + 0.012, "left"
 
-        if i in shift_cols:
-            tx += col_shift
-
-        draw_text(ax, tx, header_top - header_h / 2, label, size=12,
-                  color=TEXT_MUTED, weight="bold", ha=ha, bold=True)
+        draw_text(ax, tx, header_top - header_h / 2, label, size=13,
+                  color=TEXT_NAVY, weight="bold", ha=ha, bold=True)
 
     if df is None or df.empty:
         draw_text(ax, x_left + card_w / 2, header_top - header_h - row_h / 2,
-                  "無資料", size=11, color=TEXT_MUTED, ha="center")
+                  "無資料", size=14, color=TEXT_MUTED, ha="center", bold=True)
         return
 
     df = df.head(top_n).reset_index(drop=True)
@@ -1712,20 +1767,20 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             streak_badge = ""
 
         if i == 0:
-            bg, edge, lw = TOP1_BG, TOP1_BORDER, 1.1
+            bg, edge, lw = TOP1_BG, TOP1_BORDER, 1.20
         elif i == 1:
-            bg, edge, lw = TOP2_BG, TOP2_BORDER, 1.0
+            bg, edge, lw = TOP2_BG, TOP2_BORDER, 1.05
         elif i == 2:
-            bg, edge, lw = TOP3_BG, TOP3_BORDER, 1.0
+            bg, edge, lw = TOP3_BG, TOP3_BORDER, 1.05
         else:
-            bg, edge, lw = ("#FFFFFF" if i % 2 == 0 else "#F6F8FB"), None, 0.0
+            bg, edge, lw = ("#FFFFFF" if i % 2 == 0 else ROW_ALT), "#E8EDF3", 0.45
 
         ax.add_patch(patches.Rectangle(
             (x_left, y - row_h), card_w, row_h,
             linewidth=lw, edgecolor=edge if edge else "none", facecolor=bg,
             transform=ax.transAxes, zorder=2
         ))
-        ax.plot([x_left + 0.010, x_left + card_w - 0.010], [y - row_h, y - row_h],
+        ax.plot([x_left + 0.012, x_left + card_w - 0.012], [y - row_h, y - row_h],
                 transform=ax.transAxes, color="#E8EDF3", linewidth=0.55, zorder=3)
 
         if "▲" in week_chg:
@@ -1736,22 +1791,22 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             week_color = TEXT_MUTED
 
         chg_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
-        chg_display = "-" if fmt_change(change_val) == "-" else f"{change_val:+.2f}%"
+        chg_display = f"{change_val:+.2f}%" if change_str != "-" else "-"
 
         values = [
             f"{i+1:02d}",
             code,
-            name,
-            _shorten_text(category, 7),
+            _shorten_text(name, 9),
+            _shorten_text(category, 6),
             price,
             week_chg,
             chg_display,
         ]
 
         name_weight = "bold" if i < 3 else "normal"
-        colors = [TEXT_MUTED, TEXT_MAIN, TEXT_MAIN, TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
+        colors = [TEXT_MUTED, TEXT_DARK, TEXT_MAIN, TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
         weights = ["bold", "bold", name_weight, "normal", "bold", "bold", "bold"]
-        sizes = [9.2, 12, 14 if i < 3 else 12, 10, 10, 12, 12]
+        sizes = [10.5, 13.5, 15.2 if i < 3 else 13.6, 11.6, 12.2, 13.0, 14.2]
 
         rank_cell_x = col_x[0]
         rank_cell_w = inner_w * col_rel[0]
@@ -1760,12 +1815,12 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         if i < 3:
             badge_color = [TOP1_BADGE, TOP2_BADGE, TOP3_BADGE][i]
             ax.add_patch(patches.Circle(
-                (rank_center_x, rank_center_y), row_h * 0.24,
+                (rank_center_x, rank_center_y), row_h * 0.285,
                 transform=ax.transAxes, facecolor=badge_color,
-                edgecolor="white", linewidth=1.0, zorder=4
+                edgecolor="white", linewidth=1.2, zorder=4
             ))
-            draw_text(ax, rank_center_x, rank_center_y, values[0], size=10.5,
-                      color="#6B4A12" if i == 0 else TEXT_MAIN, weight="bold", ha="center", bold=True)
+            draw_text(ax, rank_center_x, rank_center_y, values[0], size=11.4,
+                      color="#6B4A12" if i == 0 else TEXT_DARK, weight="bold", ha="center", bold=True)
             start_j = 1
         else:
             start_j = 0
@@ -1777,28 +1832,23 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             if aligns[j] == "center":
                 tx, ha = cell_x + cell_w / 2, "center"
             elif aligns[j] == "right":
-                pad = 0.012
-                tx, ha = cell_x + cell_w - pad, "right"
+                tx, ha = cell_x + cell_w - 0.012, "right"
             else:
-                tx, ha = cell_x + 0.010, "left"
-
-            if j in shift_cols:
-                tx += col_shift
+                tx, ha = cell_x + 0.012, "left"
 
             if j == 2 and streak_badge:
                 draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
                           color=colors[j], weight=weights[j], ha=ha,
                           bold=(weights[j] == "bold"))
 
-                badge_font_size = 9.0
-                badge_w = 0.018
-                badge_h = row_h * 0.42
-                badge_gap = 0.006
-                badge_x = col_x[3] + 0.010 + max(0, col_shift - badge_w - badge_gap)
+                badge_font_size = 9.8
+                badge_w = 0.030
+                badge_h = row_h * 0.46
+                badge_x = col_x[3] - badge_w - 0.010
                 badge_y = y - row_h / 2 - badge_h / 2
                 ax.add_patch(patches.FancyBboxPatch(
                     (badge_x, badge_y), badge_w, badge_h,
-                    boxstyle="round,pad=0.0005,rounding_size=0.0025",
+                    boxstyle="round,pad=0.001,rounding_size=0.004",
                     linewidth=0.8, edgecolor="#D8B83F", facecolor="#FFF3C4",
                     transform=ax.transAxes, zorder=7
                 ))
@@ -1821,8 +1871,8 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
 
 def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股東籌碼強勢榜  Top 20"):
     top_n = 20
-    fig_w = 18.0
-    fig_h = 10.6
+    fig_w = 18.8
+    fig_h = 12.4
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=IMG_BG)
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
@@ -1831,18 +1881,40 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
     ax.set_ylim(0, 1)
     ax.set_axis_off()
 
-    ax.add_patch(patches.Rectangle(
-        (0.015, 0.905), 0.970, 0.072,
-        linewidth=0, facecolor="#FFFFFF",
+    is_decrease_rank = "減少" in str(main_title)
+    theme_color = TEXT_GREEN if is_decrease_rank else TEXT_RED
+    theme_bg = "#EFFAF2" if is_decrease_rank else "#FFF2F2"
+
+    # Header 背景卡片
+    ax.add_patch(patches.FancyBboxPatch(
+        (0.020, 0.875), 0.960, 0.104,
+        boxstyle="round,pad=0.006,rounding_size=0.020",
+        linewidth=1.0, edgecolor="#D9E2EE", facecolor="#FFFFFF",
         transform=ax.transAxes, zorder=1
     ))
-    draw_text(ax, 0.5, 0.945, main_title,
-              size=22, color=TEXT_MAIN, weight="bold", ha="center", bold=True)
-    draw_text(ax, 0.5, 0.915, f"資料統計日期：{display_date}",
-              size=11, color=TEXT_MUTED, ha="center")
+    ax.add_patch(patches.FancyBboxPatch(
+        (0.040, 0.944), 0.090, 0.014,
+        boxstyle="round,pad=0.001,rounding_size=0.007",
+        linewidth=0, facecolor=theme_color,
+        transform=ax.transAxes, zorder=2
+    ))
+    draw_text(ax, 0.040, 0.923, main_title,
+              size=31, color=TEXT_DARK, weight="bold", ha="left", bold=True)
+    draw_text(ax, 0.042, 0.892, f"資料統計日期：{display_date}　｜　上市 / 上櫃各 TOP {top_n}",
+              size=14.5, color=TEXT_NAVY, weight="bold", ha="left", bold=True)
 
+    ax.add_patch(patches.FancyBboxPatch(
+        (0.792, 0.899), 0.160, 0.045,
+        boxstyle="round,pad=0.004,rounding_size=0.018",
+        linewidth=0, facecolor=theme_bg,
+        transform=ax.transAxes, zorder=2
+    ))
+    draw_text(ax, 0.872, 0.921, "股權分散｜400張以上比例", size=13.2,
+              color=theme_color, weight="bold", ha="center", bold=True)
+
+    # 不顯示額外摘要卡，讓畫面回到單純排名表格。
     card_y_top = 0.852
-    card_h = 0.825
+    card_h = 0.802
     gap = 0.020
     card_w = (0.960 - gap) / 2
     left_x = 0.020
@@ -1872,7 +1944,7 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
     )
 
     ax.text(
-        0.5, 0.50, WATERMARK_TEXT,
+        0.5, 0.45, WATERMARK_TEXT,
         transform=ax.transAxes,
         ha="center", va="center",
         fontsize=WATERMARK_FONT_SIZE,
@@ -1885,7 +1957,7 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
         zorder=4
     )
 
-    fig.text(0.985, 0.988, clean_cell(TOPRIGHT_WATERMARK_TEXT),
+    fig.text(0.982, 0.984, clean_cell(TOPRIGHT_WATERMARK_TEXT),
              ha="right", va="top",
              fontsize=TOPRIGHT_WATERMARK_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -1893,7 +1965,7 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
              alpha=TOPRIGHT_WATERMARK_ALPHA,
              zorder=10)
 
-    fig.text(0.985, 0.968, clean_cell(DISCLAIMER_TEXT),
+    fig.text(0.982, 0.964, clean_cell(DISCLAIMER_TEXT),
              ha="right", va="top",
              fontsize=TOPRIGHT_DISCLAIMER_FONT_SIZE,
              fontproperties=FONT_PROP,
@@ -1901,13 +1973,16 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
              alpha=TOPRIGHT_WATERMARK_ALPHA,
              zorder=10)
 
-    fig.text(0.020, 0.018, clean_cell(STREAK_NOTE_TEXT),
-             ha="left", va="bottom",
-             fontsize=10,
-             fontproperties=FONT_PROP,
-             color=TEXT_MUTED,
-             alpha=0.92,
-             zorder=10)
+    ax.add_patch(patches.FancyBboxPatch(
+        (0.020, 0.012), 0.960, 0.028,
+        boxstyle="round,pad=0.004,rounding_size=0.010",
+        linewidth=0.8, edgecolor="#D9E2EE", facecolor="#FFFFFF",
+        transform=ax.transAxes, zorder=6
+    ))
+    draw_text(ax, 0.034, 0.026, STREAK_NOTE_TEXT,
+              size=11.2, color=TEXT_MUTED, ha="left")
+    draw_text(ax, 0.966, 0.026, "資訊分享非投資建議｜投資請自行評估風險",
+              size=11.2, color=TEXT_MUTED, ha="right")
 
     buf = BytesIO()
     plt.savefig(buf, format="png", dpi=150, facecolor=fig.get_facecolor())
