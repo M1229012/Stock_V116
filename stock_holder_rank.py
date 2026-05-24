@@ -1673,11 +1673,12 @@ def _draw_kpi_card(ax, x, y, w, h, title, main_value, sub_value, accent, sub_col
 
 
 def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=20):
-    title_h = 0.068
-    header_h = 0.048
+    title_h = 0.074
+    header_gap = 0.006
+    header_h = 0.052
     inner_pad_x = 0.014
     inner_w = card_w - inner_pad_x * 2
-    row_h = (card_h - title_h - header_h - 0.022) / max(top_n, 1)
+    row_h = (card_h - title_h - header_gap - header_h - 0.022) / max(top_n, 1)
 
     ax.add_patch(patches.FancyBboxPatch(
         (x_left, y_top - card_h), card_w, card_h,
@@ -1709,9 +1710,10 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     draw_text(ax, x_left + card_w - 0.020, y_top - title_h / 2, f"TOP {top_n}",
               size=13.5, color="#FFFFFF", weight="bold", bold=True, ha="right")
 
-    col_rel = [0.065, 0.090, 0.235, 0.130, 0.120, 0.145, 0.215]
+    # 欄寬重新分配：讓「類別／現價／週漲跌／總增減%」四個資料欄位的間距更平均。
+    col_rel = [0.065, 0.090, 0.205, 0.155, 0.155, 0.155, 0.175]
     labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
-    aligns = ["center", "center", "left", "left", "left", "left", "right"]
+    aligns = ["center", "center", "left", "left", "center", "center", "right"]
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -1720,7 +1722,8 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         acc += w
         col_x.append(x0 + inner_w * acc)
 
-    header_top = y_top - title_h
+    # 標題列與表頭之間保留一點空白，避免表格內容看起來貼到「上市排行 / 上櫃排行」標題列。
+    header_top = y_top - title_h - header_gap
     ax.add_patch(patches.Rectangle(
         (x_left, header_top - header_h), card_w, header_h,
         linewidth=0, facecolor=HEADER_BG,
@@ -1797,7 +1800,7 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             f"{i+1:02d}",
             code,
             _shorten_text(name, 9),
-            _shorten_text(category, 6),
+            _shorten_text(category, 7),
             price,
             week_chg,
             chg_display,
@@ -1836,15 +1839,12 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             else:
                 tx, ha = cell_x + 0.012, "left"
 
-            if j == 2 and streak_badge:
-                draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
-                          color=colors[j], weight=weights[j], ha=ha,
-                          bold=(weights[j] == "bold"))
-
-                badge_font_size = 9.8
+            # 連續上榜標記改放在「類別」欄位前方，不再擠在股名與類別之間。
+            if j == 3 and streak_badge:
+                badge_font_size = 9.6
                 badge_w = 0.030
                 badge_h = row_h * 0.46
-                badge_x = col_x[3] - badge_w - 0.010
+                badge_x = cell_x + 0.010
                 badge_y = y - row_h / 2 - badge_h / 2
                 ax.add_patch(patches.FancyBboxPatch(
                     (badge_x, badge_y), badge_w, badge_h,
@@ -1862,6 +1862,9 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                     color="#A06A00",
                     zorder=8
                 )
+                draw_text(ax, badge_x + badge_w + 0.007, y - row_h / 2, value, size=sizes[j],
+                          color=colors[j], weight=weights[j], ha="left",
+                          bold=(weights[j] == "bold"))
                 continue
 
             draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
