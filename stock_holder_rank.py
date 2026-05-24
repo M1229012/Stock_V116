@@ -1986,10 +1986,8 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
     ))
     draw_text(ax, 0.034, 0.026, STREAK_NOTE_TEXT,
               size=12.2, color=TEXT_MUTED, ha="left")
-    draw_text(ax, 0.982, 0.0265, clean_cell(TOPRIGHT_WATERMARK_TEXT),
-              size=9.8, color=TEXT_NAVY, weight="bold", ha="right", va="center", bold=True)
-    draw_text(ax, 0.982, 0.0135, clean_cell(DISCLAIMER_TEXT),
-              size=9.1, color=TEXT_MUTED, ha="right", va="center")
+    draw_text(ax, 0.968, 0.026, clean_cell(TOPRIGHT_WATERMARK_TEXT) + "｜" + clean_cell(DISCLAIMER_TEXT),
+              size=9.2, color=TEXT_MUTED, weight="bold", ha="right", va="center", bold=True)
 
     buf = BytesIO()
     plt.savefig(buf, format="png", dpi=180, facecolor=fig.get_facecolor())
