@@ -1918,9 +1918,9 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
         linewidth=0, facecolor=theme_color,
         transform=ax.transAxes, zorder=2
     ))
-    draw_text(ax, 0.040, 0.914, main_title,
+    draw_text(ax, 0.040, 0.916, main_title,
               size=34, color=TEXT_DARK, weight="bold", ha="left", bold=True)
-    draw_text(ax, 0.042, 0.885, f"資料統計日期：{display_date}　｜　上市 / 上櫃各 TOP {top_n}",
+    draw_text(ax, 0.042, 0.874, f"資料統計日期：{display_date}　｜　上市 / 上櫃各 TOP {top_n}",
               size=16.0, color=TEXT_NAVY, weight="bold", ha="left", bold=True)
 
     ax.add_patch(patches.FancyBboxPatch(
@@ -1982,12 +1982,12 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
         (0.020, 0.012), 0.960, 0.028,
         boxstyle="round,pad=0.004,rounding_size=0.010",
         linewidth=0.8, edgecolor="#D9E2EE", facecolor="#FFFFFF",
-        transform=ax.transAxes, zorder=6
+        transform=ax.transAxes, zorder=4
     ))
     draw_text(ax, 0.034, 0.026, STREAK_NOTE_TEXT,
               size=12.2, color=TEXT_MUTED, ha="left")
-    draw_text(ax, 0.968, 0.026, clean_cell(TOPRIGHT_WATERMARK_TEXT) + "｜" + clean_cell(DISCLAIMER_TEXT),
-              size=9.2, color=TEXT_MUTED, weight="bold", ha="right", va="center", bold=True)
+    draw_text(ax, 0.965, 0.026, clean_cell(TOPRIGHT_WATERMARK_TEXT) + "｜" + clean_cell(DISCLAIMER_TEXT),
+              size=8.9, color=TEXT_MUTED, weight="bold", ha="right", va="center", bold=True)
 
     buf = BytesIO()
     plt.savefig(buf, format="png", dpi=180, facecolor=fig.get_facecolor())
