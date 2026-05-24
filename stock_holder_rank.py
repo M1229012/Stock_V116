@@ -57,6 +57,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.patheffects as pe
 from matplotlib import font_manager
 
 from selenium import webdriver
@@ -154,7 +155,7 @@ HEADER_BG = "#F3F7FC"
 TEXT_MAIN = "#111827"
 TEXT_DARK = "#061D3D"
 TEXT_NAVY = "#0B2E5B"
-TEXT_MUTED = "#64748B"
+TEXT_MUTED = "#475569"
 TEXT_RED = "#D92323"
 TEXT_GREEN = "#16803C"
 ACCENT_LISTED = "#2563EB"
@@ -1571,7 +1572,7 @@ def load_cjk_font(bold=False):
     return font_manager.FontProperties(family="DejaVu Sans")
 
 
-FONT_PROP = load_cjk_font(False)
+FONT_PROP = load_cjk_font(True)
 FONT_BOLD = load_cjk_font(True)
 
 try:
@@ -1598,7 +1599,7 @@ except Exception as e:
 
 def draw_text(ax, x, y, text, size=14, color=TEXT_MAIN, weight="normal",
               ha="left", va="center", bold=False, alpha=1.0):
-    ax.text(
+    txt = ax.text(
         x, y, clean_cell(text),
         transform=ax.transAxes,
         ha=ha, va=va,
@@ -1609,6 +1610,15 @@ def draw_text(ax, x, y, text, size=14, color=TEXT_MAIN, weight="normal",
         alpha=alpha,
         zorder=5
     )
+
+    # Discord 預覽圖會先縮圖，較細的中文字容易糊在一起。
+    # 這裡統一加上很淡的描邊，讓未點開圖片時也比較清楚。
+    stroke_fg = "#0B1F3A" if str(color).upper() in {"#FFFFFF", "WHITE"} else "#FFFFFF"
+    stroke_lw = 1.10 if size >= 16 else 0.90
+    txt.set_path_effects([
+        pe.withStroke(linewidth=stroke_lw, foreground=stroke_fg, alpha=0.82)
+    ])
+    return txt
 
 
 def _shorten_text(text, max_chars):
