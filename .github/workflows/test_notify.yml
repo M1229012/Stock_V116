@@ -1,3 +1,51 @@
 name: 🧪 測試推播 (手動/更新觸發)
 
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'notify_discord.py'  # 只有改程式碼才觸發測試
+  workflow_dispatch:        # 讓你可以手動按按鈕測試
 
+jobs:
+  test-notification:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # 📌 修正：這裡補上了 yfinance，確保機器人有安裝這個套件
+        pip install gspread google-auth requests yfinance selenium webdriver_manager lxml matplotlib
+
+    - name: Create Service Key
+      env:
+        GCP_SERVICE_KEY: ${{ secrets.GCP_SERVICE_KEY }}
+      run: |
+        python - <<'PY'
+        import os
+        with open("service_key.json", "w", encoding="utf-8") as f:
+            f.write(os.environ["GCP_SERVICE_KEY"])
+        PY
+
+    - name: Run Discord Notification (Test Mode)
+      env:
+        # 注意：這裡改成讀取測試用的 Webhook Secret
+        DISCORD_WEBHOOK_URL_TEST: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
+        GOOGLE_APPLICATION_CREDENTIALS: service_key.json
+      run: |
+        python notify_discord.py
+
+    - name: Cleanup Service Key
+      if: always()
+      run: rm -f service_key.json
