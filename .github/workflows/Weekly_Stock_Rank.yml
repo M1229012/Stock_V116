@@ -1,8 +1,8 @@
 name: Weekly Stock Holder Rank
 on:
   schedule:
-    # UTC 01:00 = 台灣時間 09:00 (週六)
-    - cron: '0 1 * * 6'
+    # UTC 22:00 = 台灣時間 06:00 (週六)
+    - cron: '0 22 * * 6'
   workflow_dispatch: # 允許手動按按鈕測試
 
 permissions:
