@@ -1143,7 +1143,7 @@ def draw_injail_image(data, signal_map=None):
     if n <= 18:
         return _draw_injail_single_column(data, n, signal_map=signal_map)
 
-    page_size = 44
+    page_size = 100
     pages = [data[i:i + page_size] for i in range(0, n, page_size)]
     if len(pages) == 1:
         return _draw_injail_two_column(pages[0], n, signal_map=signal_map)
