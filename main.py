@@ -156,6 +156,22 @@ FINMIND_TOKENS = [t for t in [token1, token2] if t]
 CURRENT_TOKEN_INDEX = 0
 _FINMIND_CACHE = {}
 
+# ==========================================
+# TWSE 官方網站存取保護與同輪快取
+# ==========================================
+# TWSE 可能對短時間密集請求或 GitHub Actions 共用出口 IP 回傳
+# HTTP 307 /「因為安全性考量」/「請稍候再試」。
+# 這裡只調整抓取層：加入節流、官方端點輪替、OpenAPI 與 Selenium 備援；
+# 其餘統計、Google Sheet 與處置判斷邏輯不變。
+TWSE_REQUEST_INTERVAL_SECONDS = 2.3
+TWSE_HTTP_TIMEOUT_SECONDS = 20
+TWSE_DAILY_SELENIUM_FALLBACK_LIMIT = 2
+
+_TWSE_LAST_REQUEST_MONOTONIC = 0.0
+_TWSE_HTTP_SESSION = None
+_TWSE_DAILY_SELENIUM_FALLBACK_USED = 0
+_DAILY_NOTICE_CACHE = {}
+
 print(f"啟動 V116.29 台股注意股系統 (修正處置消耗切分點 + 官方處置同步近30日熱門統計)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -767,43 +783,506 @@ def build_official_disposal_status_map_from_rows(all_jail_data, today_date):
 # ============================
 # 每日公告爬蟲區 (TWSE / TPEx)
 # ============================
-def fetch_twse_attention_rows(date_obj, date_str):
-    date_str_nodash = date_obj.strftime("%Y%m%d")
-    rows = []
+def _twse_clean_text(value):
+    if value is None:
+        return ""
+    s = str(value)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = s.replace("&nbsp;", " ")
+    s = s.replace("\u3000", " ")
+    s = s.replace("\xa0", " ")
+    s = s.replace("\r", " ")
+    s = s.replace("\n", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _twse_parse_any_date_to_ad_date(value):
+    """解析 TWSE 可能回傳的民國或西元日期。"""
+    raw = _twse_clean_text(value)
+    if not raw:
+        return None
+
+    raw = raw.replace("年", "/").replace("月", "/").replace("日", "")
+    raw = raw.replace(".", "/").replace("-", "/").strip()
+
+    # 西元 YYYYMMDD
+    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", raw)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+
+    # 民國 YYYMMDD
+    m = re.fullmatch(r"(\d{3})(\d{2})(\d{2})", raw)
+    if m:
+        try:
+            return date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+
+    m = re.search(r"(\d{2,4})/(\d{1,2})/(\d{1,2})", raw)
+    if m:
+        try:
+            y = int(m.group(1))
+            mo = int(m.group(2))
+            da = int(m.group(3))
+            if y < 1911:
+                y += 1911
+            return date(y, mo, da)
+        except Exception:
+            return None
+
+    return None
+
+
+def _twse_find_field_index(fields, keywords):
+    for idx, field in enumerate(fields or []):
+        clean_field = re.sub(r"\s+", "", _twse_clean_text(field))
+        if any(keyword in clean_field for keyword in keywords):
+            return idx
+    return None
+
+
+def _twse_get_session():
+    global _TWSE_HTTP_SESSION
+    if _TWSE_HTTP_SESSION is None:
+        _TWSE_HTTP_SESSION = requests.Session()
+    return _TWSE_HTTP_SESSION
+
+
+def _twse_reset_session():
+    global _TWSE_HTTP_SESSION
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(
-            "https://www.twse.com.tw/rwd/zh/announcement/notice",
-            params={"startDate": date_str_nodash, "endDate": date_str_nodash, "response": "json"},
-            headers=headers,
-            timeout=10,
+        if _TWSE_HTTP_SESSION is not None:
+            _TWSE_HTTP_SESSION.close()
+    except Exception:
+        pass
+    _TWSE_HTTP_SESSION = requests.Session()
+
+
+def _twse_wait_before_request():
+    global _TWSE_LAST_REQUEST_MONOTONIC
+
+    now = time.monotonic()
+    elapsed = now - _TWSE_LAST_REQUEST_MONOTONIC
+    remain = TWSE_REQUEST_INTERVAL_SECONDS - elapsed
+    if remain > 0:
+        time.sleep(remain + random.uniform(0.10, 0.35))
+
+    _TWSE_LAST_REQUEST_MONOTONIC = time.monotonic()
+
+
+def _twse_common_headers(referer):
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/149.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": referer,
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Connection": "close",
+    }
+
+
+def _twse_response_is_blocked(response):
+    body = _twse_clean_text(getattr(response, "text", ""))[:1500].lower()
+    blocked_words = [
+        "for security reasons",
+        "因為安全性考量",
+        "頁面無法呈現",
+        "請稍候再試",
+        "access denied",
+        "request rejected",
+    ]
+    return any(word.lower() in body for word in blocked_words)
+
+
+def _twse_request_json(url, params, referer, label):
+    """向 TWSE 官方端點送出一次節流請求；失敗回傳 None。"""
+    try:
+        _twse_wait_before_request()
+        session = _twse_get_session()
+        response = session.get(
+            url,
+            params=params,
+            headers=_twse_common_headers(referer),
+            timeout=TWSE_HTTP_TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
-        if r.status_code != 200:
-            print(f"TWSE 抓取失敗：HTTP {r.status_code}，URL={r.url}")
-            print(f"   回應內容前300字：{r.text[:300]}")
+
+        if response.status_code != 200 or _twse_response_is_blocked(response):
+            print(
+                f"{label} 失敗：HTTP {response.status_code}，URL={response.url}，"
+                f"blocked={_twse_response_is_blocked(response)}"
+            )
+            if response.text:
+                print(f"   回應內容前300字：{response.text[:300]}")
+            _twse_reset_session()
             return None
 
         try:
-            d = r.json()
+            return response.json()
         except Exception as e:
-            print(f"TWSE JSON 解析失敗：{type(e).__name__}: {e}")
-            print(f"   URL={r.url}")
-            print(f"   回應內容前300字：{r.text[:300]}")
+            print(f"{label} JSON 解析失敗：{type(e).__name__}: {e}")
+            print(f"   URL={response.url}")
+            print(f"   回應內容前300字：{response.text[:300]}")
             return None
 
-        for i in d.get("data", []) or []:
-            code = str(i[1]).strip()
-            name = str(i[2]).strip()
-            if len(code) == 4 and code.isdigit():
-                raw = " ".join([str(x) for x in i])
-                ids = parse_clause_ids_strict(raw)
-                c_str = "、".join([f"第{k}款" for k in sorted(ids)])
-                rows.append({"日期": date_str, "市場": "TWSE", "代號": code, "名稱": name, "觸犯條款": c_str})
     except Exception as e:
-        print(f"TWSE 抓取例外：{type(e).__name__}: {e}")
-        print(f"   日期={date_str}，查詢參數 startDate/endDate={date_str_nodash}")
+        print(f"{label} 請求例外：{type(e).__name__}: {e}")
+        _twse_reset_session()
         return None
-    return rows
+
+
+def _twse_dedupe_attention_rows(rows):
+    merged = {}
+    for row in rows or []:
+        date_key = str(row.get("日期", "")).strip()
+        code = str(row.get("代號", "")).strip()
+        if not date_key or not code:
+            continue
+        key = (date_key, code)
+        if key not in merged:
+            merged[key] = dict(row)
+        else:
+            merged[key]["觸犯條款"] = merge_clause_text(
+                merged[key].get("觸犯條款", ""),
+                row.get("觸犯條款", ""),
+            )
+            if not merged[key].get("名稱") and row.get("名稱"):
+                merged[key]["名稱"] = row.get("名稱")
+    return list(merged.values())
+
+
+def _twse_parse_notice_payload(payload, query_date_obj, date_str):
+    """解析 TWSE 歷史報表 JSON 或 OpenAPI JSON；未知格式回傳 None。"""
+    rows = []
+
+    if isinstance(payload, dict) and "data" in payload:
+        stat_text = _twse_clean_text(payload.get("stat", ""))
+        raw_data = payload.get("data", []) or []
+        fields = [_twse_clean_text(x) for x in payload.get("fields", []) or []]
+
+        if not isinstance(raw_data, list):
+            return None
+
+        # 少數官方服務可能把 OpenAPI 的 list[dict] 包在 data 欄位內。
+        if raw_data and all(isinstance(item, dict) for item in raw_data):
+            return _twse_parse_notice_payload(raw_data, query_date_obj, date_str)
+
+        if not raw_data:
+            # 官方合法空資料可能回傳 stat=OK 或「沒有符合條件的資料」。
+            if (not stat_text) or ("OK" in stat_text.upper()) or ("沒有" in stat_text) or ("查無" in stat_text):
+                return []
+
+        code_idx = _twse_find_field_index(fields, ["證券代號", "有價證券代號", "股票代號"])
+        name_idx = _twse_find_field_index(fields, ["證券名稱", "有價證券名稱", "股票名稱"])
+        clause_idx = _twse_find_field_index(fields, ["注意交易資訊", "注意資訊"])
+        date_idx = _twse_find_field_index(fields, ["日期", "公告日期"])
+
+        if code_idx is None:
+            code_idx = 1
+        if name_idx is None:
+            name_idx = 2
+        if clause_idx is None:
+            clause_idx = 4
+        if date_idx is None:
+            date_idx = 5
+
+        for item in raw_data:
+            if not isinstance(item, list):
+                continue
+
+            try:
+                code = _twse_clean_text(item[code_idx])
+            except Exception:
+                continue
+
+            if not (code.isdigit() and len(code) == 4):
+                continue
+
+            name = _twse_clean_text(item[name_idx]) if name_idx < len(item) else ""
+            raw = " ".join(_twse_clean_text(x) for x in item)
+            clause_source = _twse_clean_text(item[clause_idx]) if clause_idx < len(item) else raw
+
+            official_date = None
+            if date_idx < len(item):
+                official_date = _twse_parse_any_date_to_ad_date(item[date_idx])
+            if official_date is not None and official_date != query_date_obj:
+                continue
+
+            ids = parse_clause_ids_strict(clause_source or raw)
+            clause_text = "、".join(f"第{x}款" for x in sorted(ids))
+            rows.append({
+                "日期": date_str,
+                "市場": "TWSE",
+                "代號": code,
+                "名稱": name,
+                "觸犯條款": clause_text,
+            })
+
+        return _twse_dedupe_attention_rows(rows)
+
+    # OpenAPI 通常直接回傳 list[dict]
+    if isinstance(payload, list):
+        if not payload:
+            return []
+
+        recognized = False
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+
+            recognized = True
+            values = [_twse_clean_text(v) for v in item.values()]
+            raw = " ".join(values)
+
+            code = ""
+            for key in ["證券代號", "有價證券代號", "股票代號", "Code", "code", "SecuritiesCode"]:
+                candidate = _twse_clean_text(item.get(key, ""))
+                if candidate.isdigit() and len(candidate) == 4:
+                    code = candidate
+                    break
+            if not code:
+                for candidate in values:
+                    if candidate.isdigit() and len(candidate) == 4:
+                        code = candidate
+                        break
+            if not code:
+                continue
+
+            name = ""
+            for key in ["證券名稱", "有價證券名稱", "股票名稱", "Name", "name", "SecuritiesName"]:
+                candidate = _twse_clean_text(item.get(key, ""))
+                if candidate:
+                    name = candidate
+                    break
+
+            official_date = None
+            for key in ["日期", "公告日期", "Date", "date", "TradeDate"]:
+                official_date = _twse_parse_any_date_to_ad_date(item.get(key, ""))
+                if official_date is not None:
+                    break
+            if official_date is None:
+                for candidate in values:
+                    official_date = _twse_parse_any_date_to_ad_date(candidate)
+                    if official_date is not None:
+                        break
+
+            # OpenAPI 是「當日公布注意股票」。若資料沒有日期欄，只允許用於今日查詢。
+            if official_date is not None:
+                if official_date != query_date_obj:
+                    continue
+            elif query_date_obj != TARGET_DATE.date():
+                continue
+
+            ids = parse_clause_ids_strict(raw)
+            clause_text = "、".join(f"第{x}款" for x in sorted(ids))
+            rows.append({
+                "日期": date_str,
+                "市場": "TWSE",
+                "代號": code,
+                "名稱": name,
+                "觸犯條款": clause_text,
+            })
+
+        if recognized:
+            return _twse_dedupe_attention_rows(rows)
+
+    return None
+
+
+def _fetch_twse_attention_openapi(date_obj, date_str):
+    if date_obj != TARGET_DATE.date():
+        return None
+
+    payload = _twse_request_json(
+        "https://openapi.twse.com.tw/v1/announcement/notice",
+        params={},
+        referer="https://openapi.twse.com.tw/",
+        label=f"TWSE OpenAPI {date_str}",
+    )
+    if payload is None:
+        return None
+    return _twse_parse_notice_payload(payload, date_obj, date_str)
+
+
+def _fetch_twse_attention_selenium(date_obj, date_str):
+    """最後備援：直接開啟官方單日 HTML 報表，不使用表單按鈕。"""
+    global _TWSE_DAILY_SELENIUM_FALLBACK_USED
+
+    if _TWSE_DAILY_SELENIUM_FALLBACK_USED >= TWSE_DAILY_SELENIUM_FALLBACK_LIMIT:
+        print(
+            f"TWSE {date_str} Selenium 備援已達本輪上限 "
+            f"{TWSE_DAILY_SELENIUM_FALLBACK_LIMIT} 次，略過瀏覽器重試。"
+        )
+        return None
+
+    _TWSE_DAILY_SELENIUM_FALLBACK_USED += 1
+    date_nodash = date_obj.strftime("%Y%m%d")
+    report_url = (
+        "https://www.twse.com.tw/announcement/notice"
+        f"?response=html&startDate={date_nodash}&endDate={date_nodash}"
+        "&stockNo=&querytype=1&selectType=&sortKind=STKNO"
+    )
+
+    driver = None
+    try:
+        print(f"TWSE {date_str} 啟動 Selenium 單日報表備援...")
+        driver = get_driver()
+        driver.set_page_load_timeout(40)
+        driver.get(report_url)
+        time.sleep(2)
+
+        try:
+            alert = driver.switch_to.alert
+            alert_text = alert.text
+            alert.accept()
+            print(f"TWSE Selenium 備援遭官方提示阻擋：{alert_text}")
+            return None
+        except Exception:
+            pass
+
+        page_source = driver.page_source or ""
+        blocked_texts = ["FOR SECURITY REASONS", "因為安全性考量", "請稍候再試"]
+        if any(x in page_source for x in blocked_texts):
+            print(f"TWSE {date_str} Selenium 備援仍遭安全機制阻擋。")
+            return None
+
+        table_rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        parsed_rows = []
+
+        for tr in table_rows:
+            cells = [_twse_clean_text(td.text) for td in tr.find_elements(By.TAG_NAME, "td")]
+            if not cells:
+                continue
+
+            code_idx = None
+            for idx, cell in enumerate(cells):
+                if cell.isdigit() and len(cell) == 4:
+                    code_idx = idx
+                    break
+            if code_idx is None:
+                continue
+
+            official_dates = [_twse_parse_any_date_to_ad_date(cell) for cell in cells]
+            official_dates = [d for d in official_dates if d is not None]
+            if official_dates and date_obj not in official_dates:
+                continue
+
+            code = cells[code_idx]
+            name = cells[code_idx + 1] if code_idx + 1 < len(cells) else ""
+            raw = " ".join(cells)
+            ids = parse_clause_ids_strict(raw)
+            clause_text = "、".join(f"第{x}款" for x in sorted(ids))
+
+            parsed_rows.append({
+                "日期": date_str,
+                "市場": "TWSE",
+                "代號": code,
+                "名稱": name,
+                "觸犯條款": clause_text,
+            })
+
+        if parsed_rows:
+            parsed_rows = _twse_dedupe_attention_rows(parsed_rows)
+            print(f"TWSE {date_str} Selenium 備援成功：{len(parsed_rows)} 筆")
+            return parsed_rows
+
+        # 頁面有正式表格但沒有 4 碼股票，視為合法空資料。
+        if driver.find_elements(By.CSS_SELECTOR, "table"):
+            print(f"TWSE {date_str} Selenium 報表查無 4 碼上市股票資料。")
+            return []
+
+        print(f"TWSE {date_str} Selenium 備援找不到官方報表表格。")
+        return None
+
+    except Exception as e:
+        print(f"TWSE {date_str} Selenium 備援失敗：{type(e).__name__}: {e}")
+        return None
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+def fetch_twse_attention_rows(date_obj, date_str):
+    """抓取上市注意股；官方 OpenAPI、歷史報表端點與 Selenium 多層備援。"""
+    date_str_nodash = date_obj.strftime("%Y%m%d")
+
+    # 今日資料優先走 TWSE 正式 OpenAPI。
+    openapi_rows = _fetch_twse_attention_openapi(date_obj, date_str)
+    if openapi_rows is not None:
+        print(f"TWSE {date_str} OpenAPI 抓取成功：{len(openapi_rows)} 筆")
+        return openapi_rows
+
+    params = {
+        "response": "json",
+        "startDate": date_str_nodash,
+        "endDate": date_str_nodash,
+        "stockNo": "",
+        "querytype": "1",
+        "selectType": "",
+        "sortKind": "STKNO",
+    }
+
+    endpoint_candidates = [
+        (
+            "https://www.twse.com.tw/rwd/zh/announcement/notice",
+            "https://www.twse.com.tw/zh/announcement/notice.html",
+        ),
+        (
+            "https://www.twse.com.tw/announcement/notice",
+            "https://www.twse.com.tw/zh/announcement/notice.html",
+        ),
+        (
+            "https://wwwc.twse.com.tw/rwd/zh/announcement/notice",
+            "https://wwwc.twse.com.tw/zh/announcement/notice.html",
+        ),
+        (
+            "https://wwwc.twse.com.tw/announcement/notice",
+            "https://wwwc.twse.com.tw/zh/announcement/notice.html",
+        ),
+    ]
+
+    errors = []
+    for url, referer in endpoint_candidates:
+        payload = _twse_request_json(
+            url,
+            params=params,
+            referer=referer,
+            label=f"TWSE {date_str}",
+        )
+        if payload is None:
+            errors.append(url)
+            continue
+
+        parsed_rows = _twse_parse_notice_payload(payload, date_obj, date_str)
+        if parsed_rows is not None:
+            print(f"TWSE {date_str} 官方 JSON 抓取成功：{len(parsed_rows)} 筆，端點={url}")
+            return parsed_rows
+
+        print(f"TWSE {date_str} 端點回傳未知 JSON 格式：{url}")
+        errors.append(url)
+
+    selenium_rows = _fetch_twse_attention_selenium(date_obj, date_str)
+    if selenium_rows is not None:
+        return selenium_rows
+
+    print(
+        f"TWSE {date_str} 所有官方抓取方式均失敗，"
+        f"已嘗試 {len(errors)} 個 JSON 端點與 Selenium 備援。"
+    )
+    return None
+
 
 def _tpex_clean_text(s):
     if s is None:
@@ -1114,6 +1593,12 @@ def fetch_tpex_attention_rows(date_obj, date_str):
     return None
 def get_daily_data(date_obj):
     date_str = date_obj.strftime("%Y-%m-%d")
+
+    if date_str in _DAILY_NOTICE_CACHE:
+        cached_rows = [dict(row) for row in _DAILY_NOTICE_CACHE[date_str]]
+        print(f"使用本輪公告快取 {date_str}：{len(cached_rows)} 筆")
+        return cached_rows
+
     print(f"爬取公告 {date_str}...")
 
     twse_rows = fetch_twse_attention_rows(date_obj, date_str)
@@ -1132,6 +1617,9 @@ def get_daily_data(date_obj):
     rows = []
     rows.extend(twse_rows)
     rows.extend(tpex_rows)
+
+    # 僅在上市、上櫃都成功時建立同輪快取，避免把半套資料當完整資料。
+    _DAILY_NOTICE_CACHE[date_str] = [dict(row) for row in rows]
 
     if rows:
         print(f"抓到 {len(rows)} 檔")
@@ -1215,9 +1703,28 @@ def backfill_daily_logs(sh, ws_log, cal_dates, target_trade_date_obj):
         if data is None:
             print(f"{d_str} 抓取失敗(None)，跳過不更新狀態")
 
+            # 若「爬取狀態」已有官方筆數，且「每日紀錄」筆數不少於該值，
+            # 代表這一天先前已成功完整抓取。官方暫時阻擋時可安全沿用，
+            # 不應因最近兩日的強制驗證失敗而讓整個流程中止。
+            has_verified_existing_data = (
+                st_cnt is not None
+                and log_cnt >= int(st_cnt)
+            )
+
+            if has_verified_existing_data:
+                print(
+                    f"{d_str} 官方網站暫時無法存取；"
+                    f"既有每日紀錄 {log_cnt} 筆、已驗證官方筆數 {int(st_cnt)} 筆，"
+                    "本次沿用既有完整資料，不更新爬取狀態。"
+                )
+                continue
+
+            # 最近交易日若連既有完整資料都沒有，仍維持原本的安全機制：
+            # 停止後續統計，避免用缺漏資料推播。
             if d in recent_dates or d == target_trade_date_obj:
                 raise RuntimeError(
-                    f"關鍵交易日 {d_str} 公告抓取失敗，已停止後續統計更新，避免錯誤資料被推播。"
+                    f"關鍵交易日 {d_str} 公告抓取失敗，且沒有已驗證的完整既有資料，"
+                    "已停止後續統計更新，避免錯誤資料被推播。"
                 )
 
             continue
@@ -2217,7 +2724,7 @@ def get_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
 
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -2276,61 +2783,326 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
         return pd.DataFrame(clean_data)
     return pd.DataFrame()
 
+def _twse_parse_jail_payload(payload):
+    """解析 TWSE 處置股歷史報表 JSON 或 OpenAPI JSON。"""
+    clean_data = []
+
+    if isinstance(payload, dict) and "data" in payload:
+        raw_data = payload.get("data", []) or []
+        fields = [_twse_clean_text(x) for x in payload.get("fields", []) or []]
+        stat_text = _twse_clean_text(payload.get("stat", ""))
+
+        if not isinstance(raw_data, list):
+            return None
+
+        # 少數官方服務可能把 OpenAPI 的 list[dict] 包在 data 欄位內。
+        if raw_data and all(isinstance(item, dict) for item in raw_data):
+            return _twse_parse_jail_payload(raw_data)
+
+        if not raw_data:
+            if (not stat_text) or ("OK" in stat_text.upper()) or ("沒有" in stat_text) or ("查無" in stat_text):
+                return []
+
+        code_idx = _twse_find_field_index(fields, ["證券代號", "有價證券代號", "股票代號"])
+        name_idx = _twse_find_field_index(fields, ["證券名稱", "有價證券名稱", "股票名稱"])
+        period_idx = _twse_find_field_index(fields, ["處置起迄時間", "處置期間", "處置起迄日期"])
+
+        if code_idx is None:
+            code_idx = 2
+        if name_idx is None:
+            name_idx = 3
+        if period_idx is None:
+            period_idx = 6
+
+        for item in raw_data:
+            if not isinstance(item, list):
+                continue
+            if max(code_idx, name_idx, period_idx) >= len(item):
+                continue
+
+            code = _twse_clean_text(item[code_idx])
+            name = _twse_clean_text(item[name_idx])
+            period = _twse_clean_text(item[period_idx])
+
+            if code.isdigit() and len(code) == 4 and period:
+                clean_data.append({
+                    "Code": code,
+                    "Name": name,
+                    "Period": period,
+                    "Market": "上市",
+                })
+
+        return clean_data
+
+    if isinstance(payload, list):
+        if not payload:
+            return []
+
+        recognized = False
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            recognized = True
+            values = [_twse_clean_text(v) for v in item.values()]
+
+            code = ""
+            for key in ["證券代號", "有價證券代號", "股票代號", "Code", "code", "SecuritiesCode"]:
+                candidate = _twse_clean_text(item.get(key, ""))
+                if candidate.isdigit() and len(candidate) == 4:
+                    code = candidate
+                    break
+            if not code:
+                for candidate in values:
+                    if candidate.isdigit() and len(candidate) == 4:
+                        code = candidate
+                        break
+            if not code:
+                continue
+
+            name = ""
+            for key in ["證券名稱", "有價證券名稱", "股票名稱", "Name", "name", "SecuritiesName"]:
+                candidate = _twse_clean_text(item.get(key, ""))
+                if candidate:
+                    name = candidate
+                    break
+
+            period = ""
+            for key in ["處置起迄時間", "處置期間", "處置起迄日期", "Period", "period"]:
+                candidate = _twse_clean_text(item.get(key, ""))
+                if candidate:
+                    period = candidate
+                    break
+            if not period:
+                for candidate in values:
+                    if ("~" in candidate or "～" in candidate or "至" in candidate) and "/" in candidate:
+                        period = candidate
+                        break
+
+            if period:
+                clean_data.append({
+                    "Code": code,
+                    "Name": name,
+                    "Period": period,
+                    "Market": "上市",
+                })
+
+        if recognized:
+            return clean_data
+
+    return None
+
+
+def _fetch_twse_jail_chunk_requests(s_date, e_date):
+    sd_str = s_date.strftime("%Y%m%d")
+    ed_str = e_date.strftime("%Y%m%d")
+    params = {
+        "response": "json",
+        "startDate": sd_str,
+        "endDate": ed_str,
+        "stockNo": "",
+        "selectType": "",
+        "proceType": "",
+        "remarkType": "",
+        "sortKind": "",
+        "querytype": "",
+    }
+
+    endpoint_candidates = [
+        (
+            "https://www.twse.com.tw/announcement/punish",
+            "https://www.twse.com.tw/zh/announcement/punish.html",
+        ),
+        (
+            "https://www.twse.com.tw/rwd/zh/announcement/punish",
+            "https://www.twse.com.tw/zh/announcement/punish.html",
+        ),
+        (
+            "https://wwwc.twse.com.tw/announcement/punish",
+            "https://wwwc.twse.com.tw/zh/announcement/punish.html",
+        ),
+        (
+            "https://wwwc.twse.com.tw/rwd/zh/announcement/punish",
+            "https://wwwc.twse.com.tw/zh/announcement/punish.html",
+        ),
+    ]
+
+    for url, referer in endpoint_candidates:
+        payload = _twse_request_json(
+            url,
+            params=params,
+            referer=referer,
+            label=f"TWSE 處置 {s_date}~{e_date}",
+        )
+        if payload is None:
+            continue
+
+        parsed = _twse_parse_jail_payload(payload)
+        if parsed is not None:
+            print(
+                f"    TWSE 官方 JSON {s_date} ~ {e_date}："
+                f"{len(parsed)} 筆，端點={url}"
+            )
+            return parsed
+
+    return None
+
+
+def _fetch_twse_jail_openapi():
+    payload = _twse_request_json(
+        "https://openapi.twse.com.tw/v1/announcement/punish",
+        params={},
+        referer="https://openapi.twse.com.tw/",
+        label="TWSE 處置 OpenAPI",
+    )
+    if payload is None:
+        return []
+
+    parsed = _twse_parse_jail_payload(payload)
+    if parsed is None:
+        print("    TWSE 處置 OpenAPI 回傳未知格式，略過。")
+        return []
+
+    print(f"    TWSE 處置 OpenAPI 備援取得 {len(parsed)} 筆。")
+    return parsed
+
+
 def fetch_twse_selenium_90d(s_date, e_date):
-    print(f"  [上市] 啟動 Selenium 瀏覽器... {s_date} ~ {e_date}")
+    """TWSE 處置股瀏覽器備援：直接開官方 HTML 報表，避免點擊表單觸發 Alert。"""
+    print(f"  [上市] 啟動 Selenium HTML 報表備援... {s_date} ~ {e_date}")
 
     sd_str = s_date.strftime("%Y%m%d")
     ed_str = e_date.strftime("%Y%m%d")
+    report_url = (
+        "https://www.twse.com.tw/announcement/punish"
+        f"?response=html&startDate={sd_str}&endDate={ed_str}"
+        "&stockNo=&selectType=&proceType=&remarkType=&sortKind=&querytype="
+    )
 
-    url = "https://www.twse.com.tw/zh/announcement/punish.html"
-    driver = get_driver()
+    driver = None
     clean_data = []
 
     try:
-        driver.get(url)
-        wait = WebDriverWait(driver, 20)
-
-        driver.execute_script(f"""
-            document.querySelector('input[name="startDate"]').value = "{sd_str}";
-            document.querySelector('input[name="endDate"]').value = "{ed_str}";
-        """)
-
-        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.search")))
-        search_btn.click()
-
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
+        driver = get_driver()
+        driver.set_page_load_timeout(45)
+        driver.get(report_url)
         time.sleep(3)
 
+        try:
+            alert = driver.switch_to.alert
+            alert_text = alert.text
+            alert.accept()
+            print(f"    TWSE Selenium 官方提示：{alert_text}")
+            return pd.DataFrame()
+        except Exception:
+            pass
+
+        page_source = driver.page_source or ""
+        if any(x in page_source for x in ["FOR SECURITY REASONS", "因為安全性考量", "請稍候再試"]):
+            print("    TWSE Selenium HTML 報表仍遭安全機制阻擋。")
+            return pd.DataFrame()
+
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-        print(f"    偵測到 {len(rows)} 筆資料，開始解析...")
+        print(f"    Selenium 報表偵測到 {len(rows)} 列，開始解析...")
 
         for row in rows:
             try:
-                cols = row.find_elements(By.TAG_NAME, "td")
-                if len(cols) >= 7:
-                    c_code = cols[2].text.strip()
-                    c_name = cols[3].text.strip()
-                    c_period = cols[6].text.strip()
+                cells = [_twse_clean_text(td.text) for td in row.find_elements(By.TAG_NAME, "td")]
+                if not cells:
+                    continue
 
-                    if c_code and c_code.isdigit() and len(c_code) == 4:
-                          clean_data.append({
-                            "Code": c_code,
-                            "Name": c_name,
-                            "Period": c_period,
-                            "Market": "上市"
-                        })
-            except: continue
+                code_idx = None
+                for idx, cell in enumerate(cells):
+                    if cell.isdigit() and len(cell) == 4:
+                        code_idx = idx
+                        break
+                if code_idx is None:
+                    continue
+
+                code = cells[code_idx]
+                name = cells[code_idx + 1] if code_idx + 1 < len(cells) else ""
+
+                period = ""
+                for cell in cells:
+                    sd, ed = parse_jail_period(cell)
+                    if sd and ed:
+                        period = cell
+                        break
+
+                if code and period:
+                    clean_data.append({
+                        "Code": code,
+                        "Name": name,
+                        "Period": period,
+                        "Market": "上市",
+                    })
+            except Exception:
+                continue
 
     except Exception as e:
-        print(f"    TWSE Selenium 操作失敗: {e}")
+        print(f"    TWSE Selenium HTML 報表失敗: {type(e).__name__}: {e}")
     finally:
-        driver.quit()
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
     if clean_data:
-        print(f"    成功解析 {len(clean_data)} 筆資料")
-        return pd.DataFrame(clean_data)
+        df = pd.DataFrame(clean_data).drop_duplicates(subset=["Code", "Period"])
+        print(f"    Selenium 備援成功解析 {len(df)} 筆資料")
+        return df
 
-    print("    TWSE 無資料")
+    print("    TWSE Selenium 備援無資料")
+    return pd.DataFrame()
+
+
+def fetch_twse_jail_90d_requests(s_date, e_date):
+    """TWSE 處置股主流程：官方 JSON 分段查詢，失敗區段再用 Selenium 備援。"""
+    print(f"  [上市] 啟動官方 JSON 分段爬蟲... {s_date} ~ {e_date}")
+
+    clean_data = []
+    failed_chunks = []
+    chunk_start = s_date
+
+    # 官方報表以約一個月為一段，避免一次查半年觸發「請稍候再試」。
+    while chunk_start <= e_date:
+        chunk_end = min(chunk_start + timedelta(days=29), e_date)
+        chunk_rows = _fetch_twse_jail_chunk_requests(chunk_start, chunk_end)
+
+        if chunk_rows is None:
+            failed_chunks.append((chunk_start, chunk_end))
+        else:
+            clean_data.extend(chunk_rows)
+
+        chunk_start = chunk_end + timedelta(days=1)
+
+    # 僅針對 JSON 失敗區段啟動瀏覽器，不再用 Selenium 一次查半年。
+    for failed_start, failed_end in failed_chunks:
+        df_fallback = fetch_twse_selenium_90d(failed_start, failed_end)
+        if not df_fallback.empty:
+            clean_data.extend(df_fallback.to_dict("records"))
+
+    # OpenAPI 再補目前官方公布的處置資料，避免近期新公告剛好落在失敗區段。
+    if failed_chunks:
+        clean_data.extend(_fetch_twse_jail_openapi())
+
+    if clean_data:
+        df = pd.DataFrame(clean_data)
+        df = df.drop_duplicates(subset=["Code", "Period"]).reset_index(drop=True)
+        print(
+            f"    TWSE 處置股共取得 {len(df)} 筆；"
+            f"JSON 失敗區段 {len(failed_chunks)} 段。"
+        )
+        return df
+
+    if failed_chunks:
+        print(
+            f"    TWSE 處置股所有抓取方式皆無法取得資料；"
+            f"失敗區段 {len(failed_chunks)} 段。"
+        )
+    else:
+        print("    TWSE 查詢區間內無 4 碼上市處置股票。")
+
     return pd.DataFrame()
 
 
@@ -2338,11 +3110,11 @@ def run_jail_crawler_pipeline_sync():
     end_date = TARGET_DATE.date() + timedelta(days=30)
     start_date = TARGET_DATE.date() - timedelta(days=150)
 
-    print(f"啟動全市場處置股抓取 (TWSE: Selenium / TPEx: Requests)")
+    print(f"啟動全市場處置股抓取 (TWSE: 官方 JSON + Selenium 備援 / TPEx: Requests)")
     print(f"搜尋範圍 (含未來預告): {start_date} ~ {end_date}")
 
     df_tpex = fetch_tpex_jail_90d_requests(start_date, end_date)
-    df_twse = fetch_twse_selenium_90d(start_date, end_date)
+    df_twse = fetch_twse_jail_90d_requests(start_date, end_date)
 
     all_dfs = []
     if not df_tpex.empty: all_dfs.append(df_tpex)
