@@ -22,16 +22,18 @@ from PIL import Image
 # ============================
 # ⚙️ 設定區
 # ============================
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_TEST", "").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+NOTIFICATION_MODE = os.getenv("NOTIFICATION_MODE", "測試推播").strip()
 SHEET_NAME = "台股注意股資料庫_V33"
 SERVICE_KEY_FILE = "service_key.json"
 
 if not DISCORD_WEBHOOK_URL:
     print("=" * 60)
-    print("❌ 嚴重錯誤: 環境變數 DISCORD_WEBHOOK_URL_TEST 未設定或為空")
+    print("❌ 嚴重錯誤: 環境變數 DISCORD_WEBHOOK_URL 未設定或為空")
     print("=" * 60)
 else:
-    print(f"✅ DISCORD_WEBHOOK_URL_TEST 已載入 (長度: {len(DISCORD_WEBHOOK_URL)} 字元)")
+    print(f"✅ 推播模式：{NOTIFICATION_MODE}")
+    print(f"✅ DISCORD_WEBHOOK_URL 已載入 (長度: {len(DISCORD_WEBHOOK_URL)} 字元)")
 
 JAIL_ENTER_THRESHOLD = 3
 JAIL_EXIT_THRESHOLD = 5
@@ -1143,7 +1145,7 @@ def draw_injail_image(data, signal_map=None):
     if n <= 18:
         return _draw_injail_single_column(data, n, signal_map=signal_map)
 
-    page_size = 100
+    page_size = 44
     pages = [data[i:i + page_size] for i in range(0, n, page_size)]
     if len(pages) == 1:
         return _draw_injail_two_column(pages[0], n, signal_map=signal_map)
