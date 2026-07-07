@@ -50,11 +50,25 @@ jobs:
 
     - name: Run Discord Notification
       env:
-        # push 自動觸發或選擇「測試推播」時，使用測試 Webhook
+        # push 自動觸發時固定使用測試 Webhook
+        # 手動選擇「測試推播」時，使用測試 Webhook
         # 手動選擇「正式推播」時，使用正式 Webhook
-        DISCORD_WEBHOOK_URL_TEST: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.notification_mode == '正式推播' && secrets.DISCORD_WEBHOOK_URL || secrets.DISCORD_WEBHOOK_URL_TEST }}
+        NOTIFICATION_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.notification_mode || '測試推播' }}
+        DISCORD_WEBHOOK_URL_TEST_SECRET: ${{ secrets.DISCORD_WEBHOOK_URL_TEST }}
+        DISCORD_WEBHOOK_URL_PROD_SECRET: ${{ secrets.DISCORD_WEBHOOK_URL }}
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
       run: |
+        if [ "$NOTIFICATION_MODE" = "正式推播" ]; then
+          export DISCORD_WEBHOOK_URL="$DISCORD_WEBHOOK_URL_PROD_SECRET"
+        else
+          export DISCORD_WEBHOOK_URL="$DISCORD_WEBHOOK_URL_TEST_SECRET"
+        fi
+
+        if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+          echo "❌ 嚴重錯誤：目前模式 $NOTIFICATION_MODE 對應的 Discord Webhook Secret 為空"
+          exit 1
+        fi
+
         python notify_discord.py
 
     - name: Cleanup Service Key
