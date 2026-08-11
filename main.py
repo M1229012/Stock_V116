@@ -117,6 +117,9 @@ UNIT_LOT = 1000
 #    simulate_days_to_jail_strict() 的計次邏輯不需調整。
 DISPOSAL_DAYS_NORMAL = 5                # 一般處置之營業日數
 DISPOSAL_DAYS_DAYTRADE = 7              # 併同「當沖過高」之處置營業日數
+DISPOSAL_NEW_RULE_START_DATE = date(2026, 8, 10)   # 新制施行日 (民國115.08.10)
+DISPOSAL_OLD_DAYS_NORMAL = 10           # 舊制一般處置營業日數 (供過渡換算反推類型)
+DISPOSAL_OLD_DAYS_DAYTRADE = 12         # 舊制併同當沖過高之營業日數
 DISPOSAL_MATCH_INTERVAL = "約每2分鐘"   # 處置期間分盤集合競價撮合頻率
 
 # 第11款：最近6個營業日「收盤價起迄價差」標準 (115.08.10 起適用)
@@ -553,6 +556,63 @@ def parse_jail_period(period_str):
         if sd and ed:
             return sd, ed
     return None, None
+
+
+def count_trading_days_inclusive(sd, ed, cal_dates):
+    """計算 sd~ed 之間的營業日數 (含頭含尾)。"""
+    if not sd or not ed or ed < sd:
+        return 0
+    return sum(1 for d in cal_dates if sd <= d <= ed)
+
+
+def apply_disposal_transition_rule(sd, ed, cal_dates):
+    """依 115.08.10 新制過渡規定，換算施行前既有處置的實際結束日。
+
+    過渡規定：
+      施行日起仍在處置中之有價證券立即適用新制。
+      施行日前已執行滿新制所需營業日數者，於施行日解除處置；
+      未滿者，繼續執行至滿足新制日數為止。
+
+    如何判斷該檔應適用 5 日或 7 日：
+      「處置股90日明細」只有處置期間，沒有「是否併同當沖過高」欄位，
+      因此以原公告營業日數反推 —— 舊制僅有兩種長度：
+        原 10 個營業日 (一般處置)        -> 新制 5 個營業日
+        原 12 個營業日 (併同當沖過高)    -> 新制 7 個營業日
+
+    回傳調整後的結束日；不需調整或資料不足時回傳原結束日。
+    """
+    if not sd or not ed:
+        return ed
+
+    # 新制施行日當天(含)之後才開始的處置，本來就依新制公告，不調整。
+    if sd >= DISPOSAL_NEW_RULE_START_DATE:
+        return ed
+
+    if not cal_dates:
+        return ed
+
+    old_days = count_trading_days_inclusive(sd, ed, cal_dates)
+    if old_days <= DISPOSAL_DAYS_NORMAL:
+        return ed      # 已等於或短於新制天數，無須調整
+
+    required = (DISPOSAL_DAYS_DAYTRADE
+                if old_days > DISPOSAL_OLD_DAYS_NORMAL
+                else DISPOSAL_DAYS_NORMAL)
+
+    # 施行日前已執行的營業日
+    served_days = [d for d in cal_dates if sd <= d < DISPOSAL_NEW_RULE_START_DATE]
+
+    if len(served_days) >= required:
+        # 已關滿 -> 施行日解除，最後處置日為施行日前一營業日
+        new_ed = served_days[-1]
+    else:
+        # 未關滿 -> 從起始日起算，續關至滿足新制日數
+        in_period = [d for d in cal_dates if sd <= d <= ed]
+        if len(in_period) < required:
+            return ed
+        new_ed = in_period[required - 1]
+
+    return min(new_ed, ed)
 
 def get_jail_map_from_sheet(sh):
     print("從 Google Sheet 讀取處置名單快取 (處置股90日明細)...")
@@ -3324,13 +3384,28 @@ def main():
                     if r_sd:
                         existing_by_start[(r_code, r_sd)] = (row_idx, r_period)
 
+            # 過渡換算用的交易日曆：需涵蓋新制施行日之前的處置起始日。
+            transition_cal_dates = get_trading_calendar_between(
+                TARGET_DATE.date() - timedelta(days=150),
+                TARGET_DATE.date() + timedelta(days=90),
+            )
+
             rows_to_append = []
             cells_to_update = []
+            queued_row_idx = set()
             new_count = 0
             updated_count = 0
             for idx, row in df_jail_unique.iterrows():
                 code = str(row["代號"]).strip()
                 period = str(row["處置期間"]).strip()
+
+                # 施行日前開始的處置，證交所歷史報表仍掛原公告期間，
+                # 這裡依過渡規定自行換算為實際結束日，寫入表中供下游使用。
+                raw_sd, raw_ed = parse_jail_period(period)
+                adj_ed = apply_disposal_transition_rule(raw_sd, raw_ed, transition_cal_dates)
+                if raw_sd and adj_ed and raw_ed and adj_ed != raw_ed:
+                    period = f"{format_roc_date_for_display(raw_sd)}~{format_roc_date_for_display(adj_ed)}"
+
                 check_key = f"{code}_{period}"
 
                 if check_key in existing_keys:
@@ -3343,6 +3418,7 @@ def main():
                     # 同一次處置但期間已變更 -> 覆寫原列的「處置期間」欄 (D 欄)
                     old_row_idx, old_period = old
                     cells_to_update.append({"range": f"D{old_row_idx}", "values": [[period]]})
+                    queued_row_idx.add(old_row_idx)
                     print(f"    處置期間更新：{code} {old_period} -> {period}")
                     existing_keys.discard(f"{code}_{old_period}")
                     existing_keys.add(check_key)
@@ -3352,6 +3428,25 @@ def main():
                     rows_to_append.append([row["市場"], code, row["名稱"], period])
                     existing_keys.add(check_key)
                     new_count += 1
+
+            # 補掃既有列：證交所歷史報表若已不再回傳某筆已結束的處置，
+            # 上面的迴圈就碰不到它，過期的舊制期間會一直留著。
+            # 這裡直接對表中所有列再套一次過渡換算，確保不漏。
+            for row_idx, r in enumerate(existing_rows[1:], start=2):
+                if row_idx in queued_row_idx or len(r) < 4:
+                    continue
+                r_code = str(r[1]).strip()
+                r_period = str(r[3]).strip()
+                if not r_code or not r_period:
+                    continue
+                r_sd, r_ed = parse_jail_period(r_period)
+                r_adj = apply_disposal_transition_rule(r_sd, r_ed, transition_cal_dates)
+                if r_sd and r_ed and r_adj and r_adj != r_ed:
+                    fixed = f"{format_roc_date_for_display(r_sd)}~{format_roc_date_for_display(r_adj)}"
+                    cells_to_update.append({"range": f"D{row_idx}", "values": [[fixed]]})
+                    queued_row_idx.add(row_idx)
+                    print(f"    過渡換算修正：{r_code} {r_period} -> {fixed}")
+                    updated_count += 1
 
             if cells_to_update:
                 ws_jail.batch_update(cells_to_update, value_input_option='USER_ENTERED')
