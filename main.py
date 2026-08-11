@@ -1,6 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-V116.29 台股注意股系統 (修正處置消耗切分點 + 官方處置同步近30日熱門統計)
+V116.30 台股注意股系統 (同步 115.08.10 注意暨處置新制)
+
+V116.30 中文標題：同步證交所 115.08.10 施行之注意暨處置新制
+  修正依據：證交所 115.08.03 公告修正「公布或通知注意交易資訊暨處置作業要點」第6條，
+            暨「第四條異常標準之詳細數據及除外情形」第12條，自 115.08.10 施行。
+  修正說明：
+    - 處置期間：一般處置由 10 個營業日縮短為 5 個營業日 (第一次及第二次含以上皆同)；
+      併同「當沖交易占比過高」者由 12 個營業日縮短為 7 個營業日。
+      → 新增 DISPOSAL_DAYS_NORMAL / DISPOSAL_DAYS_DAYTRADE 常數，
+        並更新第13款的「刑期」提示文字 (原寫死 12 天)。
+    - 撮合頻率：處置期間統一為約每 2 分鐘撮合一次 (原每 5 分鐘 / 每 20 分鐘)。
+      → 新增 DISPOSAL_MATCH_INTERVAL 常數備查。
+    - 第11款「最近6個營業日收盤價起迄價差」標準放寬：
+      收盤價須逾 1,000 元才適用，價差門檻 300 元起；逾 2,000 元後每 1,000 元一級距、
+      每級距增加 150 元 (舊制為 500 元起算、100 元門檻、每 500 元級距增加 25 元)。
+      → 新增 get_clause11_gap_threshold()，並將價差改以「起迄兩個營業日收盤價」計算
+        (舊版誤用區間內最高價-最低價的盤中高低點)，另補上「當日收盤價須為該期間
+        最高或最低」之條件。
+    - 連帶調整：「即將出關監控」預警窗口由 5 個交易日縮為 3 個交易日
+      (RELEASE_ALERT_TRADING_DAYS)。因處置期間已縮短為 5 個營業日，
+      沿用 5 日窗口會使個股一進處置就落入名單，篩選失去意義。
+  未變更部分：
+    - 達到處置的注意次數門檻本次未修正，仍為「連續3個營業日第1款」/「連續5個營業日」/
+      「最近10個營業日內6次」/「最近30個營業日內12次」，
+      故 check_jail_trigger_now() 與 simulate_days_to_jail_strict() 的計次邏輯不動。
+    - 處置起訖日仍以官方「處置股90日明細」公告為準，不由天數推算，
+      因此出關日與技術追蹤邏輯不受本次天數調整影響。
 
 本版相對於 V116.27 的修正重點：
 [修正] 「每日紀錄出現 3 次但近30日熱門統計只記 2 次」的 bug：
@@ -71,6 +97,44 @@ logger.setLevel(logging.CRITICAL)
 logger.disabled = True
 
 UNIT_LOT = 1000
+
+# ==========================================
+# 處置制度參數 (證交所 115.08.03 公告，115.08.10 施行)
+# ==========================================
+# 修正依據：「公布或通知注意交易資訊暨處置作業要點」第6條，暨
+#           「第四條異常標準之詳細數據及除外情形」第12條。
+#
+# 本次修正重點：
+#   1. 一般處置期間：第一次及第二次(含)以上均縮短為 5 個營業日 (原 10 個營業日)。
+#   2. 計算期間內同時因「當沖交易占比過高」(第13款) 被公布注意者，
+#      處置期間縮短為 7 個營業日 (原 12 個營業日)。
+#   3. 處置期間撮合頻率統一為約每 2 分鐘一次 (原為每 5 分鐘 / 每 20 分鐘)。
+#   4. 第11款「最近6個營業日收盤價起迄價差」標準放寬 (詳見 CLAUSE11_* 常數)。
+#
+# ⚠️ 未修正部分：達到處置的注意次數門檻維持原標準，
+#    即「連續3個營業日第1款」/「連續5個營業日」/「最近10個營業日內6次」/
+#    「最近30個營業日內12次」，故 check_jail_trigger_now() 與
+#    simulate_days_to_jail_strict() 的計次邏輯不需調整。
+DISPOSAL_DAYS_NORMAL = 5                # 一般處置之營業日數
+DISPOSAL_DAYS_DAYTRADE = 7              # 併同「當沖過高」之處置營業日數
+DISPOSAL_MATCH_INTERVAL = "約每2分鐘"   # 處置期間分盤集合競價撮合頻率
+
+# 第11款：最近6個營業日「收盤價起迄價差」標準 (115.08.10 起適用)
+#   - 當日收盤價須「逾」1,000 元，本款才適用。
+#   - 1,000 元 < 收盤價 <= 2,000 元：價差門檻 300 元。
+#   - 收盤價逾 2,000 元：每 1,000 元為一級距，每一級距價差門檻增加 150 元
+#     (例：2,000~3,000 元 → 450 元；3,000~4,000 元 → 600 元)。
+#   - 舊制為：收盤價 500 元起算、基準價差 100 元，每 500 元一級距增加 25 元。
+CLAUSE11_MIN_PRICE = 1000.0    # 適用本款之收盤價下限 (須「逾」此價格)
+CLAUSE11_BASE_GAP = 300.0      # 第一級距之價差門檻
+CLAUSE11_TIER_SIZE = 1000.0    # 級距大小
+CLAUSE11_TIER_STEP = 150.0     # 每增加一級距之價差門檻增額
+
+# 「即將出關監控」預警窗口 (交易日數)。
+# 舊制處置 10 個營業日時設為 5 日仍具篩選意義；新制縮短為 5 個營業日後，
+# 若沿用 5 日窗口，個股從進處置第一天就會落入名單，篩選將完全失效。
+# 故配合新制調整為 3 個交易日，維持「處置後段才預警」的原意。
+RELEASE_ALERT_TRADING_DAYS = 3
 
 STATS_HEADERS = [
     '代號', '名稱', '連續天數', '近30日注意次數', '近10日注意次數', '最近一次日期',
@@ -172,7 +236,7 @@ _TWSE_HTTP_SESSION = None
 _TWSE_DAILY_SELENIUM_FALLBACK_USED = 0
 _DAILY_NOTICE_CACHE = {}
 
-print(f"啟動 V116.29 台股注意股系統 (修正處置消耗切分點 + 官方處置同步近30日熱門統計)")
+print(f"啟動 V116.30 台股注意股系統 (同步 115.08.10 注意暨處置新制)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
 
 try: twstock.__update_codes()
@@ -2533,6 +2597,34 @@ def fetch_stock_fundamental(stock_id, ticker_code, precise_db):
 def calc_pct(curr, ref):
     return ((curr - ref) / ref) * 100 if ref != 0 else 0
 
+def get_clause11_gap_threshold(close_price):
+    """第11款：依當日收盤價換算「最近6個營業日收盤價起迄價差」門檻。
+
+    依 115.08.10 施行之新制：
+      - 收盤價未逾 1,000 元 → 不適用本款，回傳 None。
+      - 1,000 元 < 收盤價 <= 2,000 元 → 300 元。
+      - 收盤價逾 2,000 元 → 每 1,000 元為一級距，每級距加 150 元
+        (2,000~3,000 → 450；3,000~4,000 → 600，依此類推)。
+    """
+    if close_price is None:
+        return None
+    try:
+        price = float(close_price)
+    except (TypeError, ValueError):
+        return None
+
+    if price <= CLAUSE11_MIN_PRICE:
+        return None
+
+    first_tier_top = CLAUSE11_MIN_PRICE + CLAUSE11_TIER_SIZE   # 2,000 元
+    if price <= first_tier_top:
+        return CLAUSE11_BASE_GAP
+
+    # 逾 2,000 元後每滿一個級距 (1,000 元) 增加一階，邊界值 (如 3,000) 仍屬前一階。
+    tier = int((price - first_tier_top - 1e-9) // CLAUSE11_TIER_SIZE) + 1
+    return CLAUSE11_BASE_GAP + tier * CLAUSE11_TIER_STEP
+
+
 def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt_avg6_pct):
     res = {'risk_level': '低', 'trigger_msg': '', 'curr_price': 0, 'limit_price': 0, 'gap_pct': 999.0, 'curr_vol': 0, 'limit_vol': 0, 'turnover_val': 0, 'turnover_rate': 0, 'pe': fund_data.get('pe', 0), 'pb': fund_data.get('pb', 0), 'day_trade_pct': dt_today_pct, 'is_triggered': False}
     if hist_df.empty or len(hist_df) < 7:
@@ -2599,10 +2691,17 @@ def calculate_full_risk(stock_id, hist_df, fund_data, est_days, dt_today_pct, dt
         acc_turn = (hist_df['Volume'].iloc[-6:].sum() / shares) * 100
         if acc_turn > 50 and turnover > 10: triggers.append(f"【第十款】累轉{acc_turn:.0f}%")
 
-    if len(hist_df) >= 6:
-        gap = hist_df.iloc[-6:]['High'].max() - hist_df.iloc[-6:]['Low'].min()
-        threshold = 100 + (int((curr_close - 500)/500)+1)*25 if curr_close >= 500 else 100
-        if gap >= threshold: triggers.append(f"【第十一款】6日價差{gap:.0f}元(>門檻{threshold})")
+    # 【第十一款】最近6個營業日收盤價起迄價差 (115.08.10 新制)
+    # 法規文義為「起迄兩個營業日之收盤價價差」，且當日收盤價須為該期間之最高或最低，
+    # 故與第一款共用同一組 6 個營業日起迄收盤價 (ref_6 → curr_close)。
+    clause11_threshold = get_clause11_gap_threshold(curr_close)
+    if clause11_threshold is not None and len(hist_df) >= 7:
+        closes_7 = hist_df['Close'].iloc[-7:].astype(float)
+        is_extreme = (curr_close >= closes_7.max()) or (curr_close <= closes_7.min())
+        if price_diff_6 >= clause11_threshold and is_extreme:
+            triggers.append(
+                f"【第十一款】6日收盤起迄價差{price_diff_6:.0f}元(>=門檻{clause11_threshold:.0f})"
+            )
 
     pending_msg = ""
     if dt_today_pct is None or dt_avg6_pct is None:
@@ -3221,7 +3320,7 @@ def main():
         else:
             print("查無新處置股資料，僅讀取現有紀錄。")
 
-        print("重新讀取完整資料庫篩選即將出關股票 (5日內)...")
+        print(f"重新讀取完整資料庫篩選即將出關股票 ({RELEASE_ALERT_TRADING_DAYS}日內)...")
 
         all_jail_data = ws_jail.get_all_values()
 
@@ -3260,7 +3359,7 @@ def main():
             if days_left is None:
                 days_left = (final_end_date - today_date).days
 
-            if 0 <= days_left <= 4:
+            if 0 <= days_left <= RELEASE_ALERT_TRADING_DAYS - 1:
                 r_list = data['row_list'][:]
                 r_list.append(str(days_left))
                 r_list.append(final_end_date.strftime("%Y-%m-%d"))
@@ -3278,7 +3377,7 @@ def main():
             ws_release.append_rows(releasing_rows, value_input_option='USER_ENTERED')
             print(f"已寫入 {len(releasing_rows)} 檔至「{sheet_title_release}」")
         else:
-            ws_release.append_row(["目前無 5 日內即將出關股票"], value_input_option='USER_ENTERED')
+            ws_release.append_row([f"目前無 {RELEASE_ALERT_TRADING_DAYS} 日內即將出關股票"], value_input_option='USER_ENTERED')
             print("目前無符合條件的即將出關股。")
 
         try:
@@ -3466,7 +3565,8 @@ def main():
             if is_special_risk:
                 reason_display += " | 留意人工處置風險"
             if is_clause_13:
-                reason_display += " (若進處置將關12天)"
+                # 併同當沖過高者處置 7 個營業日，其餘一般處置 5 個營業日 (115.08.10 新制)。
+                reason_display += f" (含當沖過高，若進處置將關{DISPOSAL_DAYS_DAYTRADE}天)"
 
         # [官方處置狀態覆蓋]
         # 若「處置股90日明細」已經公告未來處置或目前正在處置，

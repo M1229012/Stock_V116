@@ -346,7 +346,7 @@ SIGNAL_COLOR_RETEST   = '#C2410C'
 SIGNAL_COLOR_BREAKOUT = '#1D4ED8'
 
 THEME_ENTERING  = {'accent': '#E85D6A', 'header': '#FCECEF', 'title': '處置倒數 瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)'}
-THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾 即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (5日內)'}
+THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾 即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (3日內)'}
 THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴嗎 正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單'}
 
 
@@ -625,6 +625,9 @@ def get_pct_color(pct_str):
 
 
 def get_days_style(days):
+    # 注意：此處的 days 來自 check_releasing_stocks()，已由「剩餘天數」+1
+    # (週五~週日再 +1) 換算為「距實際恢復交易日的交易日數」，最小值為 1。
+    # 新制預警窗口 3 個交易日下 days 落在 1~4，三個級距皆會用到，故維持原分級。
     if days <= 1:  return DAYS_URGENT_BG, DAYS_URGENT_FG
     if days <= 3:  return DAYS_WARN_BG, DAYS_WARN_FG
     return DAYS_NORMAL_BG, DAYS_NORMAL_FG
@@ -948,7 +951,16 @@ def draw_releasing_image(data, signal_map=None):
             boxstyle="round,pad=0,rounding_size=0.14",
             facecolor=bg_clr, linewidth=0, zorder=2
         ))
-        label_text = clean_display_text("明日出關" if days == 1 else f"剩 {days} 交易日")
+        # days = 距實際恢復交易日的交易日數 (check_releasing_stocks 已 +1，最小為 1)。
+        # 保留 days <= 0 分支僅為防禦：若日後改動上游換算方式，
+        # 不會退化成沒有意義的「剩 0 交易日」。
+        if days <= 0:
+            days_label = "今日出關"
+        elif days == 1:
+            days_label = "明日出關"
+        else:
+            days_label = f"剩 {days} 交易日"
+        label_text = clean_display_text(days_label)
         ax.text(col_center_x(1), y_center, label_text,
                 ha='center', va='center',
                 fontsize=13, fontproperties=FONT_BOLD, color=fg_clr, zorder=3)
