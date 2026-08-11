@@ -428,6 +428,16 @@ def injail_sort_key(item):
 
 
 def get_merged_jail_period_details(sh):
+    """取得每檔股票「目前生效」的那一段處置期間。
+
+    原本的做法是把同一檔的多筆處置取 min(start) / max(end) 併成一段，
+    連續兩次處置會被顯示成一次超長處置 (例如 07/30-08/14 看起來像關了 12 天，
+    實際上是 07/30-08/07 與 08/10-08/14 兩次)。
+    115.08.10 新制處置縮短為 5 個營業日後，出關再被關的情形會更頻繁，
+    合併顯示只會更容易誤導，故改為只挑出單一段：
+      1. 優先取「今天正在生效」的那一段；同時有多段時取起始日最晚者 (最新一次)。
+      2. 若都尚未開始，取最早開始的那一段。
+    """
     jail_map = {}
     tw_now = datetime.utcnow() + timedelta(hours=8)
     today = datetime(tw_now.year, tw_now.month, tw_now.day)
@@ -439,12 +449,14 @@ def get_merged_jail_period_details(sh):
             if not code or not period: continue
             detail = build_period_detail(period)
             s_date, e_date = detail.get('sort_start'), detail.get('sort_end')
-            if s_date and e_date and e_date >= today:
-                if code not in jail_map:
-                    jail_map[code] = {'start': s_date, 'end': e_date}
-                else:
-                    jail_map[code]['start'] = min(jail_map[code]['start'], s_date)
-                    jail_map[code]['end'] = max(jail_map[code]['end'], e_date)
+            if not (s_date and e_date and e_date >= today):
+                continue
+            # 排序鍵：正在生效者優先 -> 生效中取起始日最晚、未開始取起始日最早
+            is_active = s_date <= today
+            rank = (1, s_date.toordinal()) if is_active else (0, -s_date.toordinal())
+            cur = jail_map.get(code)
+            if cur is None or rank > cur['rank']:
+                jail_map[code] = {'start': s_date, 'end': e_date, 'rank': rank}
     except: return {}
     return {
         c: {
