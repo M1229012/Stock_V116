@@ -3290,33 +3290,78 @@ def main():
 
         if not df_jail_90.empty:
             df_jail_unique = df_jail_90.drop_duplicates(subset=["代號", "處置期間"])
-            print(f"正在寫入 Google Sheet: {sheet_title} (新增模式)...")
+            print(f"正在寫入 Google Sheet: {sheet_title} (新增 + 期間更新模式)...")
 
+            # ===========================================================
+            # 為什麼要有「期間更新」：
+            #   本表原為只增不改，證交所若提前解除或變更處置期間 (例如
+            #   115.08.10 新制上路時，已滿新制天數者當日即解除)，舊的長期間
+            #   會留在表裡，而下游 stock_latest_end 與 notify_discord 的
+            #   合併邏輯都取「結束日最晚」那筆 -> 選到過期資料，
+            #   造成已出關的股票仍顯示為處置中。
+            #
+            # 判定方式：
+            #   提前解除不會更動處置起始日，只會把結束日往前挪，
+            #   故以 (代號, 處置起始日) 視為同一次處置，用最新公告覆寫該列。
+            #
+            # 安全性：
+            #   仍然只處理「本次實際爬到」的資料。爬蟲失敗 (df 為空) 或
+            #   只成功一半時，未爬到的列完全不動，不會被洗掉。
+            # ===========================================================
             existing_rows = ws_jail.get_all_values()
-            existing_keys = set()
+            existing_keys = set()      # "代號_期間"，完全相同者略過
+            existing_by_start = {}     # (代號, 起始日) -> (試算表列號, 期間字串)
             if len(existing_rows) > 1:
-                for r in existing_rows[1:]:
-                    if len(r) >= 4:
-                        k = f"{str(r[1]).strip()}_{str(r[3]).strip()}"
-                        existing_keys.add(k)
+                for row_idx, r in enumerate(existing_rows[1:], start=2):
+                    if len(r) < 4:
+                        continue
+                    r_code = str(r[1]).strip()
+                    r_period = str(r[3]).strip()
+                    if not r_code or not r_period:
+                        continue
+                    existing_keys.add(f"{r_code}_{r_period}")
+                    r_sd, _ = parse_jail_period(r_period)
+                    if r_sd:
+                        existing_by_start[(r_code, r_sd)] = (row_idx, r_period)
 
             rows_to_append = []
+            cells_to_update = []
             new_count = 0
+            updated_count = 0
             for idx, row in df_jail_unique.iterrows():
                 code = str(row["代號"]).strip()
                 period = str(row["處置期間"]).strip()
                 check_key = f"{code}_{period}"
 
-                if check_key not in existing_keys:
+                if check_key in existing_keys:
+                    continue
+
+                sd, _ = parse_jail_period(period)
+                old = existing_by_start.get((code, sd)) if sd else None
+
+                if old and old[0] is not None:
+                    # 同一次處置但期間已變更 -> 覆寫原列的「處置期間」欄 (D 欄)
+                    old_row_idx, old_period = old
+                    cells_to_update.append({"range": f"D{old_row_idx}", "values": [[period]]})
+                    print(f"    處置期間更新：{code} {old_period} -> {period}")
+                    existing_keys.discard(f"{code}_{old_period}")
+                    existing_keys.add(check_key)
+                    existing_by_start[(code, sd)] = (old_row_idx, period)
+                    updated_count += 1
+                else:
                     rows_to_append.append([row["市場"], code, row["名稱"], period])
                     existing_keys.add(check_key)
                     new_count += 1
 
+            if cells_to_update:
+                ws_jail.batch_update(cells_to_update, value_input_option='USER_ENTERED')
             if rows_to_append:
                 ws_jail.append_rows(rows_to_append, value_input_option='USER_ENTERED')
-                print(f"{sheet_title} 更新完成！成功新增 {new_count} 筆新處置資料。")
+
+            if new_count or updated_count:
+                print(f"{sheet_title} 更新完成！新增 {new_count} 筆，更新處置期間 {updated_count} 筆。")
             else:
-                print(f"{sheet_title} 無需新增 (所有資料已存在)。")
+                print(f"{sheet_title} 無需異動 (所有資料已是最新)。")
         else:
             print("查無新處置股資料，僅讀取現有紀錄。")
 
