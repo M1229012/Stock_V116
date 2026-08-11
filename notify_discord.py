@@ -345,8 +345,14 @@ DAYS_NORMAL_FG = '#2C3440'
 SIGNAL_COLOR_RETEST   = '#C2410C'
 SIGNAL_COLOR_BREAKOUT = '#1D4ED8'
 
+# 「即將出關」預警窗口 (交易日)。必須與 main.py 的 RELEASE_ALERT_TRADING_DAYS 一致。
+# main.py 以「距最後處置日」篩選 (days_left <= N-1) 後寫入 Google Sheet，
+# 本檔再換算為「距恢復交易日」(days_left + 1)，故此處門檻同為 N。
+# 新制 (115.08.10) 處置僅 5 個營業日，門檻若仍設 5 會等同全部放行。
+RELEASE_ALERT_TRADING_DAYS = 3
+
 THEME_ENTERING  = {'accent': '#E85D6A', 'header': '#FCECEF', 'title': '處置倒數 瀕臨處置監控', 'title_icon': '🚨', 'subtitle_text': '瀕臨處置 (3日內)'}
-THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾 即將出關監控', 'title_icon': '🔓', 'subtitle_text': '即將出關 (3日內)'}
+THEME_RELEASING = {'accent': '#16B27A', 'header': '#EAF7F1', 'title': '越關越大尾 即將出關監控', 'title_icon': '🔓', 'subtitle_text': f'即將出關 ({RELEASE_ALERT_TRADING_DAYS}日內)'}
 THEME_INJAIL    = {'accent': '#B06FD3', 'header': '#F5ECFB', 'title': '還能噴嗎 正在處置監控', 'title_icon': '⛓️', 'subtitle_text': '處置中股票名單'}
 
 
@@ -570,11 +576,11 @@ def check_releasing_stocks(sh, price_map=None, overflow_injail=None):
             if actual_release_dt.weekday() == 5: actual_release_dt += timedelta(days=2)
             elif actual_release_dt.weekday() == 6: actual_release_dt += timedelta(days=1)
         tw_now = datetime.utcnow() + timedelta(hours=8)
-        if tw_now.weekday() >= 4 and tw_now.weekday() <= 6:
-            display_days = d + 1
-        else:
-            display_days = d
-        if display_days <= 5:
+        # 週五~週日產圖時，下一個交易日已跨過週末，倒數整體 +1。
+        weekend_shift = 1 if 4 <= tw_now.weekday() <= 6 else 0
+        display_days = d + weekend_shift
+        # 門檻須跟著 weekend_shift 一起放寬，否則週五~週日會少列一天份的股票。
+        if display_days <= RELEASE_ALERT_TRADING_DAYS + weekend_shift:
             icon, status_text, pre_pct, in_pct = get_price_rank_info(code, row.get('處置期間', ''), row.get('市場', '上市'))
             ma20_text, ma20_pct = get_ma20_distance_info(code, row.get('市場', '上市'))
             res.append({"code": code, "name": clean_display_text(row.get('名稱', '')), "days": display_days, "price": ma20_text, "ma20_text": ma20_text, "ma20_pct": ma20_pct, "date": actual_release_dt.strftime("%m/%d") if actual_release_dt else "??/??", "icon": icon, "status_text": status_text, "pre_pct": pre_pct, "in_pct": in_pct})
