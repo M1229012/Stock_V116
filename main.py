@@ -1339,15 +1339,41 @@ def _fetch_twse_attention_selenium(date_obj, date_str):
 
 
 def fetch_twse_attention_rows(date_obj, date_str):
-    """抓取上市注意股；官方 OpenAPI、歷史報表端點與 Selenium 多層備援。"""
+    """抓取上市注意股；官方 OpenAPI、歷史報表端點與 Selenium 多層備援。
+
+    ⚠️ 關鍵原則：任何來源回傳「0 筆」都不算抓取成功。
+
+    交易日的上市注意股實務上不可能是 0 筆，出現 0 筆幾乎都代表
+    「該來源尚未更新完成」——例如 18:15 執行時，OpenAPI 還停留在
+    前一個交易日的資料，經日期過濾後全數被濾掉而回傳空陣列。
+
+    舊版以 `if openapi_rows is not None` 判斷，空陣列 `[]` 也算成功並直接
+    return，導致底下的官方 JSON 歷史報表與 Selenium 備援完全不會執行，
+    當日上市注意股整批遺失，而 log 還印「抓取成功：0 筆」。
+    這就是「當天抓的資料怪怪的、隔天重抓才正常」的原因。
+
+    修正後行為：
+      1. 只有「有抓到資料」才立即採用並回傳。
+      2. 任何來源回傳 0 筆，一律繼續往下試下一個來源。
+      3. 全部來源都回 0 筆時回傳 None（視為抓取失敗），
+         讓 get_daily_data() 走「本輪不寫入狀態」的路徑，
+         避免把「尚未更新」誤記成「當日無注意股」而污染計次。
+    """
     date_str_nodash = date_obj.strftime("%Y%m%d")
 
-    # 今日資料優先走 TWSE 正式 OpenAPI。
+    empty_sources = []   # 回傳 0 筆（疑似尚未更新）的來源
+    errors = []          # 真正失敗（無回應或格式不明）的來源
+
+    # ---- 第 1 層：官方 OpenAPI（僅適用於查詢當日）----
     openapi_rows = _fetch_twse_attention_openapi(date_obj, date_str)
-    if openapi_rows is not None:
+    if openapi_rows:
         print(f"TWSE {date_str} OpenAPI 抓取成功：{len(openapi_rows)} 筆")
         return openapi_rows
+    if openapi_rows is not None:
+        print(f"TWSE {date_str} OpenAPI 回傳 0 筆（可能尚未更新），改試官方 JSON 歷史報表。")
+        empty_sources.append("OpenAPI")
 
+    # ---- 第 2 層：官方 JSON 歷史報表（多網域備援）----
     params = {
         "response": "json",
         "startDate": date_str_nodash,
@@ -1377,7 +1403,6 @@ def fetch_twse_attention_rows(date_obj, date_str):
         ),
     ]
 
-    errors = []
     for url, referer in endpoint_candidates:
         payload = _twse_request_json(
             url,
@@ -1390,16 +1415,37 @@ def fetch_twse_attention_rows(date_obj, date_str):
             continue
 
         parsed_rows = _twse_parse_notice_payload(payload, date_obj, date_str)
-        if parsed_rows is not None:
+
+        if parsed_rows:
             print(f"TWSE {date_str} 官方 JSON 抓取成功：{len(parsed_rows)} 筆，端點={url}")
             return parsed_rows
+
+        if parsed_rows is not None:
+            # 0 筆不視為成功，繼續試下一個端點。
+            print(f"TWSE {date_str} 端點回傳 0 筆（可能尚未更新）：{url}")
+            empty_sources.append(url)
+            continue
 
         print(f"TWSE {date_str} 端點回傳未知 JSON 格式：{url}")
         errors.append(url)
 
+    # ---- 第 3 層：Selenium 直接開官方網頁 ----
     selenium_rows = _fetch_twse_attention_selenium(date_obj, date_str)
-    if selenium_rows is not None:
+    if selenium_rows:
         return selenium_rows
+    if selenium_rows is not None:
+        print(f"TWSE {date_str} Selenium 備援回傳 0 筆（可能尚未更新）。")
+        empty_sources.append("Selenium")
+
+    # ---- 全部來源都拿不到資料 ----
+    if empty_sources:
+        print(
+            f"⚠️ TWSE {date_str} 共 {len(empty_sources)} 個來源皆回傳 0 筆。"
+            f"交易日不太可能真的沒有上市注意股，判定為『官方尚未更新』，"
+            f"本輪不寫入該日資料，避免污染注意次數計算。"
+            f"建議於證交所公告完成後（約 19:00 以後）重新執行。"
+        )
+        return None
 
     print(
         f"TWSE {date_str} 所有官方抓取方式均失敗，"
