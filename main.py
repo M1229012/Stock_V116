@@ -177,7 +177,15 @@ PARAM_SHEET_NAME = "個股參數"
 TW_TZ = ZoneInfo("Asia/Taipei")
 TARGET_DATE = datetime.now(TW_TZ)
 
-SAFE_CRAWL_TIME = dt_time(17, 30)
+# 證交所注意股公告實際約於 18:00~19:00 才發布完整。
+# 早於此時間執行時：
+#   - backfill_daily_logs() 會跳過「今天」不去抓 (main.py 回補迴圈)
+#   - 主流程切換為 T-1 模式，改以前一交易日為運算基準
+# 原本設 17:30 等於宣稱「17:30 資料就齊了」，與實際不符：
+# 18:15 那趟會抓到尚未更新的空資料，配合
+# fetch_twse_attention_rows() 的「0 筆視為失敗」修正後會直接中止整輪。
+# 故調整為 19:00，讓 18:15 那趟安全地算 T-1，19:15 那趟才處理當日。
+SAFE_CRAWL_TIME = dt_time(19, 0)
 DAYTRADE_PUBLISH_TIME = dt_time(21, 0)
 SAFE_MARKET_OPEN_CHECK = dt_time(16, 30)
 
