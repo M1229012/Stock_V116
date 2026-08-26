@@ -1690,34 +1690,54 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     inner_w = card_w - inner_pad_x * 2
     row_h = (card_h - title_h - header_gap - header_h - 0.024) / max(top_n, 1)
 
-    ax.add_patch(patches.FancyBboxPatch(
+    card_shape = patches.FancyBboxPatch(
         (x_left, y_top - card_h), card_w, card_h,
         boxstyle="round,pad=0.006,rounding_size=0.018",
         linewidth=1.25, edgecolor=CARD_BORDER, facecolor=CARD_BG,
         transform=ax.transAxes, zorder=1
-    ))
+    )
+    ax.add_patch(card_shape)
 
-    # 標題列重新整理：保留上方圓角，但下緣改成乾淨直角，避免看起來和表頭區塊重疊。
-    ax.add_patch(patches.FancyBboxPatch(
-        (x_left, y_top - title_h), card_w, title_h,
-        boxstyle="round,pad=0,rounding_size=0.016",
+    # 標題列改成「整條矩形 + 裁切到外框路徑」，上方圓角才會真的和外框貼齊。
+    #
+    # 舊寫法是「圓角框 + 補一塊方形蓋住下半部」，對不齊有兩個原因：
+    # 1. 外框 boxstyle 帶 pad=0.006，實際邊界比 (x_left, card_w) 往外各多 0.006，
+    #    標題列照 x_left / card_w 畫就會四邊都內縮，露出一圈白底。
+    # 2. rounding_size 一個 0.018 一個 0.016，圓弧半徑本來就不一樣。
+    # 改用 set_clip_path 直接裁到外框自己的路徑，圓角必然一致，不需要對數字。
+    # 下緣仍然是直角，維持原本「不要和表頭區塊看起來重疊」的設計。
+    card_pad = 0.006
+    band_left = x_left - card_pad
+    band_w = card_w + card_pad * 2
+    band_top = y_top + card_pad
+    # 只往上長 card_pad 貼齊外框上緣，下緣仍停在 y_top - title_h，
+    # 因此下方表頭與所有列的座標完全不受影響。
+    band_h = title_h + card_pad
+
+    title_band = patches.Rectangle(
+        (band_left, band_top - band_h), band_w, band_h,
         linewidth=0, facecolor=ACCENT_NAVY,
         transform=ax.transAxes, zorder=2
-    ))
-    ax.add_patch(patches.Rectangle(
-        (x_left, y_top - title_h), card_w, title_h * 0.58,
-        linewidth=0, facecolor=ACCENT_NAVY,
-        transform=ax.transAxes, zorder=2
-    ))
-    ax.add_patch(patches.Rectangle(
-        (x_left, y_top - title_h), 0.009, title_h,
+    )
+    title_band.set_clip_path(card_shape)
+    ax.add_patch(title_band)
+
+    # 左側色條同樣裁到外框，左上角會跟著外框做出一樣的圓角。
+    # 寬度維持 0.009，只是起點從 x_left 移到外框真正的左緣。
+    accent_bar = patches.Rectangle(
+        (band_left, band_top - band_h), 0.009, band_h,
         linewidth=0, facecolor=accent,
         transform=ax.transAxes, zorder=3
-    ))
+    )
+    accent_bar.set_clip_path(card_shape)
+    ax.add_patch(accent_bar)
 
-    draw_text(ax, x_left + 0.026, y_top - title_h / 2, title,
+    # 標題列往上長高了 card_pad，文字跟著改用色帶自己的中心，避免看起來偏下。
+    title_center_y = band_top - band_h / 2
+
+    draw_text(ax, x_left + 0.026, title_center_y, title,
               size=20, color="#FFFFFF", weight="bold", bold=True)
-    draw_text(ax, x_left + card_w - 0.020, y_top - title_h / 2, f"TOP {top_n}",
+    draw_text(ax, x_left + card_w - 0.020, title_center_y, f"TOP {top_n}",
               size=15.0, color="#FFFFFF", weight="bold", bold=True, ha="right")
 
     # 欄位分配：新增一個很窄的「連續上榜標記欄」放在股名與類別之間。
