@@ -68,6 +68,7 @@ import requests
 import re
 import time
 import random
+import tempfile
 import gspread
 import logging
 import traceback
@@ -243,6 +244,58 @@ _TWSE_LAST_REQUEST_MONOTONIC = 0.0
 _TWSE_HTTP_SESSION = None
 _TWSE_DAILY_SELENIUM_FALLBACK_USED = 0
 _DAILY_NOTICE_CACHE = {}
+
+# TPEx 自 2026-09 起用地理 DNS：台灣來源連到自家主機 (218.210.125.130 等)，憑證鏈完整；
+# 海外來源 (GitHub Actions runner) 被導到 Cloudflare (172.65.90.66 / .67)，
+# 那層只送葉憑證、少了中繼憑證「TWCA SSL Certification Authority」。
+# 瀏覽器會用 AIA 自動補抓，所以網頁看起來正常；requests 不會，
+# 2026-09-14 起每次都噴 unable to get local issuer certificate，上櫃注意股 / 處置股全部抓不到。
+# 解法：把缺的中繼憑證併進 certifi 做成 TPEx 專用 CA 檔，憑證驗證照常開啟 (不是 verify=False)。
+# 2026-09-14 實測補上後，Cloudflare 兩個入口 openssl / Python 皆驗證通過。
+# 此中繼憑證效期到 2033-02-23 (SHA256 01:AF:23:24:...:E5:31)；TPEx 換中繼 CA 時要更新這段。
+# 設 TPEX_CA_FIX_ENABLE=0 可退回 requests 預設憑證驗證。
+TPEX_CA_FIX_ENABLE = os.getenv("TPEX_CA_FIX_ENABLE", "1").strip().lower() not in ("0", "false", "no", "off")
+TPEX_TWCA_INTERMEDIATE_PEM = """-----BEGIN CERTIFICATE-----
+MIIG1DCCBLygAwIBAgIQQAE0sE8AAAAAAAAAA+MkrDANBgkqhkiG9w0BAQwFADBQ
+MQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FOLUNBMRAwDgYDVQQLEwdSb290
+IENBMRswGQYDVQQDExJUV0NBIENZQkVSIFJvb3QgQ0EwHhcNMjMwMjIzMDcyMjI0
+WhcNMzMwMjIzMTU1OTU5WjBhMQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FO
+LUNBMRMwEQYDVQQLEwpTU0wgU3ViLUNBMSkwJwYDVQQDEyBUV0NBIFNTTCBDZXJ0
+aWZpY2F0aW9uIEF1dGhvcml0eTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoC
+ggIBAMquxiSlMrxfOO29yqxCo/BIYBswnE7snZnuZDPcx8N9WhOdNGDsF024VjXK
+nXoVaZBcv56eFsU+w9Mcq+uIVYzjVrBoe5u8ZLE0hPSkluH8URhcxtSQJ+gXcB0L
+JHsseAeXVcgqoxTSJ6/n0xTCeXEnGwSRAzrqTvjS2gbd3TILxsfIHwRgwwPjBDgm
+tjzbHHOFTJB3GCtH65T9A0viM2B/IW9Wz73jkz02AVMrZBHQ67IJ2W9CoIjd5mdG
+eIV36U9NXl+wZa/D90pLRsFVbItKgLXgF71CQ92vS/biTx8fA6UUCU2ToNczP5Ur
+A/mDXCBCLakwa1I3ylRkgFwluJw9DqiYh56MRgsEABa+ZPrm1Qb9njQZK4Y4V+ML
+IvGM3xVoHIlvaSN29ubTueLpTeuAwN2VTiRzfOyCRKTcMBCtlMw1WCJNAMiNWDWS
+BMnY9SlKv1oujmjS/ti0ptcipMymIoeWpVuQt3Mj8lYlKRpd6Zg8MbljMwQRSClK
+6O6MSwpM3Xy5uJGh2cY5oYmKtxfyHSuKtKsk+daAPV1lpWYp9bNrbsLUPwmSY+zk
+VgkZdiWBF//RP/72/esANONINy5hkWjkVd0NLjA5TAgk+DVVmnPtQIj1vBgtk8ak
+Y9CczIbEgKBonkHWn+GX2ycR6jadg2P+xrBFg4MGjomkb2gtAgMBAAGjggGXMIIB
+kzAfBgNVHSMEGDAWgBSdhWEUfMFib5do5E83QOGt4A1WNzAdBgNVHQ4EFgQU8ijU
++dQcfhprFoLl75Mpae3KFSAwDgYDVR0PAQH/BAQDAgEGMBMGA1UdJQQMMAoGCCsG
+AQUFBwMBMEoGA1UdIARDMEEwNQYLKwYBBAGCvyUBARUwJjAkBggrBgEFBQcCARYY
+aHR0cHM6Ly93d3cudHdjYS5jb20udHcvMAgGBmeBDAECAjBNBgNVHR8ERjBEMEKg
+QKA+hjxodHRwOi8vUm9vdENBLnR3Y2EuY29tLnR3L1RXQ0FSQ0EvY3liZXJfcm9v
+dF9yZXZva2VfMjAyMi5jcmwwEgYDVR0TAQH/BAgwBgEB/wIBADB9BggrBgEFBQcB
+AQRxMG8wQwYIKwYBBQUHMAKGN2h0dHA6Ly9zc2xzZXJ2ZXIudHdjYS5jb20udHcv
+Y2FjZXJ0L2N5YmVyX3Jvb3RfMjAyMi5jcnQwKAYIKwYBBQUHMAGGHGh0dHA6Ly9y
+b290b2NzcC50d2NhLmNvbS50dy8wDQYJKoZIhvcNAQEMBQADggIBAIFF/6Gnvu8L
+3xQDIampB8QVgoKS2bcjte0uJBbCrQHpzcGTuVTkZaiA86LwVz6SAU7TVgVYRXmt
+x8l29WzfKI6wOAzmvlGZxSYAdN0I6YBkJK1nmDs0+TSw5lCzb+UOpajNOaMdJ5SN
+YTN87yRwl82AFrwUmSLaMV4tN7W49N0SsELWs/d4uNHSMM0mBjd0hLDIWJFwOkuD
+yOWahnCVfPlCwSVWpUntOGgOHOA02IUE+JNX+spIV1SwAMYaEVyHe316YUgiGA5y
+k3liTa3vuv06eE1J2yiWrs9booW2VTHD+amzucFFNN1KvSLjSbYxG1t/FclHEN/y
+6hGM3bkjRC31A0jzpv93D3MUQTdJascicPa0H4i8hviRriyetaC6HC4q8FQUTo2A
+cEpxicNGgyHhDV+YdbnS6GZL+f3bsmMM8ZFYZ77mDTS9mRO1VnIwkjiN4vpzh67a
+KTpoD9TQzZcGQiJy6Pi+PCSFiqjK7UD/63L/Pt0hpoNKvZLrz4ngrlpyzpx8KjeS
+A5cjKcc6vlHm0Kk07k5djhJsaqQELso5r+UXi9qC+nwqPuR/w5kJZv4fz0ND4UhY
+5y3qd+iCikkF3WzOzey7jUH9URKb3iZnRAHZvmyLK57UI0FwP+5xZEByvwXDtxbe
+914Hj3cSUrmKT3g/ZlOQQ1THeu48MA79
+-----END CERTIFICATE-----
+"""
+_TPEX_CA_BUNDLE = None
 
 print(f"啟動 V116.30 台股注意股系統 (同步 115.08.10 注意暨處置新制)")
 print(f"系統時間 (Taiwan): {TARGET_DATE.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1412,6 +1465,38 @@ def fetch_twse_attention_rows(date_obj, date_str):
     return None
 
 
+def _tpex_get_ca_bundle():
+    """回傳 TPEx 請求用的 verify 參數：certifi + TWCA 中繼憑證合併檔路徑 (整輪只建一次)。
+
+    關閉修正或建立失敗時回傳 True，退回 requests 預設憑證驗證。
+    """
+    global _TPEX_CA_BUNDLE
+    if _TPEX_CA_BUNDLE is not None:
+        return _TPEX_CA_BUNDLE
+
+    if not TPEX_CA_FIX_ENABLE:
+        _TPEX_CA_BUNDLE = True
+        return _TPEX_CA_BUNDLE
+
+    try:
+        from requests.certs import where as requests_ca_where
+
+        with open(requests_ca_where(), "r", encoding="utf-8") as f:
+            base_pem = f.read()
+
+        bundle_path = os.path.join(tempfile.gettempdir(), "tpex_ca_bundle.pem")
+        with open(bundle_path, "w", encoding="utf-8") as f:
+            f.write(base_pem.rstrip() + "\n" + TPEX_TWCA_INTERMEDIATE_PEM)
+
+        _TPEX_CA_BUNDLE = bundle_path
+        print(f"TPEx 使用補上 TWCA 中繼憑證的 CA 檔：{bundle_path}")
+    except Exception as e:
+        print(f"⚠️ TPEx CA 檔建立失敗，改用 requests 預設憑證：{type(e).__name__}: {e}")
+        _TPEX_CA_BUNDLE = True
+
+    return _TPEX_CA_BUNDLE
+
+
 def _tpex_clean_text(s):
     if s is None:
         return ""
@@ -1668,9 +1753,14 @@ def fetch_tpex_attention_rows(date_obj, date_str):
     ]
 
     s = requests.Session()
+    tpex_verify = _tpex_get_ca_bundle()
 
     try:
-        s.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        s.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10, verify=tpex_verify)
+    except requests.exceptions.SSLError as e:
+        # 憑證錯誤每次結果都一樣，重試只是白等 (原本每個日期會白跑 24 次請求)。
+        print(f"❌ TPEx {date_str} SSL 憑證驗證失敗，不重試：{e}")
+        return None
     except Exception as e:
         print(f"TPEx 初始化 Cookie 失敗：{type(e).__name__}: {e}")
 
@@ -1682,9 +1772,9 @@ def fetch_tpex_attention_rows(date_obj, date_str):
             for attempt in range(1, 4):
                 try:
                     if method == "POST":
-                        r = s.post(url, data=payload, headers=headers, timeout=12)
+                        r = s.post(url, data=payload, headers=headers, timeout=12, verify=tpex_verify)
                     else:
-                        r = s.get(url, params=payload, headers=headers, timeout=12)
+                        r = s.get(url, params=payload, headers=headers, timeout=12, verify=tpex_verify)
 
                     if r.status_code != 200:
                         errors.append(f"{method} HTTP {r.status_code}, payload={payload}")
@@ -1709,6 +1799,9 @@ def fetch_tpex_attention_rows(date_obj, date_str):
                     errors.append(f"{method} 無查詢日資料，debug={debug}, payload={payload}")
                     time.sleep(0.5)
 
+                except requests.exceptions.SSLError as e:
+                    print(f"❌ TPEx {date_str} SSL 憑證驗證失敗，不重試：{e}")
+                    return None
                 except Exception as e:
                     errors.append(f"{method} 例外 {type(e).__name__}: {e}, payload={payload}")
                     time.sleep(0.8)
@@ -2913,11 +3006,12 @@ def fetch_tpex_jail_90d_requests(s_date, e_date):
     payload = {"startDate": sd, "endDate": ed, "response": "json"}
 
     sess = requests.Session()
+    tpex_verify = _tpex_get_ca_bundle()
     clean_data = []
 
     try:
-        sess.get(url, headers=headers)
-        r = sess.post(url, data=payload, headers=headers, timeout=10)
+        sess.get(url, headers=headers, verify=tpex_verify)
+        r = sess.post(url, data=payload, headers=headers, timeout=10, verify=tpex_verify)
 
         if r.status_code == 200:
             data = r.json()
