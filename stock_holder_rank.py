@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-每週大股東籌碼強勢榜 Top20｜PSCNet / MoneyDJ 正式部署版
+每週大股東籌碼強勢榜 Top20｜400 / 1000 張｜PSCNet / MoneyDJ 正式部署版
 =====================================================
 
 部署重點：
@@ -15,11 +15,15 @@
 4. 另外在同一份 Google Sheet 寫入：
    - 上市400張比例歷史
    - 上櫃400張比例歷史
+   - 上市1000張比例歷史
+   - 上櫃1000張比例歷史
    - PSCNet_API快取
 5. 圖片排版沿用原本程式的白底雙欄格式。
-6. 連2 / 連3 / 連4 判斷方式：
-   - 只看「每週大戶排行紀錄」裡的每週 Top20
-   - 本週 Top20 + 上週 Top20 + 上上週 Top20... 連續出現才標記。
+6. 連2 / 連3 / 連4 與方向反轉判斷：
+   - 400 張、1000 張分開計算，不互相混用。
+   - 同一門檻、同一市場、同一方向連續進入 Top20 才標記連N。
+   - 若本週由增加榜切到減少榜，標記「買→賣」；反之標記「賣→買」。
+   - 方向反轉標記優先於連N。
 
 GitHub Actions 建議 secrets：
 - DISCORD_WEBHOOK_URL_TEST
@@ -80,6 +84,8 @@ SERVICE_KEY_FILE = os.getenv("SERVICE_KEY_FILE", "service_key.json")
 HOLDER_HISTORY_SHEET_NAME = os.getenv("HOLDER_HISTORY_SHEET_NAME", "每週大戶排行紀錄")
 LISTED_RATIO_SHEET_NAME = os.getenv("LISTED_RATIO_SHEET_NAME", "上市400張比例歷史")
 OTC_RATIO_SHEET_NAME = os.getenv("OTC_RATIO_SHEET_NAME", "上櫃400張比例歷史")
+LISTED_RATIO_1000_SHEET_NAME = os.getenv("LISTED_RATIO_1000_SHEET_NAME", "上市1000張比例歷史")
+OTC_RATIO_1000_SHEET_NAME = os.getenv("OTC_RATIO_1000_SHEET_NAME", "上櫃1000張比例歷史")
 API_CACHE_SHEET_NAME = os.getenv("API_CACHE_SHEET_NAME", "PSCNet_API快取")
 
 TOP_N = int(os.getenv("TOP_N", "20"))
@@ -146,7 +152,7 @@ WATERMARK_ROTATION = 18
 TOPRIGHT_WATERMARK_ALPHA = 0.72
 TOPRIGHT_WATERMARK_FONT_SIZE = 11
 TOPRIGHT_DISCLAIMER_FONT_SIZE = 10
-STREAK_NOTE_TEXT = "標記：連2／連3／連4 代表連續 2／3／4 週進入該榜單"
+STREAK_NOTE_TEXT = "標記：連2／連3…＝同方向連續上榜；買→賣／賣→買＝相較上週榜單方向反轉"
 
 IMG_BG = "#F6F8FB"
 CARD_BG = "#FFFFFF"
@@ -323,7 +329,7 @@ def to_fullwidth(s):
 
 HOLDER_HISTORY_HEADERS = [
     "資料日期", "榜單類型", "市場", "排名", "代號", "名稱", "類別",
-    "現價", "週漲跌", "總增減%", "寫入時間"
+    "現價", "週漲跌", "總增減%", "寫入時間", "門檻"
 ]
 
 API_CACHE_HEADERS = ["代號", "suffix", "api_url", "更新時間"]
@@ -976,22 +982,34 @@ def is_total_holder_level(level):
     return bool(s) and "合計" not in s
 
 
-def is_400_up_level(level):
+def is_threshold_up_level(level, threshold_lots):
+    """判斷股權分級是否落在指定張數以上；1 張 = 1,000 股。"""
     s = normalize_level_text(level)
     if not s:
         return False
     if "差異" in s or "調整" in s or "合計" in s:
         return False
 
+    # TDCC / MoneyDJ 公開級距是「400,001 股以上」「1,000,001 股以上」的概念。
+    min_shares = int(threshold_lots) * 1000 + 1
+
     m = re.search(r"(\d+)以上", s)
     if m:
-        return int(m.group(1)) >= 400001
+        return int(m.group(1)) >= min_shares
 
     m = re.search(r"(\d+)-(\d+)", s)
     if m:
-        return int(m.group(1)) >= 400001
+        return int(m.group(1)) >= min_shares
 
     return False
+
+
+def is_400_up_level(level):
+    return is_threshold_up_level(level, 400)
+
+
+def is_1000_up_level(level):
+    return is_threshold_up_level(level, 1000)
 
 
 def parse_pscnet_json_one_stock(meta, data):
@@ -1019,6 +1037,7 @@ def parse_pscnet_json_one_stock(meta, data):
                 "總股東人數": 0,
                 "正常分級總股數": 0.0,
                 "400張以上股數": 0.0,
+                "1000張以上股數": 0.0,
             }
 
         if is_total_holder_level(level):
@@ -1030,16 +1049,22 @@ def parse_pscnet_json_one_stock(meta, data):
         if is_400_up_level(level):
             grouped[date]["400張以上股數"] += shares
 
+        if is_1000_up_level(level):
+            grouped[date]["1000張以上股數"] += shares
+
     rows = []
     for rec in grouped.values():
         total_shares = rec["正常分級總股數"]
-        over_shares = rec["400張以上股數"]
+        over_400_shares = rec["400張以上股數"]
+        over_1000_shares = rec["1000張以上股數"]
 
         if total_shares <= 0:
             continue
 
-        over_pct = round(over_shares / total_shares * 100, 2)
-        under_pct = round(100 - over_pct, 2)
+        over_400_pct = round(over_400_shares / total_shares * 100, 2)
+        under_400_pct = round(100 - over_400_pct, 2)
+        over_1000_pct = round(over_1000_shares / total_shares * 100, 2)
+        under_1000_pct = round(100 - over_1000_pct, 2)
 
         rows.append({
             "代號": rec["代號"],
@@ -1048,8 +1073,10 @@ def parse_pscnet_json_one_stock(meta, data):
             "suffix": rec["suffix"],
             "類別": rec["類別"],
             "資料日期": rec["資料日期"],
-            "400張以上": over_pct,
-            "400張未滿": under_pct,
+            "400張以上": over_400_pct,
+            "400張未滿": under_400_pct,
+            "1000張以上": over_1000_pct,
+            "1000張未滿": under_1000_pct,
             "總股東人數": rec["總股東人數"],
         })
 
@@ -1114,7 +1141,10 @@ def fetch_pscnet_history_all(stock_df, cache):
 # ================= 歷史比例表與排名 =================
 
 def identify_date_columns(df):
-    base_cols = {"代號", "股名", "類別", "與上週相比增減%", "最新400張未滿", "總股東人數"}
+    base_cols = {
+        "代號", "股名", "類別", "與上週相比增減%", "總股東人數",
+        "最新400張未滿", "最新1000張未滿"
+    }
     cols = []
     for c in df.columns:
         if c in base_cols:
@@ -1125,8 +1155,15 @@ def identify_date_columns(df):
     return cols
 
 
-def build_ratio_history_from_long(history_long_df, market):
+def build_ratio_history_from_long(history_long_df, market, threshold=400):
     if history_long_df is None or history_long_df.empty:
+        return pd.DataFrame()
+
+    metric_col = f"{int(threshold)}張以上"
+    under_col = f"{int(threshold)}張未滿"
+    latest_under_col = f"最新{int(threshold)}張未滿"
+
+    if metric_col not in history_long_df.columns or under_col not in history_long_df.columns:
         return pd.DataFrame()
 
     df = history_long_df[history_long_df["市場"] == market].copy()
@@ -1146,16 +1183,16 @@ def build_ratio_history_from_long(history_long_df, market):
     pivot = df.pivot_table(
         index=["代號", "股名", "類別"],
         columns="資料日期",
-        values="400張以上",
+        values=metric_col,
         aggfunc="first"
     ).reset_index()
 
     latest_info = df[df["資料日期"] == latest_date].copy()
-    under_map = dict(zip(latest_info["代號"].astype(str), latest_info["400張未滿"]))
+    under_map = dict(zip(latest_info["代號"].astype(str), latest_info[under_col]))
     holder_map = dict(zip(latest_info["代號"].astype(str), latest_info["總股東人數"]))
 
     pivot["代號"] = pivot["代號"].astype(str)
-    pivot["最新400張未滿"] = pivot["代號"].map(under_map)
+    pivot[latest_under_col] = pivot["代號"].map(under_map)
     pivot["總股東人數"] = pivot["代號"].map(holder_map)
 
     if len(date_cols) >= 2:
@@ -1168,10 +1205,9 @@ def build_ratio_history_from_long(history_long_df, market):
     else:
         pivot["與上週相比增減%"] = pd.NA
 
-    keep_cols = ["代號", "股名", "類別", "與上週相比增減%", "最新400張未滿", "總股東人數"] + date_cols
+    keep_cols = ["代號", "股名", "類別", "與上週相比增減%", latest_under_col, "總股東人數"] + date_cols
     out = pivot[[c for c in keep_cols if c in pivot.columns]].copy()
     out = out.sort_values("與上週相比增減%", ascending=False, na_position="last").reset_index(drop=True)
-
     return out
 
 
@@ -1190,8 +1226,17 @@ def build_rank_from_history(hist, market, rank_type="增加"):
     date_cols = sorted(date_cols, key=lambda x: date_sort_key(x), reverse=True)
     latest_date = date_cols[0] if date_cols else ""
 
-    ascending = True if rank_type == "減少" else False
-    out = df.sort_values("總增減", ascending=ascending).head(TOP_N).copy().reset_index(drop=True)
+    if rank_type == "減少":
+        df = df[df["總增減"] < 0]
+        ascending = True
+    else:
+        df = df[df["總增減"] > 0]
+        ascending = False
+
+    if df.empty:
+        return pd.DataFrame()
+
+    out = df.sort_values(["總增減", "代號"], ascending=[ascending, True]).head(TOP_N).copy().reset_index(drop=True)
     out["市場"] = market
     out["suffix"] = ".TW" if market == "上市" else ".TWO"
     out["最新日期"] = latest_date
@@ -1327,6 +1372,14 @@ def parse_history_pct(x, invalid_value=None):
         return invalid_value
 
 
+def _normalize_threshold_value(x):
+    s = clean_cell(x)
+    if not s:
+        return "400"  # 舊版歷史列沒有門檻欄，一律視為 400 張。
+    digits = re.sub(r"\D", "", s)
+    return digits or "400"
+
+
 def rows_to_append_values(rows):
     return [[r.get(h, "") for h in HOLDER_HISTORY_HEADERS] for r in rows]
 
@@ -1346,6 +1399,7 @@ def append_history_rows(ws, rows):
             str(r.get("榜單類型", "")).strip(),
             str(r.get("市場", "")).strip(),
             str(r.get("代號", "")).replace("'", "").strip(),
+            _normalize_threshold_value(r.get("門檻", "")),
         ))
 
     new_rows = []
@@ -1355,6 +1409,7 @@ def append_history_rows(ws, rows):
             str(r.get("榜單類型", "")).strip(),
             str(r.get("市場", "")).strip(),
             str(r.get("代號", "")).replace("'", "").strip(),
+            _normalize_threshold_value(r.get("門檻", "")),
         )
         if key not in existing_keys:
             new_rows.append(r)
@@ -1365,7 +1420,7 @@ def append_history_rows(ws, rows):
     return len(new_rows)
 
 
-def build_rank_rows_for_date(hist, market, date_idx, rank_type="增加", top_n=20):
+def build_rank_rows_for_date(hist, market, date_idx, rank_type="增加", top_n=20, threshold=400):
     if hist is None or hist.empty:
         return []
 
@@ -1386,8 +1441,15 @@ def build_rank_rows_for_date(hist, market, date_idx, rank_type="增加", top_n=2
     ).round(2)
     df = df.dropna(subset=["_diff"])
 
-    ascending = rank_type == "減少"
-    top_df = df.sort_values("_diff", ascending=ascending).head(top_n).copy()
+    # 「增加」只取正增減、「減少」只取負增減，與壓縮檔 select_board() 一致。
+    if rank_type == "增加":
+        df = df[df["_diff"] > 0]
+        ascending = False
+    else:
+        df = df[df["_diff"] < 0]
+        ascending = True
+
+    top_df = df.sort_values(["_diff", "代號"], ascending=[ascending, True]).head(top_n).copy()
 
     write_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
@@ -1405,28 +1467,31 @@ def build_rank_rows_for_date(hist, market, date_idx, rank_type="增加", top_n=2
             "週漲跌": "-",
             "總增減%": f"{float(row['_diff']):+.2f}%",
             "寫入時間": write_time,
+            "門檻": str(int(threshold)),
         })
 
     return rows
 
 
-def backfill_holder_history_from_ratio(ws, listed_hist, otc_hist, weeks):
+def backfill_holder_history_from_ratio(ws, threshold_hist_map, weeks):
     """
-    用我們自己的比例歷史表回補最近幾週 Top20，
-    不再回去爬 Norway。
+    用 PSCNet 比例歷史表回補最近幾週 Top20。
+    400 / 1000 張、增加 / 減少四種榜單完全分開保存。
     """
-    log(f"正在用 PSCNet 歷史資料回補最近 {weeks} 週 Top20 紀錄...")
+    log(f"正在用 PSCNet 歷史資料回補最近 {weeks} 週 Top20 紀錄（400 / 1000 張、增 / 減）...")
 
     all_rows = []
-    for market, hist in [("上市", listed_hist), ("上櫃", otc_hist)]:
-        for i in range(1, weeks):  # 從上一週開始回補；本週會用 current rows 寫入
-            all_rows.extend(build_rank_rows_for_date(hist, market, i, "增加", TOP_N))
+    for threshold, market_map in threshold_hist_map.items():
+        for market, hist in market_map.items():
+            for i in range(1, weeks):  # 本週由 current rows 寫入；這裡回補前幾週。
+                all_rows.extend(build_rank_rows_for_date(hist, market, i, "增加", TOP_N, threshold))
+                all_rows.extend(build_rank_rows_for_date(hist, market, i, "減少", TOP_N, threshold))
 
     added = append_history_rows(ws, all_rows)
     log(f"歷史 Top20 回補完成，新增 {added} 筆。")
 
 
-def build_current_history_rows(df, display_date, rank_type, market):
+def build_current_history_rows(df, display_date, rank_type, market, threshold=400):
     if df is None or df.empty:
         return []
     history_date = normalize_history_date(display_date)
@@ -1451,75 +1516,101 @@ def build_current_history_rows(df, display_date, rank_type, market):
             "週漲跌": clean_cell(row.get("週漲跌", "-")),
             "總增減%": f"{float(row.get('總增減', 0)):+.2f}%",
             "寫入時間": write_time,
+            "門檻": str(int(threshold)),
         })
     return rows
 
 
-def append_current_rank_history(ws, listed_df, otc_df, display_date, rank_type):
+def append_current_rank_history(ws, listed_df, otc_df, display_date, rank_type, threshold=400):
     rows = []
-    rows.extend(build_current_history_rows(listed_df, display_date, rank_type, "上市"))
-    rows.extend(build_current_history_rows(otc_df, display_date, rank_type, "上櫃"))
+    rows.extend(build_current_history_rows(listed_df, display_date, rank_type, "上市", threshold))
+    rows.extend(build_current_history_rows(otc_df, display_date, rank_type, "上櫃", threshold))
     added = append_history_rows(ws, rows)
-    log(f"每週大戶{rank_type}排行本週紀錄新增 {added} 筆。")
+    log(f"每週 {threshold} 張大戶{rank_type}排行本週紀錄新增 {added} 筆。")
 
 
-def compute_streak_map(ws):
+def compute_history_badge_maps(ws):
+    """
+    回傳：
+      streak_map[(threshold, rank_type, market, code)] = 連續週數
+      reversal_map[(threshold, rank_type, market, code)] = 買→賣 / 賣→買
+
+    反轉只認「前一個曆週」的相反榜單，不跨週補算。
+    """
     streak_map = {}
+    reversal_map = {}
     if ws is None:
-        return streak_map
+        return streak_map, reversal_map
 
     records = ws.get_all_records()
     if not records:
-        return streak_map
+        return streak_map, reversal_map
 
     df = pd.DataFrame(records)
     required_cols = {"資料日期", "榜單類型", "市場", "代號"}
     if not required_cols.issubset(df.columns):
-        return streak_map
+        return streak_map, reversal_map
 
+    if "門檻" not in df.columns:
+        df["門檻"] = "400"
+    df["門檻"] = df["門檻"].map(_normalize_threshold_value)
     df["資料日期"] = df["資料日期"].astype(str).str.strip()
     df["榜單類型"] = df["榜單類型"].astype(str).str.strip()
     df["市場"] = df["市場"].astype(str).str.strip()
     df["代號"] = df["代號"].astype(str).str.replace("'", "", regex=False).str.strip()
+    df["_date"] = pd.to_datetime(df["資料日期"], errors="coerce")
+    df = df.dropna(subset=["_date"])
     df = df[(df["資料日期"] != "") & (df["代號"] != "")]
 
-    for (rank_type, market), group in df.groupby(["榜單類型", "市場"]):
-        dates = sorted(group["資料日期"].unique().tolist(), reverse=True)
-        date_code_map = {
-            d: set(group[group["資料日期"] == d]["代號"].astype(str).tolist())
-            for d in dates
-        }
-        all_codes = set(group["代號"].astype(str).tolist())
-        for code in all_codes:
-            streak = 0
-            for d in dates:
-                if code in date_code_map.get(d, set()):
+    for (threshold, market), group in df.groupby(["門檻", "市場"]):
+        dates = sorted(group["_date"].dt.normalize().unique().tolist(), reverse=True)
+        if not dates:
+            continue
+        latest = pd.Timestamp(dates[0]).normalize()
+
+        # 每個方向的 exact-week 連續上榜。
+        for rank_type in ("增加", "減少"):
+            direction_group = group[group["榜單類型"] == rank_type].copy()
+            if direction_group.empty:
+                continue
+            date_code_map = {
+                pd.Timestamp(d).normalize(): set(direction_group[direction_group["_date"].dt.normalize() == pd.Timestamp(d).normalize()]["代號"].tolist())
+                for d in direction_group["_date"].dt.normalize().unique()
+            }
+            current_codes = date_code_map.get(latest, set())
+            for code in current_codes:
+                streak = 1
+                cursor = latest - pd.Timedelta(days=7)
+                while code in date_code_map.get(cursor, set()):
                     streak += 1
-                else:
-                    break
-            if streak >= 2:
-                streak_map[(rank_type, market, code)] = streak
-    return streak_map
+                    cursor -= pd.Timedelta(days=7)
+                if streak >= 2:
+                    streak_map[(threshold, rank_type, market, code)] = streak
+
+        # 本週方向反轉：增加 = 賣→買；減少 = 買→賣。
+        prev = latest - pd.Timedelta(days=7)
+        latest_group = group[group["_date"].dt.normalize() == latest]
+        prev_group = group[group["_date"].dt.normalize() == prev]
+        if not prev_group.empty:
+            prev_inc = set(prev_group[prev_group["榜單類型"] == "增加"]["代號"].tolist())
+            prev_dec = set(prev_group[prev_group["榜單類型"] == "減少"]["代號"].tolist())
+            cur_inc = set(latest_group[latest_group["榜單類型"] == "增加"]["代號"].tolist())
+            cur_dec = set(latest_group[latest_group["榜單類型"] == "減少"]["代號"].tolist())
+            for code in cur_inc & prev_dec:
+                reversal_map[(threshold, "增加", market, code)] = "賣→買"
+            for code in cur_dec & prev_inc:
+                reversal_map[(threshold, "減少", market, code)] = "買→賣"
+
+    return streak_map, reversal_map
 
 
-def maybe_extend_history_for_long_streak(ws, streak_map, listed_hist, otc_hist):
-    if ws is None or not streak_map:
-        return streak_map
-
-    max_streak = max(streak_map.values()) if streak_map else 0
-    if max_streak >= HISTORY_INITIAL_WEEKS:
-        log(f"偵測到連{max_streak}上榜股票，擴充回補最近 {HISTORY_EXTEND_WEEKS} 週歷史資料...")
-        backfill_holder_history_from_ratio(ws, listed_hist, otc_hist, HISTORY_EXTEND_WEEKS)
-        return compute_streak_map(ws)
-    return streak_map
-
-
-def apply_streak_labels(df, market, rank_type, streak_map):
+def apply_history_labels(df, market, rank_type, threshold, streak_map, reversal_map):
     if df is None or df.empty:
         return df
 
     df = df.copy()
     new_names = []
+    threshold_key = str(int(threshold))
 
     for _, row in df.iterrows():
         code, name = split_code_name(row.get("股票代號/名稱", ""))
@@ -1527,11 +1618,11 @@ def apply_streak_labels(df, market, rank_type, streak_map):
             code = str(row.get("代號", ""))
             name = str(row.get("股名", ""))
 
-        streak = streak_map.get((rank_type, market, code), 1)
-        if streak >= 2:
-            new_names.append(f"{code} {name}  連{streak}")
-        else:
-            new_names.append(f"{code} {name}")
+        key = (threshold_key, rank_type, market, code)
+        reversal = reversal_map.get(key, "")
+        streak = streak_map.get(key, 1)
+        badge = reversal or (f"連{streak}" if streak >= 2 else "")
+        new_names.append(f"{code} {name}" + (f"  {badge}" if badge else ""))
 
     df["股票代號/名稱"] = new_names
     return df
@@ -1629,8 +1720,9 @@ def _shorten_text(text, max_chars):
 
 
 def _split_streak_badge(text):
+    # 保留原函式名稱，讓版型相關程式完全不用重寫；現在同時支援方向反轉標記。
     text = clean_cell(text)
-    match = re.search(r"\s*(連\d+)$", text)
+    match = re.search(r"\s*(連\d+|買→賣|賣→買)$", text)
     if match:
         badge = match.group(1)
         base_text = clean_cell(text[:match.start()].strip())
@@ -1698,20 +1790,11 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     )
     ax.add_patch(card_shape)
 
-    # 標題列改成「整條矩形 + 裁切到外框路徑」，上方圓角才會真的和外框貼齊。
-    #
-    # 舊寫法是「圓角框 + 補一塊方形蓋住下半部」，對不齊有兩個原因：
-    # 1. 外框 boxstyle 帶 pad=0.006，實際邊界比 (x_left, card_w) 往外各多 0.006，
-    #    標題列照 x_left / card_w 畫就會四邊都內縮，露出一圈白底。
-    # 2. rounding_size 一個 0.018 一個 0.016，圓弧半徑本來就不一樣。
-    # 改用 set_clip_path 直接裁到外框自己的路徑，圓角必然一致，不需要對數字。
-    # 下緣仍然是直角，維持原本「不要和表頭區塊看起來重疊」的設計。
+    # 標題列維持原版：整條矩形裁切到卡片外框，確保圓角完全貼齊。
     card_pad = 0.006
     band_left = x_left - card_pad
     band_w = card_w + card_pad * 2
     band_top = y_top + card_pad
-    # 只往上長 card_pad 貼齊外框上緣，下緣仍停在 y_top - title_h，
-    # 因此下方表頭與所有列的座標完全不受影響。
     band_h = title_h + card_pad
 
     title_band = patches.Rectangle(
@@ -1722,8 +1805,6 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     title_band.set_clip_path(card_shape)
     ax.add_patch(title_band)
 
-    # 左側色條同樣裁到外框，左上角會跟著外框做出一樣的圓角。
-    # 寬度維持 0.009，只是起點從 x_left 移到外框真正的左緣。
     accent_bar = patches.Rectangle(
         (band_left, band_top - band_h), 0.009, band_h,
         linewidth=0, facecolor=accent,
@@ -1732,20 +1813,19 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
     accent_bar.set_clip_path(card_shape)
     ax.add_patch(accent_bar)
 
-    # 標題列往上長高了 card_pad，文字跟著改用色帶自己的中心，避免看起來偏下。
     title_center_y = band_top - band_h / 2
-
     draw_text(ax, x_left + 0.026, title_center_y, title,
               size=20, color="#FFFFFF", weight="bold", bold=True)
     draw_text(ax, x_left + card_w - 0.020, title_center_y, f"TOP {top_n}",
               size=15.0, color="#FFFFFF", weight="bold", bold=True, ha="right")
 
-    # 欄位分配：新增一個很窄的「連續上榜標記欄」放在股名與類別之間。
-    # 這樣連2／連3不會被畫在類別文字裡面；右側四個欄位也縮小一點，距離更緊湊。
-    col_rel = [0.058, 0.083, 0.277, 0.042, 0.135, 0.115, 0.140, 0.150]
-    labels = ["排名", "代號", "股名", "", "類別", "現價", "週漲跌", "總增減%"]
-    aligns = ["center", "center", "left", "center", "left", "center", "center", "right"]
-    streak_col_idx = 3
+    # 排版改回壓縮檔的做法：
+    # 不再另外切一個超窄的 badge 欄位，而是把「連N / 買→賣 / 賣→買」接在股名右側。
+    # 原本「股名 + badge」總寬為 0.277 + 0.042 = 0.319，現在只是合併成同一格，
+    # 因此類別、現價、週漲跌、總增減%的起始位置完全不變。
+    col_rel = [0.058, 0.083, 0.319, 0.135, 0.115, 0.140, 0.150]
+    labels = ["排名", "代號", "股名", "類別", "現價", "週漲跌", "總增減%"]
+    aligns = ["center", "center", "left", "left", "center", "center", "right"]
 
     x0 = x_left + inner_pad_x
     col_x = [x0]
@@ -1754,7 +1834,6 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         acc += w
         col_x.append(x0 + inner_w * acc)
 
-    # 表頭與深藍標題列之間留白，避免視覺上貼住「上市排行 / 上櫃排行」。
     header_top = y_top - title_h - header_gap
     ax.add_patch(patches.Rectangle(
         (x_left, header_top - header_h), card_w, header_h,
@@ -1767,9 +1846,6 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
             transform=ax.transAxes, color=CARD_BORDER, linewidth=0.8, zorder=3)
 
     for i, label in enumerate(labels):
-        if label == "":
-            continue
-
         cell_x = col_x[i]
         cell_w = inner_w * col_rel[i]
         if aligns[i] == "center":
@@ -1786,6 +1862,45 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         draw_text(ax, x_left + card_w / 2, header_top - header_h - row_h / 2,
                   "無資料", size=15.2, color=TEXT_MUTED, ha="center", bold=True)
         return
+
+    # Matplotlib 的實際字寬會依中文字型而異；這裡直接用 renderer 量測，
+    # 讓 badge 真正緊貼在股名右側，同時遇到長股名時只縮短股名，不壓縮 badge。
+    ax.figure.canvas.draw()
+    renderer = ax.figure.canvas.get_renderer()
+
+    def _text_width_axes(text, size, bold=False):
+        if not text:
+            return 0.0
+        tmp = ax.text(
+            0, 0, clean_cell(text),
+            transform=ax.transAxes,
+            fontsize=size,
+            fontweight="bold" if bold else "normal",
+            fontproperties=FONT_BOLD if bold else FONT_PROP,
+            alpha=0.0,
+        )
+        bbox = tmp.get_window_extent(renderer=renderer)
+        tmp.remove()
+        p0 = ax.transAxes.inverted().transform((bbox.x0, bbox.y0))
+        p1 = ax.transAxes.inverted().transform((bbox.x1, bbox.y0))
+        return max(0.0, p1[0] - p0[0])
+
+    def _fit_text_width(text, max_width, size, bold=False):
+        text = clean_cell(text)
+        if not text or max_width <= 0:
+            return ""
+        if _text_width_axes(text, size, bold) <= max_width:
+            return text
+        ellipsis = "…"
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            candidate = text[:mid] + ellipsis
+            if _text_width_axes(candidate, size, bold) <= max_width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return (text[:lo] + ellipsis) if lo > 0 else ellipsis
 
     df = df.head(top_n).reset_index(drop=True)
     for i in range(top_n):
@@ -1834,22 +1949,10 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
         chg_color = TEXT_RED if change_val > 0 else TEXT_GREEN if change_val < 0 else TEXT_MUTED
         chg_display = f"{change_val:+.2f}%" if change_str != "-" else "-"
 
-        values = [
-            f"{i+1:02d}",
-            code,
-            _shorten_text(name, 10),
-            clean_cell(streak_badge),
-            _shorten_text(category, 6),
-            price,
-            week_chg,
-            chg_display,
-        ]
-
         name_weight = "bold" if i < 3 else "normal"
-        colors = [TEXT_MUTED, TEXT_DARK, TEXT_MAIN, "#A06A00", TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
-        weights = ["bold", "bold", name_weight, "bold", "normal", "bold", "bold", "bold"]
-        sizes = [11.6, 14.8, 16.8 if i < 3 else 14.9, 10.3, 12.4, 13.3, 14.5, 15.4]
+        name_size = 16.8 if i < 3 else 14.9
 
+        # 排名
         rank_cell_x = col_x[0]
         rank_cell_w = inner_w * col_rel[0]
         rank_center_x = rank_cell_x + rank_cell_w / 2
@@ -1861,55 +1964,100 @@ def draw_rank_table(ax, df, title, accent, x_left, y_top, card_w, card_h, top_n=
                 transform=ax.transAxes, facecolor=badge_color,
                 edgecolor="white", linewidth=1.2, zorder=4
             ))
-            draw_text(ax, rank_center_x, rank_center_y, values[0], size=12.6,
-                      color="#6B4A12" if i == 0 else TEXT_DARK, weight="bold", ha="center", bold=True)
-            start_j = 1
+            draw_text(ax, rank_center_x, rank_center_y, f"{i+1:02d}", size=12.6,
+                      color="#6B4A12" if i == 0 else TEXT_DARK,
+                      weight="bold", ha="center", bold=True)
         else:
-            start_j = 0
+            draw_text(ax, rank_center_x, rank_center_y, f"{i+1:02d}", size=11.6,
+                      color=TEXT_MUTED, weight="bold", ha="center", bold=True)
 
-        for j in range(start_j, len(values)):
-            value = values[j]
-            if j == streak_col_idx:
-                if not value:
-                    continue
-                cell_x = col_x[j]
-                cell_w = inner_w * col_rel[j]
-                badge_w = min(cell_w * 0.92, 0.034)
-                badge_h = row_h * 0.48
-                badge_x = cell_x + (cell_w - badge_w) / 2
-                badge_y = y - row_h / 2 - badge_h / 2
-                ax.add_patch(patches.FancyBboxPatch(
-                    (badge_x, badge_y), badge_w, badge_h,
-                    boxstyle="round,pad=0.001,rounding_size=0.0045",
-                    linewidth=0.8, edgecolor="#D8B83F", facecolor="#FFF3C4",
-                    transform=ax.transAxes, zorder=7
-                ))
-                ax.text(
-                    badge_x + badge_w / 2, y - row_h / 2, value,
-                    transform=ax.transAxes,
-                    ha="center", va="center",
-                    fontsize=sizes[j],
-                    fontweight="bold",
-                    fontproperties=FONT_BOLD,
-                    color=colors[j],
-                    zorder=8
-                )
-                continue
+        # 代號
+        code_x = col_x[1] + inner_w * col_rel[1] / 2
+        draw_text(ax, code_x, y - row_h / 2, code, size=14.8,
+                  color=TEXT_DARK, weight="bold", ha="center", bold=True)
 
-            cell_x = col_x[j]
-            cell_w = inner_w * col_rel[j]
-            if aligns[j] == "center":
+        # 股名 + inline badge（壓縮檔版型）
+        name_cell_x = col_x[2]
+        name_cell_w = inner_w * col_rel[2]
+        name_left = name_cell_x + 0.010
+        name_right = name_cell_x + name_cell_w - 0.008
+
+        badge_text = clean_cell(streak_badge)
+        badge_size = 10.8
+        badge_gap = 0.006
+        badge_pad_x = 0.010
+        badge_w = 0.0
+        if badge_text:
+            badge_w = _text_width_axes(badge_text, badge_size, True) + badge_pad_x * 2
+
+        max_name_w = max(0.0, name_right - name_left - (badge_w + badge_gap if badge_text else 0.0))
+        fitted_name = _fit_text_width(name, max_name_w, name_size, name_weight == "bold")
+
+        draw_text(ax, name_left, y - row_h / 2, fitted_name, size=name_size,
+                  color=TEXT_MAIN, weight=name_weight, ha="left",
+                  bold=(name_weight == "bold"))
+
+        if badge_text:
+            actual_name_w = _text_width_axes(fitted_name, name_size, name_weight == "bold")
+            badge_x = name_left + actual_name_w + badge_gap
+            badge_h = row_h * 0.52
+            badge_y = y - row_h / 2 - badge_h / 2
+
+            # 完全照壓縮檔語意：連N 用中性灰藍；方向反轉用對應方向淡色底。
+            if badge_text == "賣→買":
+                badge_face = "#FBE5E3"
+                badge_text_color = TEXT_RED
+            elif badge_text == "買→賣":
+                badge_face = "#E3F1E9"
+                badge_text_color = TEXT_GREEN
+            else:
+                badge_face = "#EEF2F7"
+                badge_text_color = TEXT_NAVY
+
+            ax.add_patch(patches.FancyBboxPatch(
+                (badge_x, badge_y), badge_w, badge_h,
+                boxstyle="round,pad=0.001,rounding_size=0.0045",
+                linewidth=0, facecolor=badge_face,
+                transform=ax.transAxes, zorder=7
+            ))
+            ax.text(
+                badge_x + badge_w / 2, y - row_h / 2, badge_text,
+                transform=ax.transAxes,
+                ha="center", va="center",
+                fontsize=badge_size,
+                fontweight="bold",
+                fontproperties=FONT_BOLD,
+                color=badge_text_color,
+                zorder=8
+            )
+
+        # 其餘欄位維持原本位置 / 字級 / 顏色
+        tail_values = [
+            _shorten_text(category, 6),
+            price,
+            week_chg,
+            chg_display,
+        ]
+        tail_colors = [TEXT_MUTED, TEXT_MAIN, week_color, chg_color]
+        tail_weights = ["normal", "bold", "bold", "bold"]
+        tail_sizes = [12.4, 13.3, 14.5, 15.4]
+
+        for offset, value in enumerate(tail_values, start=3):
+            cell_x = col_x[offset]
+            cell_w = inner_w * col_rel[offset]
+            if aligns[offset] == "center":
                 tx, ha = cell_x + cell_w / 2, "center"
-            elif aligns[j] == "right":
+            elif aligns[offset] == "right":
                 tx, ha = cell_x + cell_w - 0.010, "right"
             else:
                 tx, ha = cell_x + 0.010, "left"
 
-            draw_text(ax, tx, y - row_h / 2, value, size=sizes[j],
-                      color=colors[j], weight=weights[j], ha=ha,
-                      bold=(weights[j] == "bold"))
+            idx = offset - 3
+            draw_text(ax, tx, y - row_h / 2, value, size=tail_sizes[idx],
+                      color=tail_colors[idx], weight=tail_weights[idx], ha=ha,
+                      bold=(tail_weights[idx] == "bold"))
 
-def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股東籌碼強勢榜  Top 20"):
+def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股東籌碼強勢榜  Top 20", threshold=400):
     top_n = 20
     fig_w = 19.4
     fig_h = 12.8
@@ -1949,7 +2097,7 @@ def build_rank_image(listed_df, otc_df, display_date, main_title="每週大股�
         linewidth=0, facecolor=theme_bg,
         transform=ax.transAxes, zorder=2
     ))
-    draw_text(ax, 0.872, 0.921, "股權分散｜400張以上比例", size=16.2,
+    draw_text(ax, 0.872, 0.921, f"股權分散｜{int(threshold)}張以上比例", size=16.2,
               color=theme_color, weight="bold", ha="center", bold=True)
 
     # 不顯示額外摘要卡，讓畫面回到單純排名表格。
@@ -2078,7 +2226,7 @@ def format_rank_block(df, title):
     return msg
 
 
-def send_discord_image(listed_df, otc_df, display_date, title_text, image_filename):
+def send_discord_image(listed_df, otc_df, display_date, title_text, image_filename, threshold=400):
     if not DISCORD_WEBHOOK_URL:
         log("⚠️ 找不到 DISCORD_WEBHOOK_URL_TEST / DISCORD_WEBHOOK_URL，略過 Discord 推播。")
         return
@@ -2088,6 +2236,7 @@ def send_discord_image(listed_df, otc_df, display_date, title_text, image_filena
         otc_df.reset_index(drop=True) if otc_df is not None else None,
         display_date,
         main_title=title_text,
+        threshold=threshold,
     )
 
     files = {"file": (image_filename, image_buf, "image/png")}
@@ -2117,78 +2266,114 @@ def send_discord_image(listed_df, otc_df, display_date, title_text, image_filena
 def push_rank_to_dc():
     start = time.time()
     log("=" * 100)
-    log("啟動：每週大股東籌碼強勢榜 Top20｜PSCNet / MoneyDJ 正式部署版")
+    log("啟動：每週大股東籌碼強勢榜 Top20｜400 / 1000 張｜PSCNet / MoneyDJ 正式部署版")
     log("=" * 100)
 
     sh = connect_google_sheet()
 
-    history_ws = get_or_create_ws(sh, HOLDER_HISTORY_SHEET_NAME, HOLDER_HISTORY_HEADERS, rows=3000)
+    history_ws = get_or_create_ws(sh, HOLDER_HISTORY_SHEET_NAME, HOLDER_HISTORY_HEADERS, rows=6000)
     listed_ratio_ws = get_or_create_ws(sh, LISTED_RATIO_SHEET_NAME, [], rows=2500, cols=80)
     otc_ratio_ws = get_or_create_ws(sh, OTC_RATIO_SHEET_NAME, [], rows=2500, cols=80)
+    listed_ratio_1000_ws = get_or_create_ws(sh, LISTED_RATIO_1000_SHEET_NAME, [], rows=2500, cols=80)
+    otc_ratio_1000_ws = get_or_create_ws(sh, OTC_RATIO_1000_SHEET_NAME, [], rows=2500, cols=80)
     api_ws = get_or_create_ws(sh, API_CACHE_SHEET_NAME, API_CACHE_HEADERS, rows=2500, cols=4)
 
-    # 先讀 API 快取，再抓股票清單。
-    # 若 ISIN 網站在 GitHub Actions 偶發 DNS 失敗，可用 Google Sheet 既有資料 fallback。
+    # 先讀 API 快取，再抓股票清單。股票清單 fallback 仍沿用既有 400 張比例表即可。
     cache = load_api_cache_from_sheet(api_ws)
     stock_df = fetch_all_stock_list(listed_ratio_ws, otc_ratio_ws, cache)
 
     cache, cache_errors = ensure_api_cache_threaded(stock_df, cache, api_ws)
-
     history_long, pscnet_errors = fetch_pscnet_history_all(stock_df, cache)
 
-    listed_hist = build_ratio_history_from_long(history_long, "上市")
-    otc_hist = build_ratio_history_from_long(history_long, "上櫃")
-    display_date = get_latest_data_date_from_hist([listed_hist, otc_hist])
+    hist_map = {
+        400: {
+            "上市": build_ratio_history_from_long(history_long, "上市", 400),
+            "上櫃": build_ratio_history_from_long(history_long, "上櫃", 400),
+        },
+        1000: {
+            "上市": build_ratio_history_from_long(history_long, "上市", 1000),
+            "上櫃": build_ratio_history_from_long(history_long, "上櫃", 1000),
+        },
+    }
 
-    log("寫入上市 / 上櫃 400張比例歷史到 Google Sheet...")
-    write_ratio_history_sheet(listed_ratio_ws, listed_hist)
-    write_ratio_history_sheet(otc_ratio_ws, otc_hist)
+    display_date = get_latest_data_date_from_hist([
+        hist_map[400]["上市"], hist_map[400]["上櫃"],
+        hist_map[1000]["上市"], hist_map[1000]["上櫃"],
+    ])
 
-    # 增加榜
-    listed_df = build_top_from_history(listed_hist, "上市")
-    otc_df = build_top_from_history(otc_hist, "上櫃")
+    log("寫入上市 / 上櫃 400張、1000張比例歷史到 Google Sheet...")
+    write_ratio_history_sheet(listed_ratio_ws, hist_map[400]["上市"])
+    write_ratio_history_sheet(otc_ratio_ws, hist_map[400]["上櫃"])
+    write_ratio_history_sheet(listed_ratio_1000_ws, hist_map[1000]["上市"])
+    write_ratio_history_sheet(otc_ratio_1000_ws, hist_map[1000]["上櫃"])
 
-    # 減少榜
-    listed_dec_df = build_bottom_from_history(listed_hist, "上市")
-    otc_dec_df = build_bottom_from_history(otc_hist, "上櫃")
+    boards = {}
+    for threshold in (400, 1000):
+        listed_hist = hist_map[threshold]["上市"]
+        otc_hist = hist_map[threshold]["上櫃"]
 
-    # 股價資訊
-    listed_df = add_price_info(listed_df)
-    otc_df = add_price_info(otc_df)
-    listed_dec_df = add_price_info(listed_dec_df)
-    otc_dec_df = add_price_info(otc_dec_df)
+        listed_inc = add_price_info(build_top_from_history(listed_hist, "上市"))
+        otc_inc = add_price_info(build_top_from_history(otc_hist, "上櫃"))
+        listed_dec = add_price_info(build_bottom_from_history(listed_hist, "上市"))
+        otc_dec = add_price_info(build_bottom_from_history(otc_hist, "上櫃"))
 
-    # 若歷史不足，先用 PSCNet ratio history 回補最近幾週前20。
-    records = history_ws.get_all_records()
-    if not records:
-        backfill_holder_history_from_ratio(history_ws, listed_hist, otc_hist, HISTORY_INITIAL_WEEKS)
+        boards[(threshold, "增加", "上市")] = listed_inc
+        boards[(threshold, "增加", "上櫃")] = otc_inc
+        boards[(threshold, "減少", "上市")] = listed_dec
+        boards[(threshold, "減少", "上櫃")] = otc_dec
 
-    # 寫入本週歷史：增加榜 / 減少榜
-    append_current_rank_history(history_ws, listed_df, otc_df, display_date, "增加")
-    append_current_rank_history(history_ws, listed_dec_df, otc_dec_df, display_date, "減少")
+    # 每次都用現有 60 週 PSCNet 資料補最近幾週，append_history_rows 會自動去重。
+    # 這能讓舊版只有 400 張 / 增加榜歷史的 Sheet 自動補上 1000 張與減少榜，
+    # 之後才有足夠資料判斷「買→賣 / 賣→買」。
+    backfill_holder_history_from_ratio(history_ws, hist_map, HISTORY_INITIAL_WEEKS)
 
-    streak_map = compute_streak_map(history_ws)
-    streak_map = maybe_extend_history_for_long_streak(history_ws, streak_map, listed_hist, otc_hist)
+    for threshold in (400, 1000):
+        for rank_type in ("增加", "減少"):
+            append_current_rank_history(
+                history_ws,
+                boards[(threshold, rank_type, "上市")],
+                boards[(threshold, rank_type, "上櫃")],
+                display_date, rank_type, threshold
+            )
 
-    listed_df = apply_streak_labels(listed_df, "上市", "增加", streak_map)
-    otc_df = apply_streak_labels(otc_df, "上櫃", "增加", streak_map)
-    listed_dec_df = apply_streak_labels(listed_dec_df, "上市", "減少", streak_map)
-    otc_dec_df = apply_streak_labels(otc_dec_df, "上櫃", "減少", streak_map)
+    streak_map, reversal_map = compute_history_badge_maps(history_ws)
 
-    send_discord_image(
-        listed_df, otc_df, display_date,
-        "每週大股東籌碼強勢榜  Top 20",
-        "weekly_holder_rank_increase.png"
-    )
-    send_discord_image(
-        listed_dec_df, otc_dec_df, display_date,
-        "每週大股東籌碼減少榜  Top 20",
-        "weekly_holder_rank_decrease.png"
-    )
+    # 若已有很長連續紀錄，再多補到 HISTORY_EXTEND_WEEKS；不改原本連N顯示邏輯。
+    max_streak = max(streak_map.values()) if streak_map else 0
+    if max_streak >= HISTORY_INITIAL_WEEKS:
+        backfill_holder_history_from_ratio(history_ws, hist_map, HISTORY_EXTEND_WEEKS)
+        streak_map, reversal_map = compute_history_badge_maps(history_ws)
+
+    for threshold in (400, 1000):
+        for rank_type in ("增加", "減少"):
+            for market in ("上市", "上櫃"):
+                boards[(threshold, rank_type, market)] = apply_history_labels(
+                    boards[(threshold, rank_type, market)],
+                    market, rank_type, threshold, streak_map, reversal_map
+                )
+
+    # 圖卡版型完全沿用原本 stock_holder_rank：每個門檻各自輸出增加榜 / 減少榜。
+    for threshold in (400, 1000):
+        send_discord_image(
+            boards[(threshold, "增加", "上市")],
+            boards[(threshold, "增加", "上櫃")],
+            display_date,
+            f"每週{threshold}張大股東籌碼強勢榜  Top 20",
+            f"weekly_holder_{threshold}_rank_increase.png",
+            threshold=threshold,
+        )
+        send_discord_image(
+            boards[(threshold, "減少", "上市")],
+            boards[(threshold, "減少", "上櫃")],
+            display_date,
+            f"每週{threshold}張大股東籌碼減少榜  Top 20",
+            f"weekly_holder_{threshold}_rank_decrease.png",
+            threshold=threshold,
+        )
 
     elapsed = time.time() - start
     log("=" * 100)
-    log("完成：每週大股東籌碼強勢榜 / 減少榜 Top20")
+    log("完成：400 / 1000 張大股東籌碼強勢榜 / 減少榜 Top20")
     log(f"資料日期：{display_date}")
     log(f"API快取錯誤數：{len(cache_errors)}")
     log(f"PSCNet requests錯誤數：{len(pscnet_errors)}")
