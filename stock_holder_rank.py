@@ -1535,7 +1535,8 @@ def compute_history_badge_maps(ws):
       streak_map[(threshold, rank_type, market, code)] = 連續週數
       reversal_map[(threshold, rank_type, market, code)] = 買→賣 / 賣→買
 
-    反轉只認「前一個曆週」的相反榜單，不跨週補算。
+    連續上榜與反轉皆依「實際存在的相鄰週資料」判定，
+    避免資料日期因假日、來源更新日等因素不是剛好相差 7 天時漏判。
     """
     streak_map = {}
     reversal_map = {}
@@ -1563,12 +1564,12 @@ def compute_history_badge_maps(ws):
     df = df[(df["資料日期"] != "") & (df["代號"] != "")]
 
     for (threshold, market), group in df.groupby(["門檻", "市場"]):
-        dates = sorted(group["_date"].dt.normalize().unique().tolist(), reverse=True)
+        dates = [pd.Timestamp(d).normalize() for d in sorted(group["_date"].dt.normalize().unique().tolist(), reverse=True)]
         if not dates:
             continue
-        latest = pd.Timestamp(dates[0]).normalize()
+        latest = dates[0]
 
-        # 每個方向的 exact-week 連續上榜。
+        # 每個方向依實際存在的相鄰週資料判定連續上榜。
         for rank_type in ("增加", "減少"):
             direction_group = group[group["榜單類型"] == rank_type].copy()
             if direction_group.empty:
@@ -1580,26 +1581,28 @@ def compute_history_badge_maps(ws):
             current_codes = date_code_map.get(latest, set())
             for code in current_codes:
                 streak = 1
-                cursor = latest - pd.Timedelta(days=7)
-                while code in date_code_map.get(cursor, set()):
-                    streak += 1
-                    cursor -= pd.Timedelta(days=7)
+                for prev_date in dates[1:]:
+                    if code in date_code_map.get(prev_date, set()):
+                        streak += 1
+                    else:
+                        break
                 if streak >= 2:
                     streak_map[(threshold, rank_type, market, code)] = streak
 
-        # 本週方向反轉：增加 = 賣→買；減少 = 買→賣。
-        prev = latest - pd.Timedelta(days=7)
-        latest_group = group[group["_date"].dt.normalize() == latest]
-        prev_group = group[group["_date"].dt.normalize() == prev]
-        if not prev_group.empty:
-            prev_inc = set(prev_group[prev_group["榜單類型"] == "增加"]["代號"].tolist())
-            prev_dec = set(prev_group[prev_group["榜單類型"] == "減少"]["代號"].tolist())
-            cur_inc = set(latest_group[latest_group["榜單類型"] == "增加"]["代號"].tolist())
-            cur_dec = set(latest_group[latest_group["榜單類型"] == "減少"]["代號"].tolist())
-            for code in cur_inc & prev_dec:
-                reversal_map[(threshold, "增加", market, code)] = "賣→買"
-            for code in cur_dec & prev_inc:
-                reversal_map[(threshold, "減少", market, code)] = "買→賣"
+        # 本週方向反轉：以前一個實際存在的週資料判定。
+        if len(dates) >= 2:
+            prev = dates[1]
+            latest_group = group[group["_date"].dt.normalize() == latest]
+            prev_group = group[group["_date"].dt.normalize() == prev]
+            if not prev_group.empty:
+                prev_inc = set(prev_group[prev_group["榜單類型"] == "增加"]["代號"].tolist())
+                prev_dec = set(prev_group[prev_group["榜單類型"] == "減少"]["代號"].tolist())
+                cur_inc = set(latest_group[latest_group["榜單類型"] == "增加"]["代號"].tolist())
+                cur_dec = set(latest_group[latest_group["榜單類型"] == "減少"]["代號"].tolist())
+                for code in cur_inc & prev_dec:
+                    reversal_map[(threshold, "增加", market, code)] = "賣→買"
+                for code in cur_dec & prev_inc:
+                    reversal_map[(threshold, "減少", market, code)] = "買→賣"
 
     return streak_map, reversal_map
 
