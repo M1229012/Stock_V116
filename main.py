@@ -60,6 +60,7 @@ V116.29 中文標題：處置消耗切分點與官方處置同步修正
 """
 
 import os
+import sys
 import twstock
 import yfinance as yf
 import pandas as pd
@@ -89,6 +90,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 nest_asyncio.apply()
+
+# GitHub Actions 的 stdout 不是終端機，預設會整批緩衝到結束才輸出；改成每行即時寫出，LOG 才看得到即時進度
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 # ==========================================
 # 1. 設定靜音模式與常數
@@ -3820,11 +3825,15 @@ def main():
         if IS_AFTER_DAYTRADE:
             dt_today, dt_avg6 = get_daytrade_stats_finmind(code, target_date_str)
 
+        hist_info = f"{len(hist)} 筆，最後 {hist.index[-1].strftime('%Y-%m-%d')}" if not hist.empty else "無資料"
+        print(f"  [{idx+1}/{len(target_stocks)}] {code} {name} ({ticker_code}) 歷史股價 {hist_info}")
+
         risk = calculate_full_risk(code, hist, fund, est_days_int, dt_today, dt_avg6)
 
         if official_disposal_status:
             risk['risk_level'] = '高'
             risk['trigger_msg'] = official_disposal_status.get("reason", "官方已公告處置")
+        print(f"      → 收盤 {risk['curr_price']} | 風險 {risk['risk_level']} | 預估 {est_days_display} | {risk['trigger_msg'] or '無觸發'}")
 
         # 連續天數從最新交易日往回計算，最多反映最近5個交易日連續注意狀況。
         streak = 0
