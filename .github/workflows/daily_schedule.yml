@@ -80,8 +80,10 @@ jobs:
         TZ: Asia/Taipei
         # ✅ 優化: 宣告標準 Google 憑證路徑
         GOOGLE_APPLICATION_CREDENTIALS: service_key.json
+        # ✅ 關閉 Python 輸出緩衝：LOG 即時顯示進度，不會等程式結束才一次吐出
+        PYTHONUNBUFFERED: "1"
       run: |
-        python main.py
+        python -u main.py
 
     # ✅ 優化: 執行後強制清理敏感檔案
     - name: Cleanup Service Key
