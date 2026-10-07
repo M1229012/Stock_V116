@@ -2228,6 +2228,9 @@ def fetch_history_data(ticker_code):
     try:
         df = yf.Ticker(ticker_code).history(period="1y", auto_adjust=False)
         if df.empty: return pd.DataFrame()
+        # Yahoo 偶爾會回傳收盤價為 NaN 的列 (當日資料未完整、暫停交易日)，直接剔除避免後續 int(NaN) 崩潰
+        df = df.dropna(subset=['Close'])
+        if df.empty: return pd.DataFrame()
         df.index = df.index.tz_localize(None)
         return df
     except: return pd.DataFrame()
@@ -2768,6 +2771,8 @@ def get_clause11_gap_threshold(close_price):
     try:
         price = float(close_price)
     except (TypeError, ValueError):
+        return None
+    if pd.isna(price):
         return None
 
     if price <= CLAUSE11_MIN_PRICE:
